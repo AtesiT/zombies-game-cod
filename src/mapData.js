@@ -147,6 +147,7 @@ export const STAIRS = [
 
 export const POWER_SWITCH = { x: 7, y: 35 };
 export const WORKBENCH = { x: 58, y: 16 };
+export const PAP_SPOT = { x: 53, y: 7 };
 
 export const SECRET_SWITCHES = [
   { x: 14, y: 10 },

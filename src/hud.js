@@ -291,6 +291,9 @@ export class HUD {
     const yAmmo = h - 18;
     const lowMag = s.mag <= d.mag * 0.25;
     const magStr = String(s.mag).padStart(2, '0');
+    const packed = p.isPacked;
+    const nameCol = packed ? '#8fe05a' : INK;
+
     text(ctx, magStr, x, yAmmo, {
       font: 'bold 24px "Courier New", monospace',
       colour: p.reloading ? INK_DIM : lowMag ? `rgba(196,70,58,${0.65 + this.ammoWarn * 0.35})` : INK,
@@ -300,18 +303,50 @@ export class HUD {
       font: 'bold 13px "Courier New", monospace', colour: INK_DIM, align: 'right',
     });
     text(ctx, d.name.toUpperCase(), x, yAmmo - 20, {
-      font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right',
+      font: 'bold 11px "Courier New", monospace', colour: nameCol, align: 'right',
     });
+    if (packed) {
+      text(ctx, 'PACK-A-PUNCHED', x, yAmmo - 30, {
+        font: 'bold 8px "Courier New", monospace', colour: '#8fe05a', align: 'right',
+      });
+    }
+
+    // the second carried gun, dimmed, above the active one
+    const other = p.active === 0 ? 1 : 0;
+    const otherId = p.slots[other];
+    const yOther = packed ? yAmmo - 44 : yAmmo - 34;
+    if (otherId) {
+      const od = game.packedDef(otherId);
+      const os = p.loadout[otherId];
+      text(ctx, `[2] ${od.name.toUpperCase()}`, x, yOther, {
+        font: 'bold 10px "Courier New", monospace',
+        colour: p.packed.has(otherId) ? 'rgba(143,224,90,0.6)' : 'rgba(230,220,194,0.45)',
+        align: 'right',
+      });
+      text(ctx, `${os.mag} / ${os.reserve}`, x, yOther + 12, {
+        font: 'bold 9px "Courier New", monospace', colour: 'rgba(154,145,124,0.7)', align: 'right',
+      });
+    } else {
+      text(ctx, '[2] EMPTY', x, yOther, {
+        font: 'bold 10px "Courier New", monospace', colour: 'rgba(154,145,124,0.4)', align: 'right',
+      });
+    }
 
     // grenades
     if (p.grenades > 0) {
-      text(ctx, `◈ x${p.grenades}`, x, yAmmo - 34, {
+      text(ctx, `\u25C8 x${p.grenades}`, x, yOther - 16, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
       });
     }
 
-    if (p.reloading) {
-      const k = 1 - p.reloadTimer / d.reload;
+    if (p.busy) {
+      const k = 1 - p.swapTimer / Math.max(0.001, p.swapTotal);
+      bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', '#8fa0b0');
+      text(ctx, 'SWAPPING', x - 94, yAmmo + 10, {
+        font: 'bold 9px "Courier New", monospace', colour: '#8fa0b0', align: 'right',
+      });
+    } else if (p.reloading) {
+      const k = 1 - p.reloadTimer / (d.reload * p.perkFx.reloadMul);
       bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', GOLD);
       text(ctx, 'RELOADING', x - 94, yAmmo + 10, {
         font: 'bold 9px "Courier New", monospace', colour: GOLD, align: 'right',
@@ -381,6 +416,15 @@ export class HUD {
       lines.push(game.powerOn ? 'GENERATOR RUNNING' : '[E] THROW THE SWITCH');
     } else if (it.type === 'workbench') {
       lines.push('[E] OPEN WORKBENCH');
+    } else if (it.type === 'pap') {
+      if (it.already) lines.push('ALREADY PACK-A-PUNCHED');
+      else if (!game.powerOn) lines.push('PACK-A-PUNCH — NO POWER');
+      else lines.push(`[E] PACK-A-PUNCH ${it.id ? game.packedDef(it.id).name.toUpperCase() : ''}  ${it.price}`);
+    } else if (it.type === 'trap') {
+      const t = game.traps.list[it.i];
+      lines.push(t.ready
+        ? `[E] ${t.name.toUpperCase()}  ${t.price}`
+        : `${t.name.toUpperCase()} — RECHARGING ${Math.ceil(t.cool)}s`);
     } else if (it.type === 'switch') {
       lines.push(it.sw.found ? 'SIGNAL LOCKED' : '[E] TURN THE DIAL');
     } else if (it.type === 'loot') {
@@ -548,6 +592,8 @@ export class HUD {
     }
     mark(game.box.spot.x, game.box.spot.y, '#f5d76e', 4);
     mark(map.workbench.x, map.workbench.y, '#c8a05a', 3);
+    if (game.powerOn) mark(map.papSpot.x, map.papSpot.y, '#8fe05a', 4);
+    for (const t of game.traps.list) mark(t.x, t.y, t.ready ? '#f0a03c' : '#5a5f52', 3);
     if (!game.powerOn) mark(map.powerSwitch.x, map.powerSwitch.y, '#8fe05a', 3);
     for (const pu of game.powerups) mark(pu.x, pu.y, pu.def.colour, 3);
 

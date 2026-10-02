@@ -244,6 +244,23 @@ function buildDog() {
   return canvas;
 }
 
+/** Crawler: the zombie sprite chopped down to a dragging torso + arms. */
+function buildCrawler(src) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  // draw only the lower two thirds, squashed, so it reads as "dragging itself"
+  const cut = Math.round(src.height * 0.24);
+  const h = src.height - cut;
+  ctx.drawImage(src, 0, cut, src.width, h, 0, src.height - h, src.width, h);
+  // reaching arms
+  ctx.fillStyle = '#4c6b3a';
+  ctx.fillRect(1, src.height - h + 3, 4, 2);
+  ctx.fillRect(src.width - 5, src.height - h + 4, 4, 2);
+  ctx.fillStyle = '#3b5430';
+  ctx.fillRect(1, src.height - h + 5, 3, 1);
+  ctx.fillRect(src.width - 4, src.height - h + 6, 3, 1);
+  return canvas;
+}
+
 let cache = null;
 
 export function buildArt() {
@@ -293,6 +310,14 @@ export function buildArt() {
     zombieRunnerAtk: zombieAtk.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
     zombieBrute: zombie.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
+    // crawlers: the lower half of each walk frame, dragging
+    crawler: zombie.map(buildCrawler),
+    crawlerFlip: zombie.map((c) => buildCrawler(flipH(c))),
+    // shriekers: pale wretches with their mouths stuck open
+    shrieker: zombie.map((c) => tintCopy(c, '#b9a0d0', 0.55)),
+    shriekerFlip: zombie.map((c) => tintCopy(flipH(c), '#b9a0d0', 0.55)),
+    shriekerAtk: zombieAtk.map((c) => tintCopy(c, '#b9a0d0', 0.55)),
+    shriekerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#b9a0d0', 0.55)),
     zombieBruteFlip: zombie.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),
     zombieBruteAtk: zombieAtk.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
     zombieBruteAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),

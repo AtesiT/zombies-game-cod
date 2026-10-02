@@ -3,7 +3,7 @@ import { T, TILE, paintLevel } from './art.js';
 import {
   MAP_W, MAP_H, MAP_ROWS, PLAYER_START, SPAWN_POINTS, WALL_BUYS, GRENADE_CRATES,
   PERK_SPOTS, BOX_SPOTS, STAIRS, POWER_SWITCH, WORKBENCH, SECRET_SWITCHES,
-  SECRET_DOOR, SECRET_LOOT, DOOR_PRICES,
+  SECRET_DOOR, SECRET_LOOT, DOOR_PRICES, PAP_SPOT,
 } from './mapData.js';
 import { MinHeap } from './util.js';
 
@@ -152,6 +152,7 @@ export class GameMap {
     this.boxSpots = BOX_SPOTS.map((b) => ({ x: (b.x + 0.5) * T, y: (b.y + 0.5) * T, tx: b.x, ty: b.y }));
     this.powerSwitch = { x: (POWER_SWITCH.x + 0.5) * T, y: (POWER_SWITCH.y + 0.5) * T };
     this.workbench = { x: (WORKBENCH.x + 0.5) * T, y: (WORKBENCH.y + 0.5) * T };
+    this.papSpot = { x: (PAP_SPOT.x + 0.5) * T, y: (PAP_SPOT.y + 0.5) * T };
     this.secretSwitches = SECRET_SWITCHES.map((s, i) => ({
       id: i, x: (s.x + 0.5) * T, y: (s.y + 0.5) * T, found: false,
     }));

@@ -163,3 +163,59 @@ export function rollBox(rng = Math.random) {
 }
 
 export function weapon(id) { return WEAPONS[id]; }
+
+// ---------------------------------------------------------------------------
+//  Pack-a-Punch
+// ---------------------------------------------------------------------------
+export const PAP_PRICE = 5000;
+
+export const PAP_NAMES = {
+  m1911: 'Mustang & Sally',
+  mp40: 'Afterburner',
+  thompson: 'Gibs-O-Matic',
+  trenchgun: 'Gut Shot',
+  ppsh: 'The Reaper',
+  kar98k: 'Headcutter',
+  fg42: 'Payload',
+  bar: 'Barracudda',
+  mg42: 'Belt-Fed Fury',
+  ptrs41: 'The Penetrator',
+  raygun: "Porter's X2 Ray Gun",
+  wunderwaffe: 'Wunderwaffe DG-3 JZ',
+  thundergun: 'Zeus Cannon',
+  winterhowl: "Winter's Fury",
+  monkeybomb: 'Quantum Entangler',
+};
+
+const PACKED = {};
+for (const w of Object.values(WEAPONS)) {
+  const p = {
+    ...w,
+    packed: true,
+    name: PAP_NAMES[w.id] ?? `${w.name} (Punched)`,
+    dmg: Math.round(w.dmg * 2.2),
+    mag: Math.max(1, Math.round(w.mag * 1.5)),
+    maxReserve: Math.round(w.maxReserve * 2),
+    pierce: (w.pierce ?? 0) + 1,
+    reload: Math.round(w.reload * 0.9 * 100) / 100,
+    spread: Math.round(w.spread * 0.8 * 1e5) / 1e5,
+    range: Math.round(w.range * 1.15),
+    tracer: '#8fe05a',
+    tint: '#7fd75a',
+    kick: Math.round(w.kick * 1.15 * 10) / 10,
+    flash: w.flash * 1.3,
+  };
+  if (w.splashDmg) p.splashDmg = Math.round(w.splashDmg * 2);
+  if (w.splashR) p.splashR = Math.round(w.splashR * 1.3);
+  if (w.shockDmg) p.shockDmg = Math.round(w.shockDmg * 2);
+  if (w.freezeTime) p.freezeTime = w.freezeTime * 1.5;
+  if (w.boomDmg) p.boomDmg = Math.round(w.boomDmg * 2);
+  if (w.boomR) p.boomR = Math.round(w.boomR * 1.35);
+  if (w.chainCount) p.chainCount = w.chainCount + 2;
+  PACKED[w.id] = p;
+}
+
+/** Weapon stats for `id`, upgraded if it has been through the machine. */
+export function defFor(id, packed = false) {
+  return packed ? (PACKED[id] ?? WEAPONS[id]) : WEAPONS[id];
+}

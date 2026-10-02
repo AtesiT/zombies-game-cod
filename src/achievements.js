@@ -33,6 +33,9 @@ export const ACHIEVEMENTS = [
   { id: 'walking_armoury', name: 'Walking Armoury', desc: 'Carry six weapons at once.', icon: '6' },
   { id: 'frostbite', name: 'Frostbite', desc: 'Freeze ten zombies at once.', icon: 'F' },
   { id: 'untouchable', name: 'Untouchable', desc: 'Clear a whole round without a scratch.', icon: 'U' },
+  { id: 'packed', name: 'Punched', desc: 'Run a weapon through the Pack-a-Punch.', icon: 'P' },
+  { id: 'trap_master', name: 'Home Alone', desc: 'Kill 15 zombies with traps in one run.', icon: 'T' },
+  { id: 'daily_dogged', name: 'Daily Grind', desc: 'Finish a daily challenge run.', icon: 'D' },
 ];
 
 const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));

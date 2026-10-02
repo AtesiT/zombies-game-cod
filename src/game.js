@@ -4,12 +4,13 @@ import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES,
 } from './entities.js';
-import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor } from './weapons.js';
 import { PERKS } from './perks.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
 import { Workbench, RECIPES, RECIPE_ORDER } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
+import { Traps, TRAP_PRICE } from './traps.js';
 import { Lighting, drawVignette } from './lighting.js';
 import { HUD, drawTitle, drawPause, drawGameOver } from './hud.js';
 import { audio } from './audio.js';
@@ -96,6 +97,8 @@ export class Game {
     this.powerups = [];
     this.webBlasts = [];
     this.arcs = [];
+    this.shriekRings = [];
+    this.traps = new Traps();
     this.particles = new Particles();
     this.popups = new Popups();
     this.tracers = [];
@@ -160,6 +163,9 @@ export class Game {
 
   // ------------------------------------------------------------------ utils
   screenToWorld(sx, sy) { return { x: sx + this.cam.x, y: sy + this.cam.y }; }
+
+  /** Stats for a weapon, upgraded if the player has punched it. */
+  packedDef(id) { return defFor(id, this.player.packed.has(id)); }
   worldToScreen(wx, wy) { return { x: wx - this.cam.x, y: wy - this.cam.y }; }
 
   shake(mag, dur) {
@@ -213,9 +219,11 @@ export class Game {
     const r = this.round;
     const runnerChance = Math.min(0.34, Math.max(0, (r - 5) * 0.035));
     const bruteChance = Math.min(0.18, Math.max(0, (r - 9) * 0.020));
+    const shriekChance = Math.min(0.10, Math.max(0, (r - 11) * 0.014));
     const x = Math.random();
-    if (x < bruteChance) return 'brute';
-    if (x < bruteChance + runnerChance) return 'runner';
+    if (x < shriekChance) return 'shrieker';
+    if (x < shriekChance + bruteChance) return 'brute';
+    if (x < shriekChance + bruteChance + runnerChance) return 'runner';
     return 'walker';
   }
 
@@ -324,6 +332,19 @@ export class Game {
     if (this.stats.headshots >= 100) this.achievements.unlock('headhunter');
     if (this.player.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
     if (source === 'monkey') this._monkeyKills = (this._monkeyKills ?? 0) + 1;
+    if (source === 'trap') this.traps.kills++;
+  }
+
+  /**
+   * A blast sometimes takes the legs instead of the head: the zombie drops to
+   * its elbows and keeps coming. Slow, but a much smaller target.
+   */
+  tryCrawl(z, chance = 0.26) {
+    if (z.type === 'crawler' || z.type === 'dog' || z.dead) return false;
+    if (this.round < 3) return false;
+    if (Math.random() >= chance) return false;
+    z.becomeCrawler(this);
+    return true;
   }
 
   dropPowerup(x, y) {
@@ -452,8 +473,9 @@ export class Game {
       }
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
       let head = false;
-      const headR = 3.9 + (magnet > 0 ? 1.6 : 0);
-      const bodyR = 7.2 + (z.def.smash ? 3.4 : 0);
+      const low = z.def.low ? 0.72 : 1;
+      const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low;
+      const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1);
       if (res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         if (res.d2 > bodyR * bodyR) continue;
@@ -510,6 +532,7 @@ export class Game {
         if (z.dead) continue;
         const d = dist(x, y, z.pos.x, z.pos.y);
         if (d > def.splashR) continue;
+        if (this.tryCrawl(z, 0.18)) continue;
         const res = z.hurt(def.splashDmg * insta * (1 - d / def.splashR * 0.4), false, this,
           Math.atan2(z.pos.y - y, z.pos.x - x));
         if (res === 2) this.onZombieKilled(z, false);
@@ -627,6 +650,25 @@ export class Game {
     const dwb = dist(p.pos.x, p.pos.y, this.workbench.x, this.workbench.y);
     if (dwb < 40) offer({ type: 'workbench', d: dwb, price: 0, affordable: true });
 
+    const nt = this.traps.nearest(p.pos.x, p.pos.y, 46);
+    if (nt) {
+      offer({
+        type: 'trap', i: nt.i, d: dist(p.pos.x, p.pos.y, nt.x, nt.y),
+        price: TRAP_PRICE, ready: nt.ready, affordable: this.points >= TRAP_PRICE && nt.ready,
+      });
+    }
+
+    const dpp = dist(p.pos.x, p.pos.y, this.map.papSpot.x, this.map.papSpot.y);
+    if (dpp < 44) {
+      const id = p.current;
+      const already = p.packed.has(id);
+      offer({
+        type: 'pap', d: dpp, price: PAP_PRICE, id,
+        affordable: this.powerOn && !already && this.points >= PAP_PRICE && !p.dead,
+        already,
+      });
+    }
+
     for (const sw of this.map.secretSwitches) {
       const d = dist(p.pos.x, p.pos.y, sw.x, sw.y);
       if (d < 32) offer({ type: 'switch', sw, d, price: 0, affordable: !sw.found });
@@ -737,6 +779,33 @@ export class Game {
     if (it.type === 'workbench') {
       this.craftOpen = !this.craftOpen;
       audio.reload(2);
+      return;
+    }
+
+    if (it.type === 'trap') {
+      const t = this.traps.list[it.i];
+      if (!t.ready) { audio.deny(); return; }
+      if (this.points < TRAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      this.points -= TRAP_PRICE;
+      t.arm();
+      audio.trap(t.kind.id);
+      this.shake(4, 0.3);
+      this.popups.add(p.pos.x, p.pos.y - 26, t.name.toUpperCase(), t.kind.colour, 12);
+      return;
+    }
+
+    if (it.type === 'pap') {
+      if (it.already) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'ALREADY PUNCHED', '#9a917c', 11); return; }
+      if (!this.powerOn) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POWER', '#c4463a'); return; }
+      if (this.points < PAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      const oldName = p.def.name.toUpperCase();
+      this.points -= PAP_PRICE;
+      p.packCurrent();
+      audio.packAPunch();
+      this.shake(5, 0.6);
+      this.flashLights.push({ x: this.map.papSpot.x, y: this.map.papSpot.y, r: 260, life: 0.5, max: 0.5, colour: '#7fd75a' });
+      this.bannerShow('PACK-A-PUNCH', `${oldName} -> ${p.def.name.toUpperCase()}`, { dur: 3.2, colour: '#8fe05a' });
+      this.achievements.unlock('packed');
       return;
     }
 
@@ -861,6 +930,7 @@ export class Game {
       if (z.dead) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
       if (d > r) continue;
+      if (opts.blast && this.tryCrawl(z)) continue;
       const falloff = 1 - d / r;
       const res = z.hurt(dmg * falloff, false, this, Math.atan2(z.pos.y - y, z.pos.x - x));
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
@@ -942,14 +1012,11 @@ export class Game {
         this.craftOpen = false;
       }
     } else {
-      const digits = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0'];
-      for (let i = 0; i < digits.length; i++) {
-        if (this.input.wasPressed(digits[i])) {
-          const list = this.player.ownedWeapons();
-          const id = list[i];
-          if (id) this.player.switchTo(id);
-        }
-      }
+      // 1 / 2 pick a carried slot, Q flips between them; the wheel and the
+      // square brackets dig through the whole armoury (that takes a moment)
+      if (this.input.wasPressed('Digit1')) this.player.setSlot(0);
+      if (this.input.wasPressed('Digit2')) this.player.setSlot(1);
+      if (this.input.wasPressed('KeyQ')) this.player.swapActive();
       if (this.input.wasPressed('BracketLeft')) this.player.cycle(-1);
       if (this.input.wasPressed('BracketRight')) this.player.cycle(1);
       if (this.input.wheel) this.player.cycle(this.input.wheel > 0 ? 1 : -1);
@@ -1046,9 +1113,11 @@ export class Game {
         if (this.timers[k] === 0 && k === 'deathmachine') this.player.dmTimer = 0;
       }
     }
+    this.traps.update(dt, this);
     this.box.update(dt);
     this.egg.update(dt, this);
     this.achievements.update(dt);
+    if (this.traps.kills >= 15) this.achievements.unlock('trap_master');
     if (this.powerSurge > 0) this.powerSurge = Math.max(0, this.powerSurge - dt);
     if (this.teleportFx > 0) this.teleportFx = Math.max(0, this.teleportFx - dt * 2);
 
@@ -1060,6 +1129,12 @@ export class Game {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       this.arcs[i].life -= dt;
       if (this.arcs[i].life <= 0) this.arcs.splice(i, 1);
+    }
+    for (let i = this.shriekRings.length - 1; i >= 0; i--) {
+      const r = this.shriekRings[i];
+      r.life -= dt;
+      r.r = r.max * (1 - r.life / r.maxLife);
+      if (r.life <= 0) this.shriekRings.splice(i, 1);
     }
 
     // ---- weather -----------------------------------------------------------
@@ -1187,19 +1262,21 @@ export class Game {
     this.drawBarricades(ctx);
     this.drawDoors(ctx);
     this.drawSecretDoor(ctx);
+    this.traps.draw(ctx, this.time);
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
     this.drawMysteryBox(ctx);
     this.drawPowerSwitch(ctx);
     this.drawWorkbench(ctx);
+    this.drawPackAPunch(ctx);
     this.drawSecretSwitches(ctx);
     this.drawSecretLoot(ctx);
     this.drawPowerups(ctx);
 
     // 3. actors, sorted by feet depth
     const actors = this.zombies.filter((z) => !z.remove);
-    const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art) }));
+    const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
     list.push({ y: this.player.pos.y + 0.5, d: () => this.player.draw(ctx, this.art) });
     list.sort((a, b) => a.y - b.y);
     for (const l of list) l.d();
@@ -1280,6 +1357,24 @@ export class Game {
       }
       ctx.lineTo(a.x1, a.y1);
       ctx.stroke();
+      ctx.restore();
+    }
+    for (const r of this.shriekRings) {
+      const k = r.life / r.maxLife;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      // a soft body so the wave reads at a glance, plus a bright leading edge
+      const grd = ctx.createRadialGradient(r.x, r.y, Math.max(0, r.r - 26), r.x, r.y, r.r);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(1, `rgba(208,160,232,${(k * 0.16).toFixed(3)})`);
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.fill();
+      ctx.globalAlpha = k * 0.75;
+      ctx.strokeStyle = r.colour;
+      ctx.lineWidth = 2 + k * 3;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = k * 0.3;
+      ctx.beginPath(); ctx.arc(r.x, r.y, Math.max(0, r.r - 14), 0, TAU); ctx.stroke();
       ctx.restore();
     }
     for (const w of this.webBlasts) {
@@ -1365,11 +1460,26 @@ export class Game {
       const bs = this.box.spot;
       L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
         'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
+      // Pack-a-Punch drum
+      {
+        const pp = this.map.papSpot;
+        const pulse = 0.8 + Math.sin(this.time * 2.2) * 0.2;
+        L.point(sx(pp.x), sy(pp.y - 4), 130 * pulse, 0.85, 'rgba(130,235,110,0.30)', 0.55);
+      }
       // the vault
       if (this.map.secretDoorOpen) {
         L.point(sx(this.map.secretLoot[0]?.x ?? 0), sy(this.map.secretLoot[0]?.y ?? 0), 120, 0.7,
           'rgba(240,220,150,0.28)', 0.4);
       }
+    }
+
+    // armed traps light their own corner of the map
+    for (const t of this.traps.list) {
+      if (!t.running) continue;
+      const c = t.centre();
+      const k = 0.7 + Math.sin(this.time * 11) * 0.3;
+      L.point(sx(c.x), sy(c.y), Math.max(t.zw, t.zh) * 1.5, 0.7 * k,
+        hexA(t.kind.colour, 0.34), 0.6 * k);
     }
 
     // player torch + personal bubble
@@ -1689,6 +1799,79 @@ export class Game {
     ctx.fillStyle = '#f0d98a';
     ctx.fillText('WORKBENCH  [E]', this.workbench.x, this.workbench.y + 21);
     ctx.restore();
+  }
+
+  drawPackAPunch(ctx) {
+    const { x, y } = this.map.papSpot;
+    const t = this.time;
+    const lit = this.powerOn;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(x, y + 16, 15, 5, 0, 0, TAU); ctx.fill();
+
+    // cabinet: a squat green machine with a glowing drum
+    ctx.fillStyle = lit ? '#2c3a2a' : '#22261f';
+    ctx.fillRect(x - 14, y - 20, 28, 36);
+    ctx.fillStyle = lit ? '#3b4d36' : '#2b2f27';
+    ctx.fillRect(x - 14, y - 20, 28, 5);
+    ctx.fillStyle = '#171a14';
+    ctx.fillRect(x - 14, y + 12, 28, 4);
+    ctx.strokeStyle = '#12150f';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 14.5, y - 20.5, 29, 37);
+
+    // the drum: light pours out of it and it slowly turns
+    ctx.fillStyle = '#0c0f0a';
+    ctx.beginPath(); ctx.arc(x, y - 4, 9, 0, TAU); ctx.fill();
+    if (lit) {
+      const pulse = 0.65 + Math.sin(t * 2.2) * 0.25;
+      const g = ctx.createRadialGradient(x, y - 4, 0, x, y - 4, 9);
+      g.addColorStop(0, `rgba(150,240,110,${0.95 * pulse})`);
+      g.addColorStop(0.6, `rgba(90,200,80,${0.5 * pulse})`);
+      g.addColorStop(1, 'rgba(40,120,50,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y - 4, 9, 0, TAU); ctx.fill();
+      // spinning vanes
+      ctx.save();
+      ctx.translate(x, y - 4);
+      ctx.rotate(t * 1.4);
+      ctx.strokeStyle = `rgba(210,255,180,${0.5 * pulse})`;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 2, Math.sin(a) * 2);
+        ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    // hopper slot + crank
+    ctx.fillStyle = '#15180f';
+    ctx.fillRect(x - 8, y + 4, 16, 5);
+    ctx.fillStyle = lit ? '#8fbf6a' : '#4a4f42';
+    ctx.fillRect(x + 9, y - 12, 3, 9);
+    ctx.fillRect(x + 6, y - 13, 9, 3);
+
+    // label
+    ctx.font = 'bold 7px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = lit ? '#8fe05a' : '#5a5f52';
+    ctx.fillText('PACK-A-PUNCH', x, y - 24);
+    ctx.restore();
+
+    if (dist(this.player.pos.x, this.player.pos.y, x, y) < 100) {
+      ctx.save();
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      const ok = this.powerOn && !this.player.packed.has(this.player.current)
+        && this.points >= PAP_PRICE;
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      ctx.fillText(`${PAP_PRICE}`, x + 1, y + 25);
+      ctx.fillStyle = ok ? '#8fe05a' : '#6f6a5c';
+      ctx.fillText(`${PAP_PRICE}`, x, y + 24);
+      ctx.restore();
+    }
   }
 
   drawSecretSwitches(ctx) {

@@ -10,6 +10,7 @@ export class AudioEngine {
     this.muted = false;
     this.ready = false;
     this._lastGrowl = 0;
+    this._lastShriek = -9;
   }
 
   init() {
@@ -528,6 +529,115 @@ export class AudioEngine {
   }
 
   /** Easter egg: static, then a distant melody. */
+  /** The Shrieker: a ragged human scream that rises and breaks. */
+  shriek(vol = 1) {
+    if (!this.ready || this.muted) return;
+    if (this.t - this._lastShriek < 0.5) return;
+    this._lastShriek = this.t;
+    const t = this.t;
+    const base = 300 + Math.random() * 90;
+    const dur = 0.95;
+
+    // voice: a sawtooth glissando with a wobbling formant on top
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(base * 0.7, t);
+    o.frequency.exponentialRampToValueAtTime(base * 1.6, t + 0.28);
+    o.frequency.exponentialRampToValueAtTime(base * 1.35, t + 0.6);
+    o.frequency.exponentialRampToValueAtTime(base * 0.55, t + dur);
+
+    const f1 = this.ctx.createBiquadFilter();
+    f1.type = 'bandpass'; f1.frequency.value = 1150; f1.Q.value = 5;
+    const f2 = this.ctx.createBiquadFilter();
+    f2.type = 'peaking'; f2.frequency.value = 2400; f2.Q.value = 3; f2.gain.value = 9;
+    o.connect(f1).connect(f2);
+    const g = this._env(f2, t, 0.22 * vol, 0.06, dur);
+    g.connect(this.master);
+    o.start(t); o.stop(t + dur + 0.1);
+
+    // ragged breath tearing out of it
+    const n = this._noiseSrc();
+    const nf = this.ctx.createBiquadFilter();
+    nf.type = 'bandpass';
+    nf.frequency.setValueAtTime(1800, t);
+    nf.frequency.exponentialRampToValueAtTime(700, t + dur);
+    nf.Q.value = 1.6;
+    n.connect(nf);
+    const ng = this._env(nf, t, 0.10 * vol, 0.12, dur * 0.95);
+    ng.connect(this.master);
+    n.start(t); n.stop(t + dur + 0.1);
+  }
+
+  /** Level traps arming: flame, electric or steam. */
+  trap(kind = 'flame') {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    if (kind === 'flame') {
+      const n = this._noiseSrc(1.6, 0.4);
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(320, t);
+      f.frequency.exponentialRampToValueAtTime(1500, t + 0.18);
+      f.frequency.exponentialRampToValueAtTime(220, t + 1.1);
+      f.Q.value = 0.9;
+      n.connect(f);
+      const g = this._env(f, t, 0.5, 0.05, 1.2);
+      g.connect(this.master);
+      n.start(t); n.stop(t + 1.3);
+      this._tone('sine', 90, 45, t, 0.5, 0.2);
+    } else if (kind === 'electric') {
+      for (let i = 0; i < 9; i++) {
+        const tt = t + i * 0.055;
+        this._tone('square', 1500 + Math.random() * 2200, 500, tt, 0.045, 0.11);
+      }
+      const n = this._noiseSrc();
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass'; hp.frequency.value = 2400;
+      n.connect(hp);
+      const g = this._env(hp, t, 0.22, 0.01, 0.85);
+      g.connect(this.master);
+      n.start(t); n.stop(t + 0.95);
+      this._tone('sine', 60, 40, t, 0.6, 0.22);
+    } else {
+      const n = this._noiseSrc(1.2, 0.9);
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'highpass';
+      f.frequency.setValueAtTime(900, t);
+      f.frequency.linearRampToValueAtTime(3200, t + 0.5);
+      f.Q.value = 0.7;
+      n.connect(f);
+      const g = this._env(f, t, 0.34, 0.09, 1.3);
+      g.connect(this.master);
+      n.start(t); n.stop(t + 1.4);
+      this._tone('sine', 130, 260, t, 0.7, 0.10);
+    }
+  }
+
+  /** Pack-a-Punch: the machine swallows the gun and spits it back upgraded. */
+  packAPunch() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    // motor winding up
+    this._tone('sawtooth', 70, 190, t, 1.0, 0.14);
+    this._tone('square', 140, 380, t + 0.05, 0.9, 0.07);
+    const n = this._noiseSrc(0.8, 0.6);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(600, t);
+    bp.frequency.exponentialRampToValueAtTime(2200, t + 0.9);
+    bp.Q.value = 3;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.2, 0.25, 1.0);
+    g.connect(this.master);
+    n.start(t); n.stop(t + 1.1);
+    // clunk, then the upgraded chime
+    this._tone('square', 200, 90, t + 1.0, 0.12, 0.2);
+    this._tone('triangle', 523, 523, t + 1.22, 0.20, 0.16);
+    this._tone('triangle', 659, 659, t + 1.34, 0.20, 0.15);
+    this._tone('triangle', 784, 784, t + 1.46, 0.24, 0.14);
+    this._tone('triangle', 1046, 1046, t + 1.58, 0.55, 0.12);
+  }
+
   radioStart() {
     if (!this.ready || this.muted) return;
     const t = this.t;

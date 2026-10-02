@@ -223,6 +223,8 @@ BOX_SPOTS = [(30, 4), (6, 20), (57, 29), (9, 38), (40, 43)]
 
 POWER_SWITCH = (7, 35)
 WORKBENCH = (58, 16)
+# Pack-a-Punch lives in the radio room, up the stairs from room B
+PAP_SPOT = (53, 7)
 SECRET_SWITCHES = [(14, 10), (43, 28), (66, 41), (52, 4)]
 SECRET_DOOR = (63, 20)
 SECRET_LOOT = [(66, 19), (68, 21)]     # where the goodies appear
@@ -261,7 +263,7 @@ for (x, y) in SPAWN_POINTS:
 checks = (
     [(x, y) for x, y, *_ in WALL_BUYS] +
     GRENADE_CRATES + [(x, y) for _, x, y in PERKS] + BOX_SPOTS +
-    [POWER_SWITCH, WORKBENCH] + SECRET_SWITCHES +
+    [POWER_SWITCH, WORKBENCH, PAP_SPOT] + SECRET_SWITCHES +
     [s['a'] for s in STAIRS] + [s['b'] for s in STAIRS]
 )
 for (x, y) in checks:
@@ -350,6 +352,7 @@ export const STAIRS = [
 
 export const POWER_SWITCH = {{ x: {POWER_SWITCH[0]}, y: {POWER_SWITCH[1]} }};
 export const WORKBENCH = {{ x: {WORKBENCH[0]}, y: {WORKBENCH[1]} }};
+export const PAP_SPOT = {{ x: {PAP_SPOT[0]}, y: {PAP_SPOT[1]} }};
 
 export const SECRET_SWITCHES = [
 {pts(SECRET_SWITCHES)}

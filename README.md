@@ -33,11 +33,14 @@ ES modules — opening `index.html` from `file://` will not work.)
 | Mouse | Aim |
 | Left click | Fire (hold for automatic weapons) |
 | `R` | Reload |
-| `1`–`0` / wheel / `[` `]` | Swap weapon (slots follow your owned list) |
+| `1` / `2` | Pick a carried weapon slot |
+| `Q` | Flip between your two carried guns (0.35 s) |
+| wheel / `[` `]` | Dig through the whole armoury (0.9 s swap) |
+| `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
 | `V` | Knife — short range, big points, never runs out |
 | `G` | Throw a frag grenade |
 | `H` | Use a medkit |
-| `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · **hold** to rebuild a barricade |
+| `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
 | `M` | Mute · `P` / `Esc` pause · `R` restart after death |
 
 ## The map (72 × 50 tiles)
@@ -46,7 +49,7 @@ One big level instead of a second map:
 
 - **Bunker** — four rooms (A/B up, C/D down) split by a central cross-wall, 20 barricaded
   windows, six buyable doors including two that let you **walk outside**.
-- **Radio room** (north-east) — reached by a stairwell from room B.
+- **Radio room** (north-east) — reached by a stairwell from room B. Holds the **Pack-a-Punch**.
 - **Shed** (east) — holds the **workbench**.
 - **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.
 - **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
@@ -83,8 +86,36 @@ M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 Plank Bundle (two planks on every window at once), Frag Bundle, Ammo Crate (refills everything),
 Armour Plate (+60 absorb), Barricade Spikes (windows bite back for three rounds).
 
+**Pack-a-Punch.** 5000 points, needs the generator on, one upgrade per weapon per run. It more
+than doubles the damage (×2.2), gives +50 % magazine, double the reserve ammo, an extra point of
+penetration, a tighter spread and green tracers — and renames the gun the way CoD always has:
+M1911 → *Mustang & Sally*, MP40 → *Afterburner*, Ray Gun → *Porter's X2 Ray Gun*. Held weapons
+carry the upgrade, so both of your slots keep their own state.
+
+**Two carried slots.** You carry two guns, not a backpack full of fifteen. `1` / `2` pick one,
+`Q` flips between them in a third of a second. The wheel and `[` / `]` still reach everything you
+own, but digging through the armoury costs a slow 0.9 s swap — so the choice of what you carry
+actually matters.
+
+**Traps.** 500 points arms one for 8 seconds, then it recharges for 22–26.
+*Flame Trap* on the ledge under room C's south windows (115 dps + afterburn), *Electric Barrier*
+under room A's north windows (80 dps, shocks them rigid) and a *Steam Vent* at the mouth of the
+room B → D doorway (75 dps, scalds, slows and shoves them back out through the door). Only ever
+hurts zombies — and 15 trap kills in one run is an achievement.
+
 **Enemies.** Walkers, **Runners** (fast, frail, from round 6), **Brutes** (2.7× HP, smashes three
-planks at a time, from round 10) and **Hellhounds**. Every fifth round is a dog round.
+planks at a time, from round 10), **Crawlers** and **Shriekers** and **Hellhounds**. Every fifth
+round is a dog round.
+
+A blast does not always take the head — sometimes it takes the legs. Grenades, monkey bombs and
+Ray Gun splashes will drop a zombie onto its elbows instead: a **Crawler** keeps coming at 70 %
+speed with a third of its health and a much smaller silhouette, so it is easy to miss and annoying
+to leave alive. Worth more points for the trouble.
+
+From round 12 the horde starts including **Shriekers**: pale wretches that hang back at their own
+preferred distance and scream. The scream rings out in a visible purple wave and *rallies*
+everything in earshot — +35 % speed and +25 % damage for five seconds. They never close on you,
+which is exactly the problem: leave them alone and the whole horde stays angry.
 
 **Power-ups.** Max Ammo · Insta-Kill · Double Points · Nuke · Carpenter · Fire Sale ·
 Death Machine. Dropped roughly every 22–34 kills.
@@ -164,6 +195,7 @@ everything is reachable from the player start) and rewrites `src/mapData.js`.
 
 ## Roadmap
 
-See [`docs/IDEAS.md`](docs/IDEAS.md) — it tracks what is already in (items 1–7) and carries a
-fresh list of proposals: Pack-a-Punch, crawlers and helmet zombies, breakable crates, traps, a
-roof, daily challenges, gamepad support and proper smoke tests.
+See [`docs/IDEAS.md`](docs/IDEAS.md) — it tracks what is already in (items 1–7 plus the
+Pack-a-Punch / two-slot / trap / Crawler / Shrieker batch) and carries a fresh list of proposals:
+streak counters, helmet and napalm zombies, breakable crates, a roof, daily challenges, gamepad
+support and proper smoke tests.

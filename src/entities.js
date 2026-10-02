@@ -1,6 +1,6 @@
 // Player, zombies, projectiles and the particle system.
 import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art.js';
-import { WEAPONS, WEAPON_ORDER, isAuto, shotSound } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
@@ -247,7 +247,15 @@ export class Player {
     }
     const w0 = WEAPONS.m1911;
     this.loadout.m1911 = { id: 'm1911', mag: w0.mag, reserve: w0.maxReserve, owned: true };
-    this.current = 'm1911';
+
+    // Two carried guns (slot 0 / slot 1). Everything you own stays in the
+    // armoury and can be pulled into the active slot with the wheel, but only
+    // the two you carry swap instantly.
+    this.slots = ['m1911', null];
+    this.active = 0;
+    this.packed = new Set();     // weapons that have been through the machine
+    this.swapTimer = 0;
+    this.swapTotal = 0;
     this.fireTimer = 0;
     this.reloadTimer = 0;
     this.reloading = false;
@@ -291,19 +299,62 @@ export class Player {
     return true;
   }
 
-  get def() { return WEAPONS[this.current]; }
+  /** Id of the gun currently in your hands. */
+  get current() { return this.slots[this.active] ?? 'm1911'; }
+  get def() { return defFor(this.current, this.packed.has(this.current)); }
   get slot() { return this.loadout[this.current]; }
+  get isPacked() { return this.packed.has(this.current); }
+  /** Mid-swap: you cannot fire or reload while your hands are full. */
+  get busy() { return this.swapTimer > 0; }
 
   ownedWeapons() { return WEAPON_ORDER.filter((id) => this.loadout[id].owned); }
 
-  switchTo(id) {
-    if (!this.loadout[id] || !this.loadout[id].owned || id === this.current) return false;
-    this.current = id;
+  /** Keep the two slots in WEAPON_ORDER so slot 1 is always your "best" gun. */
+  tidySlots() {
+    const order = new Map(WEAPON_ORDER.map((id, i) => [id, i]));
+    this.slots.sort((a, b) => (a ? order.get(a) : 99) - (b ? order.get(b) : 99));
+  }
+
+  /** Pull a weapon out of the armoury into the active slot (takes a moment). */
+  equip(id, instant = false) {
+    if (!this.loadout[id] || !this.loadout[id].owned) return false;
+    if (this.slots[this.active] === id) return false;
+    this.slots[this.active] = id;
     this.reloading = false;
     this.reloadTimer = 0;
-    this.fireTimer = Math.max(this.fireTimer, 0.25);
+    this.swapTimer = instant ? 0 : 0.9;
+    this.swapTotal = this.swapTimer;
+    this.fireTimer = Math.max(this.fireTimer, this.swapTimer);
     audio.reload(2);
     return true;
+  }
+
+  /** Instant A/B swap between the two guns you carry. */
+  swapActive() {
+    const other = this.active === 0 ? 1 : 0;
+    if (!this.slots[other]) return false;
+    this.active = other;
+    this.reloading = false;
+    this.reloadTimer = 0;
+    this.swapTimer = 0.35;
+    this.swapTotal = 0.35;
+    this.fireTimer = Math.max(this.fireTimer, 0.35);
+    audio.reload(2);
+    return true;
+  }
+
+  /** Press 1 or 2: pressing the other slot's number swaps to it. */
+  setSlot(i) {
+    if (i === this.active) return false;
+    return this.swapActive();
+  }
+
+  /** Fill an empty slot first, otherwise replace the active one. */
+  autoSlot(id) {
+    if (this.slots[0] === id || this.slots[1] === id) return;
+    if (!this.slots[0]) { this.active = 0; this.equip(id, true); return; }
+    if (!this.slots[1]) { this.active = 1; this.equip(id, true); return; }
+    this.equip(id, false);
   }
 
   cycle(dir) {
@@ -311,13 +362,29 @@ export class Player {
     if (list.length < 2) return;
     let i = list.indexOf(this.current);
     i = (i + dir + list.length) % list.length;
-    this.switchTo(list[i]);
+    this.equip(list[i]);
+  }
+
+  /** Run the current gun through the Pack-a-Punch machine. */
+  packCurrent() {
+    const id = this.current;
+    if (this.packed.has(id)) return false;
+    this.packed.add(id);
+    const d = this.def;
+    this.slot.mag = d.mag;
+    this.slot.reserve = d.maxReserve;
+    this.reloading = false;
+    this.reloadTimer = 0;
+    this.swapTimer = 1.1;
+    this.swapTotal = 1.1;
+    this.fireTimer = Math.max(this.fireTimer, 1.1);
+    return true;
   }
 
   startReload() {
     const s = this.slot, d = this.def;
     if (this.reloading || s.mag >= d.mag || s.reserve <= 0) return;
-    if (this.dmTimer > 0) return;
+    if (this.dmTimer > 0 || this.swapTimer > 0) return;
     this.reloading = true;
     this.reloadTimer = d.reload * this.perkFx.reloadMul;
     this.reloadStage = 0;
@@ -347,8 +414,9 @@ export class Player {
     for (const id of WEAPON_ORDER) {
       const s = this.loadout[id];
       if (!s.owned) continue;
-      s.reserve = WEAPONS[id].maxReserve;
-      s.mag = WEAPONS[id].mag;
+      const d = defFor(id, this.packed.has(id));
+      s.reserve = d.maxReserve;
+      s.mag = d.mag;
     }
     this.reloading = false;
     this.reloadTimer = 0;
@@ -370,7 +438,7 @@ export class Player {
     s.owned = true;
     s.mag = d.mag;
     s.reserve = d.maxReserve;
-    this.switchTo(id);
+    this.autoSlot(id);
     return 'weapon';
   }
 
@@ -415,6 +483,7 @@ export class Player {
     this.recoil = approach(this.recoil, 0, dt * 26);
     this.knifeCd = Math.max(0, this.knifeCd - dt);
     this.knifeAnim = Math.max(0, this.knifeAnim - dt);
+    this.swapTimer = Math.max(0, this.swapTimer - dt);
     for (const h of this.hitDirs) h.age += dt;
     this.hitDirs = this.hitDirs.filter((h) => h.age < 1.6);
 
@@ -484,13 +553,13 @@ export class Player {
       const stage = k > 0.75 ? 2 : k > 0.35 ? 1 : 0;
       if (stage !== this.reloadStage) { this.reloadStage = stage; audio.reload(stage); }
       if (this.reloadTimer <= 0) this.finishReload();
-    } else if (input.wasPressed('KeyR')) {
+    } else if (input.wasPressed('KeyR') && this.swapTimer <= 0) {
       this.startReload();
     }
 
     // -------------------------------------------------------------- fire ---
     const wantFire = isAuto(d) ? input.mouse.down : input.mouse.pressed;
-    if (wantFire && !this.reloading && !game.paused) {
+    if (wantFire && !this.reloading && !game.paused && this.swapTimer <= 0) {
       if (this.slot.mag > 0) {
         if (this.fireTimer <= 0) this.fire(game);
       } else if (input.mouse.pressed || (isAuto(d) && this.fireTimer <= 0)) {
@@ -687,6 +756,14 @@ export const ENEMY_TYPES = {
     id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 6.0, scale: 1,
     chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45, sprinty: true, four: true,
   },
+  crawler: {
+    id: 'crawler', name: 'Crawler', hp: 0.28, speed: 0.46, dmg: 0.85, r: 5.5, scale: 1,
+    chew: 0.35, points: 1.45, set: 'crawler', headOff: 0.35, low: true,
+  },
+  shrieker: {
+    id: 'shrieker', name: 'Shrieker', hp: 0.95, speed: 1.15, dmg: 0.55, r: 6.5, scale: 1.04,
+    chew: 0.5, points: 1.7, set: 'shrieker', headOff: 1, ranged: true,
+  },
 };
 
 export class Zombie {
@@ -705,8 +782,14 @@ export class Zombie {
     this.dmg = (opts.dmg ?? 34) * d.dmg;
     this.chewMul = d.chew;
     this.pointsMul = d.points;
-    this.frozen = 0;        // Winter's Howl
-    this.webbed = 0;        // Widow's Wine
+    this.shriekCd = d.ranged ? randRange(2.5, 5) : 0;
+    this.standoff = d.ranged ? randRange(140, 215) : 0;
+    this.rally = 0;        // haste from a nearby Shrieker
+    this.dmgMul = 1;
+    this.frozen = 0;        // Winter's Howl / electric traps
+    this.webbed = 0;        // Widow's Wine / steam traps
+    this.burning = 0;       // flame trap afterburn
+    this.burnDmg = 0;
     this._jamT = 0;         // "am I actually going anywhere?" sampler
     this._jamX = x; this._jamY = y;
     this.portalCd = 0;
@@ -777,8 +860,23 @@ export class Zombie {
     this.blockCd = Math.max(0, this.blockCd - dt);
     this.lunge = Math.max(0, this.lunge - dt * 3);
     this.portalCd = Math.max(0, this.portalCd - dt);
+    this.rally = Math.max(0, (this.rally ?? 0) - dt);
     this.frozen = Math.max(0, this.frozen - dt);
     this.webbed = Math.max(0, this.webbed - dt);
+    if (this.burning > 0) {
+      this.burning = Math.max(0, this.burning - dt);
+      this._burnTick = (this._burnTick ?? 0) + dt;
+      if (Math.random() < dt * 9) {
+        game.particles.spark(this.pos.x + randRange(-5, 5), this.pos.y + randRange(-8, 2),
+          -Math.PI / 2, 1, '#f07a2a');
+      }
+      if (this._burnTick >= 0.4) {
+        this._burnTick = 0;
+        if (this.hurt(this.burnDmg, false, game, randRange(0, TAU)) === 2) {
+          game.onZombieKilled(this, false, null, 'trap');
+        }
+      }
+    }
     if (this.frozen > 0.05) {
       // frozen solid: no movement, no attacks, just frost
       this.vel.x *= 0.82; this.vel.y *= 0.82;
@@ -811,13 +909,23 @@ export class Zombie {
       if (this.attackCd <= 0) {
         this.attackCd = 1.05;
         this.lunge = 1;
-        if (p.hurt(this.dmg, this.pos.x, this.pos.y, game)) {
+        if (p.hurt(this.dmg * (this.dmgMul ?? 1), this.pos.x, this.pos.y, game)) {
           game.particles.blood(p.pos.x, p.pos.y, Math.atan2(p.pos.y - this.pos.y, p.pos.x - this.pos.x), 6, 0.8);
         }
       }
     } else if (this.state === ZSTATE.ATTACK && pd >= 24) {
       this.state = ZSTATE.HUNT;
       this.attackCd = Math.max(this.attackCd, 0.35);
+    }
+
+    // ------------------------------------------------- shrieker behaviour --
+    // It hangs back out of reach and screams, hasting everything nearby.
+    if (this.def.ranged) {
+      this.shriekCd -= dt;
+      if (this.shriekCd <= 0 && pd < 520) {
+        this.shriekCd = randRange(8, 12.5);
+        this.shriek(game);
+      }
     }
 
     // ------------------------------------------------------- navigation ---
@@ -870,7 +978,15 @@ export class Zombie {
       speed *= pd > 260 ? 1.55 : pd > 160 ? 1.25 : 1;
       if (this.def.sprinty) speed *= 1.2;
     }
+    if (this.def.ranged) {
+      // hover at its own preferred screaming range, with a dead band so it
+      // does not jitter on the boundary
+      if (pd < this.standoff) speed *= 1.15;
+      else if (pd > this.standoff + 70) speed *= 1.25;
+      else speed *= 0.7;
+    }
     if (this.webbed > 0) speed *= 0.45;
+    if (this.rally > 0) { speed *= 1.35; this.dmgMul = 1.25; } else this.dmgMul = 1;
 
     // --------------------------------------------------- stairwell portal --
     if (step && step.portal >= 0 && this.portalCd <= 0) {
@@ -886,6 +1002,7 @@ export class Zombie {
     }
 
     let dx = tx - this.pos.x, dy = ty - this.pos.y;
+    if (this.def.ranged && pd < this.standoff) { dx = -dx; dy = -dy; }
     const len = Math.hypot(dx, dy) || 1;
     dx /= len; dy /= len;
 
@@ -933,6 +1050,41 @@ export class Zombie {
     if (this.stuck > 7) this.despawn(game);
   }
 
+  /** A scream that hastes and hardens every zombie in earshot. */
+  shriek(game) {
+    audio.shriek();
+    game.shriekRings.push({
+      x: this.pos.x, y: this.pos.y, r: 8, max: 230, life: 0.75, maxLife: 0.75,
+      colour: '#d0a0e8',
+    });
+    game.shake(3, 0.25);
+    let n = 0;
+    for (const z of game.zombies) {
+      if (z === this || z.dead) continue;
+      if (dist2(this.pos.x, this.pos.y, z.pos.x, z.pos.y) > 230 * 230) continue;
+      z.rally = 5;
+      n++;
+    }
+    if (n) game.popups.add(this.pos.x, this.pos.y - 30, `RALLY x${n}`, '#d0a0e8', 11);
+  }
+
+  /** Explosive death: sometimes they keep coming on their elbows. */
+  becomeCrawler(game) {
+    const d = ENEMY_TYPES.crawler;
+    this.type = 'crawler';
+    this.def = d;
+    this.r = d.r;
+    this.chewMul = d.chew;
+    this.pointsMul = d.points;
+    this.maxHp = Math.max(16, Math.round(this.maxHp * 0.35));
+    this.hp = this.maxHp;
+    this.baseSpeed *= 0.7;
+    this.climbT = 0;
+    this.state = ZSTATE.HUNT;
+    game.particles.chunk(this.pos.x, this.pos.y, randRange(0, TAU), 5);
+    game.splat(this.pos.x, this.pos.y, 13, 0.45);
+  }
+
   _blockerOnPath(step) {
     const t = this.map.tiles[step.ti];
     if (t === TILE.WINDOW) {
@@ -978,6 +1130,17 @@ export class Zombie {
   _set(art, attacking, flip) {
     const s = this.def.set;
     if (s === 'dog') return { img: flip ? art.dogFlip : art.dog, framed: false };
+    if (s === 'crawler') {
+      return { img: (flip ? art.crawlerFlip : art.crawler)[this._frame(false)], framed: true };
+    }
+    if (s === 'shrieker') {
+      return {
+        img: (attacking
+          ? (flip ? art.shriekerAtkFlip : art.shriekerAtk)
+          : (flip ? art.shriekerFlip : art.shrieker))[this._frame(attacking)],
+        framed: true,
+      };
+    }
     if (s === 'runner') {
       return {
         img: (attacking
@@ -1001,7 +1164,7 @@ export class Zombie {
     return attacking ? (Math.floor(this.walkPhase * 1.6) % 4) : (Math.floor(this.walkPhase) % 4);
   }
 
-  draw(ctx, art) {
+  draw(ctx, art, t = 0) {
     const px = Math.round(this.pos.x);
     const py = Math.round(this.pos.y);
     const flip = this.facing < 0;
@@ -1047,7 +1210,39 @@ export class Zombie {
       ctx.globalAlpha = 1;
     }
 
+    if (this.def.low) ctx.translate(0, 5);      // crawlers hug the floor
     ctx.drawImage(img, gx, gy);
+    if (this.def.low) ctx.translate(0, -5);
+
+    if (this.burning > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.35 + Math.sin(t * 20 + this.id) * 0.15;
+      ctx.fillStyle = '#f07a2a';
+      ctx.beginPath(); ctx.ellipse(px, py - 2, 9, 13, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    if (this.def.ranged) {
+      // the mouth: a bright wet slit that pulses before the scream
+      const w = this.shriekCd < 1.2 ? 1 : 0.45;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = w * (0.5 + Math.sin(t * 6 + this.id) * 0.2);
+      ctx.fillStyle = '#e0b0f0';
+      ctx.beginPath();
+      ctx.ellipse(px + (flip ? -3 : 3), py - 13, 3, 2, 0, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (this.rally > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.3;
+      ctx.strokeStyle = '#d0a0e8';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(px, py - 2, 15, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
 
     if (this.webbed > 0) {
       ctx.globalAlpha = Math.min(0.7, this.webbed * 0.6);
@@ -1126,7 +1321,7 @@ export class MonkeyBomb {
     this.remove = true;
     const d = this.def;
     game.explodeAt(this.pos.x, this.pos.y, d.boomR ?? 150, d.boomDmg ?? 3000,
-      { colour: '#ffd45c', fromPlayer: true });
+      { colour: '#ffd45c', fromPlayer: true, blast: true });
     game.shake(7, 0.4);
     audio.explosion();
   }
@@ -1189,6 +1384,7 @@ export class Grenade {
       if (z.dead) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
       if (d > R) continue;
+      if (game.tryCrawl(z, 0.30)) continue;         // blast takes the legs
       const k = 1 - d / R;
       const ang = Math.atan2(z.pos.y - y, z.pos.x - x);
       const boom = (420 + game.round * 55) * (k * k * 0.75 + k * 0.25);
