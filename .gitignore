@@ -1,0 +1,4 @@
+node_modules/
+tools/sprites_preview.png
+.DS_Store
+*.log

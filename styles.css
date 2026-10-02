@@ -1,0 +1,45 @@
+:root {
+  --bg: #07080b;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+  font-family: "Courier New", monospace;
+  color: #cfc7ad;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 50% 40%, #14161c 0%, #07080b 70%),
+    var(--bg);
+  cursor: none;
+}
+
+#stage {
+  position: relative;
+  line-height: 0;
+  box-shadow:
+    0 0 0 1px rgba(120, 110, 90, 0.18),
+    0 0 60px rgba(0, 0, 0, 0.9),
+    0 0 140px rgba(90, 12, 8, 0.18);
+}
+
+#game {
+  display: block;
+  width: 800px;
+  height: 500px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  -ms-interpolation-mode: nearest-neighbor;
+  background: #0b0c10;
+  touch-action: none;
+}
