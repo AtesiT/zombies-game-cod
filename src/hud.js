@@ -1,6 +1,10 @@
 // HUD, overlays and full-screen menus.
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
+import { PERKS } from './perks.js';
+import { RECIPES, RECIPE_ORDER } from './crafting.js';
+import { POWERUPS } from './powerups.js';
+import { loadBoard } from './achievements.js';
 import { T } from './art.js';
 
 const INK = '#e6dcc2';
@@ -55,7 +59,7 @@ export class HUD {
     this.shownPoints += (game.points - this.shownPoints) * Math.min(1, dt * 9);
     if (Math.abs(game.points - this.shownPoints) < 1) this.shownPoints = game.points;
     const s = game.player.slot;
-    if (!game.player.reloading && s.mag <= WEAPONS[game.player.current].magSize * 0.25) {
+    if (!game.player.reloading && s.mag <= WEAPONS[game.player.current].mag * 0.25) {
       this.ammoWarn = 0.5 + Math.sin(game.time * 8) * 0.35;
     } else this.ammoWarn = 0;
   }
@@ -81,9 +85,172 @@ export class HUD {
     this._points(ctx, game, w, h);
     this._weapon(ctx, game, w, h);
     this._health(ctx, game, w, h);
+    this._perks(ctx, game, w, h);
+    this._timers(ctx, game, w, h);
+    this._scrap(ctx, game, w, h);
     this._prompt(ctx, game, w, h);
     this._minimap(ctx, game, w, h);
     this._banners(ctx, game, w, h);
+    if (game.craftOpen) this._craftMenu(ctx, game, w, h);
+    this._toast(ctx, game, w, h);
+  }
+
+  // ---------------------------------------------------------------- perks --
+  _perks(ctx, game, w, h) {
+    const list = [...game.player.perks];
+    if (!list.length) return;
+    const size = 20, gap = 4;
+    const totalW = list.length * size + (list.length - 1) * gap;
+    let x = w / 2 - totalW / 2;
+    const y = h - 92;
+    for (const id of list) {
+      const def = PERKS[id];
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,11,15,0.8)';
+      ctx.fillRect(x, y, size, size);
+      ctx.fillStyle = def.colour;
+      ctx.globalAlpha = 0.85;
+      ctx.fillRect(x + 2, y + 2, size - 4, size - 4);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.font = 'bold 9px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(def.short, x + size / 2, y + size / 2 + 3);
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+      ctx.restore();
+      x += size + gap;
+    }
+  }
+
+  // --------------------------------------------------------- powerup timers --
+  _timers(ctx, game, w, h) {
+    const active = [];
+    for (const [k, v] of Object.entries(game.timers)) {
+      if (v > 0) active.push({ id: k, t: v });
+    }
+    if (!active.length) return;
+    let y = 66;
+    for (const a of active) {
+      const def = POWERUPS[a.id];
+      const x = 12;
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,11,15,0.75)';
+      ctx.fillRect(x, y, 108, 15);
+      ctx.fillStyle = def ? def.colour : '#f0d98a';
+      ctx.fillRect(x, y, 3, 15);
+      ctx.font = 'bold 9px "Courier New", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = def ? def.colour : INK;
+      ctx.fillText((def ? def.label : a.id.toUpperCase()), x + 7, y + 11);
+      ctx.fillStyle = INK_DIM;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${a.t.toFixed(1)}s`, x + 104, y + 11);
+      ctx.restore();
+      y += 18;
+    }
+  }
+
+  // ------------------------------------------------------------ scrap/medkits --
+  _scrap(ctx, game, w, h) {
+    const p = game.player;
+    const x = 16, y = h - 62;
+    ctx.save();
+    ctx.font = 'bold 10px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#9fd0e0';
+    ctx.fillText(`SCRAP ${p.salvage}`, x, y);
+    if ((p.medkits ?? 0) > 0) {
+      ctx.fillStyle = '#63c74d';
+      ctx.fillText(`MEDKIT x${p.medkits}  [H]`, x, y + 13);
+    }
+    if ((p.armor ?? 0) > 0) {
+      bar(ctx, x, y + 18, 70, 4, Math.min(1, p.armor / 120), 'rgba(0,0,0,0.6)', '#7aa8d0');
+    }
+    ctx.restore();
+  }
+
+  // ----------------------------------------------------------- craft menu --
+  _craftMenu(ctx, game, w, h) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.88)';
+    ctx.fillRect(0, 0, w, h);
+    text(ctx, 'WORKBENCH', w / 2, 78, {
+      font: 'bold 26px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+    text(ctx, `SCRAP: ${game.player.salvage}     POINTS: ${game.points}`, w / 2, 98, {
+      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+
+    const cols = 2, cw = 330, ch = 62, gap = 12;
+    const totalW = cols * cw + gap;
+    const x0 = w / 2 - totalW / 2;
+    let y0 = 122;
+    RECIPE_ORDER.forEach((id, i) => {
+      const r = RECIPES[id];
+      const col = i % cols, row = (i / cols) | 0;
+      const x = x0 + col * (cw + gap);
+      const y = y0 + row * (ch + gap);
+      const why = game.workbench.canCraft(game, id);
+      const ok = why === 'ok';
+      ctx.globalAlpha = ok ? 1 : 0.5;
+      ctx.fillStyle = 'rgba(18,20,26,0.95)';
+      ctx.fillRect(x, y, cw, ch);
+      ctx.strokeStyle = ok ? 'rgba(240,217,138,0.55)' : 'rgba(120,115,100,0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+      ctx.fillStyle = r.colour;
+      ctx.fillRect(x, y, 3, ch);
+
+      ctx.font = 'bold 15px "Courier New", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = r.colour;
+      ctx.fillText(`[${i + 1}] ${r.name.toUpperCase()}`, x + 12, y + 22);
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = INK_DIM;
+      ctx.fillText(r.desc, x + 12, y + 38);
+      ctx.fillStyle = ok ? GOLD : RED;
+      ctx.textAlign = 'right';
+      const cost = `${r.salvage} SCRAP` + (r.points ? `  ${r.points} PTS` : '');
+      ctx.fillText(cost, x + cw - 12, y + 54);
+      ctx.globalAlpha = 1;
+    });
+
+    text(ctx, '[E] or [ESC] to step away', w / 2, h - 40, {
+      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+    ctx.restore();
+  }
+
+  // ------------------------------------------------------- achievement toast --
+  _toast(ctx, game, w, h) {
+    const a = game.achievements.banner;
+    if (!a) return;
+    const k = game.achievements.bannerT / 3.4;
+    const fade = k > 0.85 ? (1 - k) / 0.15 : k < 0.18 ? k / 0.18 : 1;
+    ctx.save();
+    ctx.globalAlpha = clamp(fade, 0, 1);
+    const bw = 300, bh = 52;
+    const x = w - bw - 14, y = h * 0.16;
+    ctx.fillStyle = 'rgba(10,11,15,0.9)';
+    ctx.fillRect(x, y, bw, bh);
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(x, y, 3, bh);
+    ctx.strokeStyle = 'rgba(240,217,138,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, bw - 1, bh - 1);
+    ctx.fillStyle = 'rgba(240,217,138,0.85)';
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('ACHIEVEMENT UNLOCKED', x + 12, y + 16);
+    ctx.fillStyle = INK;
+    ctx.font = 'bold 15px "Courier New", monospace';
+    ctx.fillText(a.name.toUpperCase(), x + 12, y + 34);
+    ctx.fillStyle = INK_DIM;
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillText(a.desc, x + 12, y + 46);
+    ctx.restore();
   }
 
   // ---------------------------------------------------------------- round --
@@ -122,7 +289,7 @@ export class HUD {
     const d = p.def, s = p.slot;
     const x = w - 16;
     const yAmmo = h - 18;
-    const lowMag = s.mag <= d.magSize * 0.25;
+    const lowMag = s.mag <= d.mag * 0.25;
     const magStr = String(s.mag).padStart(2, '0');
     text(ctx, magStr, x, yAmmo, {
       font: 'bold 24px "Courier New", monospace',
@@ -144,7 +311,7 @@ export class HUD {
     }
 
     if (p.reloading) {
-      const k = 1 - p.reloadTimer / d.reloadTime;
+      const k = 1 - p.reloadTimer / d.reload;
       bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', GOLD);
       text(ctx, 'RELOADING', x - 94, yAmmo + 10, {
         font: 'bold 9px "Courier New", monospace', colour: GOLD, align: 'right',
@@ -199,6 +366,25 @@ export class HUD {
         : `[E] HOLD TO REBUILD  +${10} PER PLANK`);
     } else if (it.type === 'grenade') {
       lines.push(`[E] FRAG GRENADES  ${it.price}`);
+    } else if (it.type === 'perk') {
+      if (it.owned) lines.push(`${it.def.name.toUpperCase()} — ALREADY DRINKING`);
+      else if (!game.powerOn) lines.push(`${it.def.name.toUpperCase()} — NO POWER`);
+      else lines.push(`[E] ${it.def.name.toUpperCase()}  ${it.def.price}`);
+    } else if (it.type === 'box') {
+      const b = game.box;
+      if (!game.powerOn) lines.push('MYSTERY BOX — NO POWER');
+      else if (b.state === 'offering') lines.push(`[E] TAKE ${b.displayName()?.toUpperCase() ?? 'WEAPON'}`);
+      else if (b.state === 'closed') lines.push(`[E] SPIN THE BOX  ${b.price()}`);
+      else if (b.state === 'spinning') lines.push('...the wheel turns...');
+      else lines.push('THE BOX IS MOVING');
+    } else if (it.type === 'power') {
+      lines.push(game.powerOn ? 'GENERATOR RUNNING' : '[E] THROW THE SWITCH');
+    } else if (it.type === 'workbench') {
+      lines.push('[E] OPEN WORKBENCH');
+    } else if (it.type === 'switch') {
+      lines.push(it.sw.found ? 'SIGNAL LOCKED' : '[E] TURN THE DIAL');
+    } else if (it.type === 'loot') {
+      lines.push('[E] OPEN THE CACHE');
     }
     let y = h - 108;
     for (const l of lines) {
@@ -294,12 +480,50 @@ export class HUD {
   }
 
   // -------------------------------------------------------------- minimap --
+  /** Rebuild the terrain layer of the minimap, but only when fog changes. */
+  _miniTerrain(game) {
+    const map = game.map;
+    const s = Math.min(130 / map.w, 92 / map.h);
+    if (!this._miniCanvas || this._miniS !== s) {
+      this._miniCanvas = document.createElement('canvas');
+      this._miniCanvas.width = Math.ceil(map.w * s);
+      this._miniCanvas.height = Math.ceil(map.h * s);
+      this._miniS = s;
+      this._miniDirty = true;
+    }
+    if (!this._miniDirty) return this._miniCanvas;
+    const c = this._miniCanvas.getContext('2d');
+    c.clearRect(0, 0, this._miniCanvas.width, this._miniCanvas.height);
+    const cs = Math.ceil(s);
+    for (let ty = 0; ty < map.h; ty++) {
+      for (let tx = 0; tx < map.w; tx++) {
+        if (!map.seen[ty * map.w + tx]) continue;
+        const t = map.tiles[ty * map.w + tx];
+        let col = '#1d1e18';
+        if (t === 2) col = '#4b4f59';
+        else if (t === 1 || t === 6) col = t === 6 ? '#34312c' : '#2b2c31';
+        else if (t === 3) col = '#7a5a33';
+        else if (t === 4) col = '#8a6a3a';
+        else if (t === 5) col = '#5a4526';
+        else if (t === 7) col = '#243020';
+        else if (t === 8) col = '#3a3a42';
+        else if (t === 9) col = '#4a3a2a';
+        else if (t === 10) col = '#5a5f78';
+        else if (t === 11) col = '#6a5a70';
+        c.fillStyle = col;
+        c.fillRect(tx * s, ty * s, cs, cs);
+      }
+    }
+    this._miniDirty = false;
+    return this._miniCanvas;
+  }
+
   _minimap(ctx, game, w, h) {
     const map = game.map;
     const pad = 10;
-    const maxW = 130, maxH = 92;
-    const s = Math.min(maxW / map.w, maxH / map.h);
-    const mw = map.w * s, mh = map.h * s;
+    const terrain = this._miniTerrain(game);
+    const s = this._miniS;
+    const mw = terrain.width, mh = terrain.height;
     const x0 = w - mw - pad, y0 = pad;
 
     ctx.save();
@@ -309,28 +533,31 @@ export class HUD {
     ctx.strokeStyle = 'rgba(200,190,160,0.28)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x0 - 3.5, y0 - 3.5, mw + 7, mh + 7);
+    ctx.drawImage(terrain, x0, y0);
 
-    for (let ty = 0; ty < map.h; ty++) {
-      for (let tx = 0; tx < map.w; tx++) {
-        if (!map.seen[ty * map.w + tx]) continue;
-        const t = map.tiles[ty * map.w + tx];
-        let c = null;
-        if (t === 2) c = '#4b4f59';
-        else if (t === 1 || t === 6) c = '#2b2c31';
-        else if (t === 3) c = '#7a5a33';
-        else if (t === 4) c = '#8a6a3a';
-        else if (t === 5) c = '#5a4526';
-        else c = '#1d1e18';
-        ctx.fillStyle = c;
-        ctx.fillRect(x0 + tx * s, y0 + ty * s, Math.ceil(s), Math.ceil(s));
-      }
+    // points of interest you have already walked past
+    const mark = (wx, wy, colour, size = 3) => {
+      const tx = wx / T, ty = wy / T;
+      if (!map.seen[(ty | 0) * map.w + (tx | 0)]) return;
+      ctx.fillStyle = colour;
+      ctx.fillRect(x0 + tx * s - size / 2, y0 + ty * s - size / 2, size, size);
+    };
+    for (const ps of map.perkSpots) {
+      if (game.player.hasPerk(ps.id)) mark(ps.x, ps.y, PERKS[ps.id].colour, 3);
+      else if (game.powerOn) mark(ps.x, ps.y, 'rgba(240,217,138,0.75)', 2);
     }
+    mark(game.box.spot.x, game.box.spot.y, '#f5d76e', 4);
+    mark(map.workbench.x, map.workbench.y, '#c8a05a', 3);
+    if (!game.powerOn) mark(map.powerSwitch.x, map.powerSwitch.y, '#8fe05a', 3);
+    for (const pu of game.powerups) mark(pu.x, pu.y, pu.def.colour, 3);
+
     for (const z of game.zombies) {
       if (z.dead) continue;
       const tx = z.pos.x / T, ty = z.pos.y / T;
       if (!map.seen[(ty | 0) * map.w + (tx | 0)]) continue;
-      ctx.fillStyle = '#c4463a';
-      ctx.fillRect(x0 + tx * s - 1, y0 + ty * s - 1, 3, 3);
+      ctx.fillStyle = z.type === 'brute' ? '#e07a3a' : z.type === 'dog' ? '#d05a4a' : '#c4463a';
+      const zs = z.def.smash ? 4 : 3;
+      ctx.fillRect(x0 + tx * s - 1, y0 + ty * s - 1, zs, zs);
     }
     // player
     const px = x0 + (game.player.pos.x / T) * s;
@@ -378,18 +605,23 @@ export class HUD {
 // ---------------------------------------------------------------------------
 export function drawTitle(ctx, game, w, h) {
   ctx.save();
-  ctx.fillStyle = 'rgba(6,7,10,0.82)';
+  // dusk-blue wash rather than a black slab -- moody, but you can still read it
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, 'rgba(24,30,46,0.80)');
+  g.addColorStop(0.55, 'rgba(30,32,40,0.74)');
+  g.addColorStop(1, 'rgba(12,13,18,0.88)');
+  ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
 
   const t = game.time;
-  const cy = h * 0.3;
+  const cy = h * 0.26;
 
   ctx.globalAlpha = 0.9 + Math.sin(t * 1.6) * 0.1;
   text(ctx, 'NACHT', w / 2, cy - 34, {
-    font: 'bold 52px "Courier New", monospace', colour: '#c9c0a4', align: 'center',
+    font: 'bold 52px "Courier New", monospace', colour: '#e2d8b8', align: 'center',
   });
   text(ctx, 'DER UNTOTEN', w / 2, cy + 6, {
-    font: 'bold 34px "Courier New", monospace', colour: '#a8402f', align: 'center',
+    font: 'bold 34px "Courier New", monospace', colour: '#c2503c', align: 'center',
   });
   ctx.globalAlpha = 1;
 
@@ -397,23 +629,41 @@ export function drawTitle(ctx, game, w, h) {
   ctx.fillRect(w / 2 - 150, cy + 20, 300, 1);
 
   const lines = [
-    'WASD / ARROWS — move          MOUSE — aim',
-    'LEFT CLICK — fire      R — reload      1-5 / WHEEL — swap weapon',
-    'E — buy weapon · open door · rebuild barricade   (+10 per plank)',
-    'V — knife   G — frag grenade   M — mute   P / ESC — pause',
+    'WASD / ARROWS move   ·   MOUSE aim   ·   LEFT CLICK fire',
+    'R reload   ·   1-0 / WHEEL / [ ] swap   ·   SHIFT sprint   ·   V knife   ·   G frag',
+    'E buy weapon · open door · spin the box · hold to rebuild barricade',
+    'H use medkit   ·   M mute   ·   P / ESC pause',
   ];
-  let y = cy + 52;
+  let y = cy + 50;
   for (const l of lines) {
     text(ctx, l, w / 2, y, { font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     y += 19;
   }
 
-  const blink = 0.55 + Math.sin(t * 4) * 0.45;
-  text(ctx, 'CLICK TO BEGIN', w / 2, h * 0.82, {
-    font: 'bold 20px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+  const feats = [
+    '15 weapons  ·  8 perks  ·  Mystery Box  ·  wonder weapons',
+    'power switch in the cellar  ·  workbench  ·  dog rounds',
+    'brutes and runners  ·  power-ups  ·  achievements  ·  an easter egg',
+  ];
+  y += 8;
+  for (const l of feats) {
+    text(ctx, l, w / 2, y, { font: 'bold 11px "Courier New", monospace', colour: 'rgba(150,160,180,0.8)', align: 'center' });
+    y += 16;
+  }
+
+  const board = loadBoard();
+  if (board.length) {
+    text(ctx, `BEST ROUND  ${board[0].round}   (${board[0].kills} kills)`, w / 2, y + 12, {
+      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+  }
+  text(ctx, `${game.achievements.count}/${game.achievements.total} achievements`, w / 2, y + 30, {
+    font: 'bold 10px "Courier New", monospace', colour: 'rgba(150,140,120,0.7)', align: 'center',
   });
-  text(ctx, 'survive as long as you can', w / 2, h * 0.82 + 20, {
-    font: 'bold 11px "Courier New", monospace', colour: 'rgba(150,140,120,0.7)', align: 'center',
+
+  const blink = 0.55 + Math.sin(t * 4) * 0.45;
+  text(ctx, 'CLICK TO BEGIN', w / 2, h - 46, {
+    font: 'bold 20px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
   });
   ctx.restore();
 }
@@ -438,8 +688,8 @@ export function drawGameOver(ctx, game, w, h) {
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
 
-  text(ctx, 'YOU DIED', w / 2, h * 0.28, {
-    font: 'bold 44px "Courier New", monospace', colour: '#a8402f', align: 'center',
+  text(ctx, 'YOU DIED', w / 2, h * 0.16, {
+    font: 'bold 40px "Courier New", monospace', colour: '#c2503c', align: 'center',
   });
 
   const s = game.stats;
@@ -453,11 +703,28 @@ export function drawGameOver(ctx, game, w, h) {
     ['DOORS OPENED', String(s.doors)],
     ['ACCURACY', `${acc}%`],
   ];
-  let y = h * 0.28 + 44;
+  let y = h * 0.20 + 40;
   for (const [k, v] of rows) {
     text(ctx, k, w / 2 - 14, y, { font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'right' });
     text(ctx, v, w / 2 + 14, y, { font: 'bold 12px "Courier New", monospace', colour: INK, align: 'left' });
-    y += 20;
+    y += 18;
+  }
+
+  const board = game.board ?? loadBoard();
+  if (board.length) {
+    y += 8;
+    text(ctx, 'BEST RUNS', w / 2, y, {
+      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+    y += 17;
+    board.slice(0, 5).forEach((e, i) => {
+      const col = i === (game.rank ?? -1) ? GOLD : INK_DIM;
+      text(ctx, `${i + 1}.`, w / 2 - 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `ROUND ${e.round}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `${e.kills} kills`, w / 2 - 10, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `${e.points} pts`, w / 2 + 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'right' });
+      y += 15;
+    });
   }
 
   if (game.overT > 1.1) {

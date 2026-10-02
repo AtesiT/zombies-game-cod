@@ -118,7 +118,11 @@ export class AudioEngine {
       smg: { dur: 0.12, crack: 2900, body: 210, peak: 0.4, tail: 0.07 },
       shotgun: { dur: 0.34, crack: 1500, body: 120, peak: 0.75, tail: 0.28 },
       rifle: { dur: 0.42, crack: 3400, body: 130, peak: 0.8, tail: 0.4 },
+      sniper: { dur: 0.52, crack: 3800, body: 105, peak: 0.9, tail: 0.55 },
     }[kind] || { dur: 0.16, crack: 2400, body: 190, peak: 0.5, tail: 0.1 };
+
+    if (kind === 'raygun' || kind === 'wunderwaffe' || kind === 'thundergun'
+      || kind === 'winterhowl' || kind === 'throw') { this.wonder(kind); return; }
 
     // bright transient
     const n = this._noiseSrc();
@@ -363,6 +367,180 @@ export class AudioEngine {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
     n.connect(f).connect(g).connect(this.master);
     n.start(t); n.stop(t + 2.8);
+  }
+
+  // --------------------------------------------------- wonder weapons ------
+  /** Ray Gun / DG-2 / Thunder Gun / Winter's Howl / Monkey Bomb. */
+  wonder(kind) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    if (kind === 'raygun') {
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(1500, t);
+      o.frequency.exponentialRampToValueAtTime(150, t + 0.28);
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'lowpass'; f.frequency.setValueAtTime(3200, t);
+      f.frequency.exponentialRampToValueAtTime(500, t + 0.3);
+      const g = this._env(o, t, 0.42, 0.004, 0.34);
+      o.connect(f).connect(g).connect(this.master);
+      o.start(t); o.stop(t + 0.4);
+      this._tone('sine', 220, 60, t, 0.3, 0.3);
+      return;
+    }
+    if (kind === 'wunderwaffe') {
+      const n = this._noiseSrc(0.6, 1.6);
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(5200, t);
+      bp.frequency.exponentialRampToValueAtTime(700, t + 0.4);
+      bp.Q.value = 3;
+      const g = this._env(bp, t, 0.4, 0.002, 0.42);
+      n.connect(bp).connect(g).connect(this.master);
+      n.start(t); n.stop(t + 0.5);
+      this._tone('sawtooth', 90, 40, t, 0.3, 0.25);
+      return;
+    }
+    if (kind === 'thundergun') {
+      const n = this._noiseSrc();
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(1800, t);
+      lp.frequency.exponentialRampToValueAtTime(70, t + 0.8);
+      const g = this._env(lp, t, 0.95, 0.01, 0.85);
+      n.connect(lp).connect(g).connect(this.master);
+      n.start(t); n.stop(t + 1.0);
+      this._tone('sine', 70, 26, t, 0.8, 0.7);
+      return;
+    }
+    if (kind === 'winterhowl') {
+      const n = this._noiseSrc(0.5, 0.7);
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass'; hp.frequency.value = 2400;
+      const g = this._env(hp, t, 0.3, 0.02, 0.55);
+      n.connect(hp).connect(g).connect(this.master);
+      n.start(t); n.stop(t + 0.7);
+      this._tone('triangle', 2600, 900, t, 0.4, 0.18);
+      return;
+    }
+    // monkey bomb throw
+    this._tone('square', 300, 700, t, 0.12, 0.12);
+  }
+
+  /** Wind-up monkey squeak, pitch rising as the fuse burns down. */
+  monkey(progress = 0) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    for (let i = 0; i < 3; i++) {
+      const f = 620 + progress * 900 + i * 130;
+      this._tone('square', f, f * 1.7, t + i * 0.055, 0.05, 0.075);
+    }
+  }
+
+  /** Power-up pickup / perk chime. */
+  chime() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    [784, 988, 1319].forEach((f, i) => this._tone('triangle', f, f, t + i * 0.06, 0.28, 0.14));
+  }
+
+  perk() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    [523, 659, 784, 1047].forEach((f, i) => this._tone('square', f, f, t + i * 0.07, 0.22, 0.10));
+    this._tone('sine', 110, 70, t, 0.5, 0.22);
+  }
+
+  nuke() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this.explosion();
+    const n = this._noiseSrc();
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 1800;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.35, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+    n.connect(hp).connect(g).connect(this.master);
+    n.start(t); n.stop(t + 1.7);
+  }
+
+  hammer() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    for (let i = 0; i < 3; i++) this.wood(true), this._tone('triangle', 700, 300, t + i * 0.11, 0.1, 0.22);
+  }
+
+  /** The generator kicks in: a rising hum and a clunk. */
+  powerUp() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(32, t);
+    o.frequency.exponentialRampToValueAtTime(120, t + 1.5);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 500;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.3, t + 1.4);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
+    o.connect(f).connect(g).connect(this.master);
+    o.start(t); o.stop(t + 2.7);
+    this._tone('square', 180, 60, t, 0.2, 0.2);
+    [392, 523, 659].forEach((ff, i) => this._tone('triangle', ff, ff, t + 0.5 + i * 0.12, 0.4, 0.14));
+  }
+
+  /** Mystery box: the rumble of the wheel spinning. */
+  boxSpin() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc(2.6, 0.4);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 320; bp.Q.value = 1.2;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.18, t + 0.2);
+    g.gain.setValueAtTime(0.18, t + 2.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.7);
+    n.connect(bp).connect(g).connect(this.master);
+    n.start(t); n.stop(t + 2.8);
+    for (let i = 0; i < 12; i++) this._tone('square', 140 + i * 9, 120 + i * 9, t + i * 0.2, 0.05, 0.05);
+  }
+
+  /** Dog round: a howl and a pack of barks. */
+  dogRound() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(180, t);
+    o.frequency.linearRampToValueAtTime(520, t + 0.5);
+    o.frequency.linearRampToValueAtTime(240, t + 1.5);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 2.5;
+    const g = this._env(o, t, 0.3, 0.2, 1.5);
+    o.connect(f).connect(g).connect(this.master);
+    o.start(t); o.stop(t + 1.8);
+    for (let i = 0; i < 6; i++) {
+      this._tone('square', 420 + Math.random() * 200, 180, t + 0.4 + i * 0.15, 0.07, 0.08);
+    }
+  }
+
+  /** Easter egg: static, then a distant melody. */
+  radioStart() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc(4.5, 1.2);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 0.7;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.13, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 4.4);
+    n.connect(bp).connect(g).connect(this.master);
+    n.start(t); n.stop(t + 4.5);
+    const melody = [440, 587, 659, 587, 494, 440];
+    melody.forEach((f, i) => this._tone('triangle', f, f, t + 1.2 + i * 0.42, 0.5, 0.09));
   }
 }
 

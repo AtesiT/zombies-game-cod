@@ -1,147 +1,165 @@
-// Weapon definitions + ammo state.
+// Weapon table. 15 distinct guns: 10 wall buys + 5 wonder weapons (box only).
+//
+//   dmg      base body damage per pellet/bullet
+//   headMul  headshot multiplier
+//   delay    seconds between shots
+//   spread   standard deviation of the aim cone, in radians
+//   pierce   how many extra zombies a bullet passes through
+//   special  on-hit extra effect (see game.js)
 
 export const WEAPONS = {
   m1911: {
-    id: 'm1911',
-    name: 'M1911',
-    art: 'm1911',
-    auto: false,
-    dmg: 60,
-    headMul: 2.4,
-    pellets: 1,
-    magSize: 8,
-    reserveMax: 120,
-    startReserve: 96,
-    fireDelay: 0.17,
-    reloadTime: 1.45,
-    spread: 0.010,
-    spreadMove: 0.035,
-    recoil: 1.6,
-    pierce: 0,
-    range: 900,
-    price: 0,
-    ammoPrice: 120,
-    sound: 'pistol',
-    tracer: '#ffd9a0',
-    kick: 1.1,
-    tier: 0,
-  },
-  thompson: {
-    id: 'thompson',
-    name: 'Thompson',
-    art: 'thompson',
-    auto: true,
-    dmg: 55,
-    headMul: 2.2,
-    pellets: 1,
-    magSize: 20,
-    reserveMax: 240,
-    startReserve: 180,
-    fireDelay: 0.078,
-    reloadTime: 2.35,
-    spread: 0.028,
-    spreadMove: 0.06,
-    recoil: 1.5,
-    pierce: 0,
-    range: 800,
-    price: 1200,
-    ammoPrice: 600,
-    sound: 'smg',
-    tracer: '#ffcf8a',
-    kick: 1.5,
-    tier: 1,
+    id: 'm1911', name: 'M1911', slot: 'pistol', kind: 'semi',
+    price: 0, ammoPrice: 100, dmg: 62, headMul: 2.4, mag: 8, reserve: 120, maxReserve: 120,
+    delay: 0.17, reload: 1.45, spread: 0.010, pierce: 0, range: 900,
+    recoil: 0.030, kick: 1.4, flash: 0.8, tracer: '#d9c27a', tint: '#c8b070',
+    desc: 'Trusty sidearm. Always with you.',
   },
   mp40: {
-    id: 'mp40',
-    name: 'MP40',
-    art: 'mp40',
-    auto: true,
-    dmg: 50,
-    headMul: 2.2,
-    pellets: 1,
-    magSize: 32,
-    reserveMax: 288,
-    startReserve: 192,
-    fireDelay: 0.088,
-    reloadTime: 2.6,
-    spread: 0.032,
-    spreadMove: 0.065,
-    recoil: 1.3,
-    pierce: 0,
-    range: 760,
-    price: 1000,
-    ammoPrice: 500,
-    sound: 'smg',
-    tracer: '#ffd7a2',
-    kick: 1.2,
-    tier: 1,
+    id: 'mp40', name: 'MP40', slot: 'smg', kind: 'auto',
+    price: 1000, ammoPrice: 300, dmg: 50, headMul: 2.2, mag: 32, reserve: 288, maxReserve: 288,
+    delay: 0.088, reload: 2.60, spread: 0.032, pierce: 0, range: 760,
+    recoil: 0.020, kick: 1.0, flash: 1.0, tracer: '#cdd3dd', tint: '#a9b0bb',
+    desc: 'Cheap, controllable, reliable.',
+  },
+  thompson: {
+    id: 'thompson', name: 'M1A1 Thompson', slot: 'smg', kind: 'auto',
+    price: 1200, ammoPrice: 300, dmg: 56, headMul: 2.2, mag: 20, reserve: 240, maxReserve: 240,
+    delay: 0.078, reload: 2.35, spread: 0.028, pierce: 0, range: 720,
+    recoil: 0.024, kick: 1.1, flash: 1.1, tracer: '#d8d2c0', tint: '#b6ae96',
+    desc: 'Fast drum-fed classic.',
   },
   trenchgun: {
-    id: 'trenchgun',
-    name: 'M1897 Trench Gun',
-    art: 'trenchgun',
-    auto: false,
-    dmg: 34,
-    headMul: 1.5,
-    pellets: 6,
-    magSize: 6,
-    reserveMax: 72,
-    startReserve: 48,
-    fireDelay: 0.72,
-    reloadTime: 3.4,
-    spread: 0.115,
-    spreadMove: 0.14,
-    recoil: 4.5,
-    pierce: 0,
-    range: 420,
-    price: 1200,
-    ammoPrice: 600,
-    sound: 'shotgun',
-    tracer: '#ffc27a',
-    kick: 5.5,
-    tier: 2,
+    id: 'trenchgun', name: 'M1897 Trench Gun', slot: 'shotgun', kind: 'pump',
+    price: 1200, ammoPrice: 300, dmg: 36, headMul: 1.6, pellets: 6, mag: 6, reserve: 72, maxReserve: 72,
+    delay: 0.72, reload: 3.40, spread: 0.115, pierce: 1, range: 420,
+    recoil: 0.10, kick: 4.2, flash: 1.8, tracer: '#e0d0a0', tint: '#c5ab72',
+    desc: 'Six pellets of close-range grief.',
+  },
+  ppsh: {
+    id: 'ppsh', name: 'PPSh-41', slot: 'smg', kind: 'auto',
+    price: 1800, ammoPrice: 400, dmg: 52, headMul: 2.1, mag: 71, reserve: 355, maxReserve: 355,
+    delay: 0.062, reload: 3.20, spread: 0.052, pierce: 0, range: 700,
+    recoil: 0.030, kick: 1.2, flash: 1.2, tracer: '#d5cdb8', tint: '#b0a68c',
+    desc: 'Huge drum, wildly inaccurate. Spray and pray.',
   },
   kar98k: {
-    id: 'kar98k',
-    name: 'Kar98k',
-    art: 'kar98k',
-    auto: false,
-    dmg: 330,
-    headMul: 2.6,
-    pellets: 1,
-    magSize: 5,
-    reserveMax: 90,
-    startReserve: 60,
-    fireDelay: 1.05,
-    reloadTime: 3.1,
-    spread: 0.004,
-    spreadMove: 0.05,
-    recoil: 5,
-    pierce: 3,
-    range: 1200,
-    price: 1500,
-    ammoPrice: 750,
-    sound: 'rifle',
-    tracer: '#fff0c0',
-    kick: 6,
-    tier: 3,
+    id: 'kar98k', name: 'Kar98k', slot: 'sniper', kind: 'bolt',
+    price: 1500, ammoPrice: 300, dmg: 340, headMul: 2.0, mag: 5, reserve: 90, maxReserve: 90,
+    delay: 1.05, reload: 3.10, spread: 0.004, pierce: 3, range: 1400,
+    recoil: 0.075, kick: 3.4, flash: 1.6, tracer: '#cdd6e2', tint: '#9aa3b0',
+    desc: 'Punches straight through a queue.',
+  },
+  fg42: {
+    id: 'fg42', name: 'FG 42', slot: 'rifle', kind: 'auto',
+    price: 2000, ammoPrice: 450, dmg: 96, headMul: 2.1, mag: 25, reserve: 250, maxReserve: 250,
+    delay: 0.110, reload: 2.80, spread: 0.030, pierce: 1, range: 1000,
+    recoil: 0.036, kick: 2.0, flash: 1.4, tracer: '#d0d6e0', tint: '#a4acba',
+    desc: 'Paratrooper rifle. Hard hits, hard kick.',
+  },
+  bar: {
+    id: 'bar', name: 'M1918 BAR', slot: 'rifle', kind: 'auto',
+    price: 2500, ammoPrice: 500, dmg: 112, headMul: 2.0, mag: 20, reserve: 240, maxReserve: 240,
+    delay: 0.140, reload: 3.00, spread: 0.034, pierce: 1, range: 1050,
+    recoil: 0.048, kick: 2.6, flash: 1.5, tracer: '#d6dbe4', tint: '#aab2c0',
+    desc: 'Walking firepower. Slow to reload.',
+  },
+  mg42: {
+    id: 'mg42', name: 'MG 42', slot: 'lmg', kind: 'auto',
+    price: 3000, ammoPrice: 600, dmg: 102, headMul: 1.9, mag: 125, reserve: 500, maxReserve: 500,
+    delay: 0.055, reload: 5.50, spread: 0.055, pierce: 1, range: 1000,
+    recoil: 0.032, kick: 1.8, flash: 1.6, tracer: '#dbe0e8', tint: '#b2bac6',
+    desc: 'Belt-fed. Never stop, never reload quickly.',
+  },
+  ptrs41: {
+    id: 'ptrs41', name: 'PTRS-41', slot: 'sniper', kind: 'semi',
+    price: 3000, ammoPrice: 600, dmg: 540, headMul: 1.9, mag: 5, reserve: 60, maxReserve: 60,
+    delay: 1.20, reload: 3.60, spread: 0.003, pierce: 5, range: 1600,
+    recoil: 0.11, kick: 5.0, flash: 2.0, tracer: '#e2e6ee', tint: '#9ba3b2',
+    desc: 'Anti-tank rifle. Skewer the whole lane.',
+  },
+
+  // ---------------------------------------------------------- wonder weapons
+  raygun: {
+    id: 'raygun', name: 'Ray Gun', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 34,
+    price: 0, ammoPrice: 0, dmg: 400, headMul: 1.0, mag: 20, reserve: 160, maxReserve: 160,
+    delay: 0.28, reload: 2.60, spread: 0.008, pierce: 0, range: 1000,
+    recoil: 0.040, kick: 2.4, flash: 1.8, tracer: '#8fe05a', tint: '#7fd75a',
+    special: 'splash', splashR: 34, splashDmg: 180, splashColor: '#8fe05a',
+    desc: 'Green plasma. Splashes. Do not stand near the wall.',
+  },
+  wunderwaffe: {
+    id: 'wunderwaffe', name: 'Wunderwaffe DG-2', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 18,
+    price: 0, ammoPrice: 0, dmg: 300, headMul: 1.0, mag: 12, reserve: 96, maxReserve: 96,
+    delay: 0.50, reload: 3.00, spread: 0.006, pierce: 0, range: 950,
+    recoil: 0.050, kick: 2.6, flash: 2.0, tracer: '#a8dcff', tint: '#8fd6ff',
+    special: 'chain', chainCount: 4, chainRange: 190, chainFalloff: 0.7, chainColor: '#a8dcff',
+    desc: 'Arcs lightning through the crowd.',
+  },
+  thundergun: {
+    id: 'thundergun', name: 'Thunder Gun', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 16,
+    price: 0, ammoPrice: 0, dmg: 900, headMul: 1.0, mag: 8, reserve: 40, maxReserve: 40,
+    delay: 0.90, reload: 3.50, spread: 0.0, pierce: 0, range: 320,
+    recoil: 0.02, kick: 5.5, flash: 2.2, tracer: '#f5b45c', tint: '#f0a03c',
+    special: 'shock', shockRange: 300, shockAngle: 0.62, shockDmg: 900, shockPush: 620,
+    shockColor: '#f5b45c',
+    desc: 'Blows the whole hallway into next week.',
+  },
+  winterhowl: {
+    id: 'winterhowl', name: "Winter's Howl", slot: 'wonder', kind: 'semi', wonder: true, boxTier: 16,
+    price: 0, ammoPrice: 0, dmg: 70, headMul: 1.0, mag: 20, reserve: 100, maxReserve: 100,
+    delay: 0.35, reload: 3.00, spread: 0.0, pierce: 0, range: 700,
+    recoil: 0.02, kick: 1.6, flash: 1.6, tracer: '#9fe9ff', tint: '#7fe6ff',
+    special: 'freeze', freezeR: 90, freezeTime: 5.0, freezeColor: '#9fe9ff',
+    desc: 'Freezes everything it touches solid.',
+  },
+  monkeybomb: {
+    id: 'monkeybomb', name: 'Monkey Bomb', slot: 'wonder', kind: 'throw', wonder: true, boxTier: 16,
+    price: 0, ammoPrice: 0, dmg: 3000, headMul: 1.0, mag: 3, reserve: 9, maxReserve: 9,
+    delay: 0.90, reload: 1.20, spread: 0, pierce: 0, range: 480,
+    recoil: 0, kick: 0, flash: 0, tracer: '#d8c070', tint: '#b9b06a',
+    special: 'lure', lureTime: 6.0, lureR: 460, fuse: 6.0, boomR: 150, boomDmg: 3000,
+    desc: 'Wind it up, throw it, walk away. They love it.',
   },
 };
 
-export const WEAPON_ORDER = ['m1911', 'mp40', 'thompson', 'trenchgun', 'kar98k'];
+/** Order shown in the weapon-select bar and cycled with 1..9 / the wheel. */
+export const WEAPON_ORDER = [
+  'm1911', 'mp40', 'thompson', 'trenchgun', 'ppsh',
+  'kar98k', 'fg42', 'bar', 'mg42', 'ptrs41',
+  'raygun', 'wunderwaffe', 'thundergun', 'winterhowl', 'monkeybomb',
+];
+
+/** Wonder weapons occupy the whole kit: they replace nothing, they join it. */
+export const WONDER_IDS = Object.values(WEAPONS).filter((w) => w.wonder).map((w) => w.id);
 
 export const GRENADE_PRICE = 250;
 export const GRENADE_MAX = 4;
 
-export function makeLoadout() {
-  const out = {};
-  for (const id of Object.keys(WEAPONS)) {
-    const w = WEAPONS[id];
-    out[id] = { id, mag: w.magSize, reserve: id === 'm1911' ? w.startReserve : 0, owned: id === 'm1911' };
-  }
-  return out;
+/** Auto-fire weapons hold the trigger; everything else needs a fresh click. */
+export function isAuto(w) { return w.kind === 'auto'; }
+
+const SLOT_SOUND = {
+  pistol: 'pistol', smg: 'smg', shotgun: 'shotgun',
+  sniper: 'sniper', rifle: 'rifle', lmg: 'rifle', wonder: 'raygun',
+};
+
+export function shotSound(w) {
+  if (w.wonder) return w.id === 'monkeybomb' ? 'throw' : w.id;
+  return SLOT_SOUND[w.slot] ?? 'pistol';
 }
 
-export function totalAmmo(slot, def) {
-  return slot.mag + slot.reserve;
+/** Weighted roll for the Mystery Box. */
+export function rollBox(rng = Math.random) {
+  const entries = Object.values(WEAPONS).filter((w) => w.price > 0 || w.wonder);
+  let total = 0;
+  for (const w of entries) total += w.wonder ? (w.boxTier ?? 12) : 10;
+  let r = rng() * total;
+  for (const w of entries) {
+    r -= w.wonder ? (w.boxTier ?? 12) : 10;
+    if (r <= 0) return w.id;
+  }
+  return entries[0].id;
 }
+
+export function weapon(id) { return WEAPONS[id]; }

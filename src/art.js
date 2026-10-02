@@ -60,6 +60,190 @@ function frames(upper, legs) {
   return legs.map((l) => buildSprite(upper.concat(l), SPRITE_W, SPRITE_H));
 }
 
+// ---------------------------------------------------------------------------
+//  Parametric gun builder -- every weapon is drawn pointing east, 9px tall,
+//  with its grip at `pivot`. Keeps 15 weapons consistent and cheap.
+// ---------------------------------------------------------------------------
+const GUN_METAL = ['#3b3d44', '#6d6f79', '#9a9ba4'];   // dark / mid / light
+const GUN_WOOD = ['#3f2a17', '#6a4a2a', '#8a6338'];
+
+function gunCanvas(w, h) { return makeCanvas(w, h); }
+
+export function buildGun(spec) {
+  const {
+    len = 18, stock = 'wood', stockLen = 5, mag = 'box', magLen = 3,
+    metal = GUN_METAL, wood = GUN_WOOD, accent = null,
+    barrel = 'thin', muzzle = 'none', height = 9,
+  } = spec;
+  const H = height;
+  const mid = (H - 1) >> 1;              // centre row of the weapon
+  const { canvas, ctx } = gunCanvas(len, H);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+
+  const ARM_X0 = 0, HAND_X = 4;
+  // arm + hand (always the same so the pose stays consistent)
+  px(ARM_X0 + 1, mid - 3, '#43492f', 1, 1);
+  px(ARM_X0 + 0, mid - 2, '#43492f', 5, 1);
+  px(ARM_X0 + 0, mid - 1, '#5a6142', 5, 3);
+  px(ARM_X0 + 1, mid + 2, '#43492f', 4, 1);
+  px(HAND_X, mid - 1, '#c39a72', 2, 2);
+  px(HAND_X, mid + 1, '#9a7554', 2, 1);
+
+  const bodyX0 = HAND_X + 2;
+  const stockEnd = bodyX0 + (stock === 'none' ? 0 : stockLen);
+  const recvEnd = Math.min(len - 1, stockEnd + Math.max(3, Math.round((len - stockEnd) * 0.42)));
+
+  // stock
+  if (stock === 'wood') {
+    px(bodyX0, mid - 1, wood[1], stockLen, 3);
+    px(bodyX0, mid - 1, wood[2], stockLen, 1);
+    px(bodyX0, mid + 1, wood[0], stockLen, 1);
+  } else if (stock === 'wire') {
+    px(bodyX0, mid, metal[0], stockLen, 1);
+    px(bodyX0, mid + 1, metal[0], stockLen, 1);
+    px(bodyX0 + 1, mid - 1, metal[0], 1, 1);
+  } else if (stock === 'tank') {
+    px(bodyX0, mid - 2, accent ?? metal[1], stockLen, 5);
+    px(bodyX0, mid - 2, '#ffffff33', stockLen, 1);
+  }
+  // receiver
+  px(stockEnd, mid - 2, metal[1], recvEnd - stockEnd, 5);
+  px(stockEnd, mid - 2, metal[2], recvEnd - stockEnd, 1);
+  px(stockEnd, mid + 2, metal[0], recvEnd - stockEnd, 1);
+  px(recvEnd - 1, mid - 2, metal[0], 1, 5);
+  // sight
+  px(stockEnd + 1, mid - 3, metal[0], 1, 1);
+  px(recvEnd - 2, mid - 3, metal[0], 1, 1);
+  // barrel
+  if (barrel === 'thin') {
+    px(recvEnd, mid, metal[0], len - recvEnd, 1);
+    px(recvEnd, mid - 1, metal[1], len - recvEnd - 2, 1);
+  } else if (barrel === 'thick') {
+    px(recvEnd, mid - 1, metal[0], len - recvEnd, 3);
+    px(recvEnd, mid - 1, metal[1], len - recvEnd, 1);
+  } else if (barrel === 'shroud') {
+    px(recvEnd, mid - 2, metal[0], len - recvEnd, 5);
+    px(recvEnd, mid - 1, metal[1], len - recvEnd, 1);
+    for (let x = recvEnd + 2; x < len; x += 3) px(x, mid - 2, metal[0], 1, 5);
+  }
+  // magazine
+  if (mag === 'box') {
+    const mx = stockEnd + 1;
+    px(mx, mid + 3, metal[0], magLen, 3);
+    px(mx, mid + 3, metal[1], 1, 3);
+  } else if (mag === 'drum') {
+    const mx = stockEnd;
+    px(mx, mid + 3, metal[0], magLen + 1, 3);
+    px(mx + 1, mid + 2, metal[1], magLen - 1, 1);
+    px(mx, mid + 5, metal[2], magLen + 1, 1);
+  } else if (mag === 'belt') {
+    px(stockEnd + 1, mid + 3, '#7a6a3a', magLen, 2);
+    for (let x = stockEnd + 1; x < stockEnd + 1 + magLen; x += 2) px(x, mid + 3, '#b99542', 1, 2);
+  } else if (mag === 'tank') {
+    px(stockEnd, mid + 3, accent ?? '#5a7a3a', magLen, 3);
+    px(stockEnd, mid + 3, '#ffffff33', magLen, 1);
+  }
+  // muzzle device
+  const last = len - 1;
+  if (muzzle === 'cone') {
+    px(last - 2, mid - 2, accent ?? metal[1], 3, 5);
+    px(last - 1, mid - 1, '#1b1c20', 2, 3);
+  } else if (muzzle === 'coil') {
+    for (let i = 0; i < 3; i++) px(last - 4 + i * 2, mid - 2, accent ?? '#7fd0a0', 1, 5);
+  } else if (muzzle === 'prongs') {
+    px(last - 1, mid - 3, accent ?? metal[2], 2, 1);
+    px(last - 1, mid + 3, accent ?? metal[2], 2, 1);
+    px(last - 1, mid - 1, accent ?? metal[2], 1, 3);
+  } else if (muzzle === 'brake') {
+    px(last - 3, mid - 2, metal[0], 4, 5);
+    px(last - 3, mid, '#1b1c20', 4, 1);
+  }
+  return canvas;
+}
+
+// Per-weapon silhouettes. `pivot` is the grip in the sprite, `muzzle` the tip
+// of the barrel -- both relative to the sprite's top-left corner.
+export const GUN_SPECS = {
+  m1911:      { len: 13, stock: 'none', mag: 'box',  magLen: 2, barrel: 'thin',   muzzle: 'none' },
+  mp40:       { len: 18, stock: 'wire', mag: 'box',  magLen: 3, barrel: 'thin',   muzzle: 'none' },
+  thompson:   { len: 20, stock: 'wood', stockLen: 6, mag: 'drum', magLen: 4, barrel: 'shroud', muzzle: 'brake' },
+  trenchgun:  { len: 19, stock: 'wood', stockLen: 6, mag: 'none', barrel: 'shroud', muzzle: 'none' },
+  ppsh:       { len: 21, stock: 'wood', stockLen: 5, mag: 'drum', magLen: 4, barrel: 'shroud', muzzle: 'none' },
+  kar98k:     { len: 25, stock: 'wood', stockLen: 6, mag: 'none', barrel: 'thin',   muzzle: 'none' },
+  fg42:       { len: 24, stock: 'wood', stockLen: 4, mag: 'box',  magLen: 4, barrel: 'thin',   muzzle: 'prongs' },
+  bar:        { len: 23, stock: 'wood', stockLen: 5, mag: 'box',  magLen: 4, barrel: 'thick',  muzzle: 'brake' },
+  mg42:       { len: 27, stock: 'wood', stockLen: 5, mag: 'belt', magLen: 6, barrel: 'shroud', muzzle: 'brake' },
+  ptrs41:     { len: 31, stock: 'wood', stockLen: 6, mag: 'box',  magLen: 4, barrel: 'thin',   muzzle: 'brake' },
+  raygun:     { len: 17, stock: 'tank', stockLen: 5, mag: 'tank', magLen: 3, barrel: 'none', muzzle: 'cone', accent: '#7fd75a' },
+  wunderwaffe:{ len: 23, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'coil', accent: '#8fd6ff' },
+  thundergun: { len: 21, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'cone', accent: '#f0a03c' },
+  winterhowl: { len: 22, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'prongs', accent: '#7fe6ff' },
+};
+
+function buildMonkeyBomb() {
+  const { canvas, ctx } = makeCanvas(11, 11);
+  const b = '#6b4a2a', B = '#45301c', w = '#c99a63', k = '#1b1512', g = '#b9b06a';
+  const px = (x, y, c, ww = 1, hh = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, ww, hh); };
+  px(3, 1, b, 5, 1);                 // head top
+  px(2, 2, b, 7, 1);
+  px(1, 3, B, 1, 3); px(9, 3, B, 1, 3);   // ears
+  px(2, 3, w, 7, 1);
+  px(2, 4, w, 7, 1); px(3, 4, k, 1, 1); px(7, 4, k, 1, 1);
+  px(3, 5, w, 5, 1); px(4, 5, k, 1, 1); px(6, 5, k, 1, 1);
+  px(3, 6, w, 5, 1);
+  px(3, 7, b, 5, 1);
+  px(2, 8, b, 7, 1);                 // shoulders
+  px(2, 9, B, 2, 2); px(7, 9, B, 2, 2);   // arms
+  px(4, 9, g, 3, 1);                 // wind-up key
+  px(4, 10, B, 3, 1);
+  return canvas;
+}
+
+/** Overlay a flat colour over a sprite, keeping its alpha (for enemy variants). */
+export function tintCopy(src, colour, amount = 0.35) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  ctx.drawImage(src, 0, 0);
+  ctx.globalCompositeOperation = 'source-atop';
+  ctx.globalAlpha = amount;
+  ctx.fillStyle = colour;
+  ctx.fillRect(0, 0, src.width, src.height);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  return canvas;
+}
+
+function buildDog() {
+  const W = 18, H = 12;
+  const { canvas, ctx } = makeCanvas(W, H);
+  const D = '#2a2119';   // dark fur
+  const M = '#4a3a28';   // mid fur
+  const L = '#6b5439';   // light fur
+  const E = '#8c2a20';   // eye glow
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+
+  // legs first so the body covers their tops (3px stubs, not stilts)
+  for (const [lx, ly] of [[7, 1], [7, 9], [12, 1], [12, 9]]) px(lx, ly, D, 2, 3);
+  // tail sweeping off to the left
+  px(3, 4, D, 3, 1); px(1, 3, D, 3, 1);
+  // body
+  px(5, 3, M, 9, 6);
+  px(5, 3, L, 9, 1);
+  px(5, 8, D, 9, 1);
+  px(6, 4, D, 3, 2);            // haunch shading
+  px(4, 4, D, 2, 4);            // rear
+  // neck + head
+  px(12, 3, M, 4, 6);
+  px(12, 3, L, 4, 1);
+  px(15, 4, M, 3, 4);           // snout
+  px(17, 5, D, 1, 2);
+  px(17, 5, '#1a1410', 1, 1);   // nose
+  px(11, 2, D, 2, 2);           // ears
+  px(14, 2, D, 2, 2);
+  px(15, 4, E, 1, 1);           // eyes
+  px(12, 4, E, 1, 1);
+  return canvas;
+}
+
 let cache = null;
 
 export function buildArt() {
@@ -70,15 +254,24 @@ export function buildArt() {
   const zombieAtk = frames(ZOMBIE_UPPER_ATTACK, ZOMBIE_LEGS);
 
   const guns = {};
-  for (const [id, g] of Object.entries(GUNS)) {
+  for (const [id, spec] of Object.entries(GUN_SPECS)) {
+    const h = spec.height ?? 9;
+    const mid = (h - 1) >> 1;
     guns[id] = {
-      img: buildSprite(g.rows, g.w, g.h),
+      img: buildGun(spec),
       flip: null,
-      pivot: g.pivot,
-      muzzle: g.muzzle,
+      pivot: { x: 2, y: mid },
+      muzzle: { x: spec.len, y: mid },
     };
     guns[id].flip = flipH(guns[id].img);
   }
+  guns.monkeybomb = {
+    img: buildMonkeyBomb(),
+    flip: null,
+    pivot: { x: 5, y: 5 },
+    muzzle: { x: 9, y: 5 },
+  };
+  guns.monkeybomb.flip = flipH(guns.monkeybomb.img);
 
   const plaques = {};
   for (const [id, rows] of Object.entries(PLAQUE_ART)) {
@@ -92,12 +285,25 @@ export function buildArt() {
     zombieFlip: zombie.map(flipH),
     zombieAtk,
     zombieAtkFlip: zombieAtk.map(flipH),
+    dog: buildDog(),
+    dogFlip: flipH(buildDog()),
+    // enemy variants: pale/angry runners, slab-grey brutes
+    zombieRunner: zombie.map((c) => tintCopy(c, '#c86a5a', 0.42)),
+    zombieRunnerFlip: zombie.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
+    zombieRunnerAtk: zombieAtk.map((c) => tintCopy(c, '#c86a5a', 0.42)),
+    zombieRunnerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
+    zombieBrute: zombie.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
+    zombieBruteFlip: zombie.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),
+    zombieBruteAtk: zombieAtk.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
+    zombieBruteAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),
+    dogWhite: flatCopy(buildDog(), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),
     playerWhiteFlip: player.map((c) => flatCopy(flipH(c), '#ffffff')),
     zombieWhite: zombie.map((c) => flatCopy(c, '#ffe9e9')),
     zombieWhiteFlip: zombie.map((c) => flatCopy(flipH(c), '#ffe9e9')),
     guns,
     plaques,
+    monkeybomb: guns.monkeybomb.img,
     grenade: buildSprite(GRENADE_SPRITE.rows, GRENADE_SPRITE.w, GRENADE_SPRITE.h),
   };
   return cache;
@@ -115,6 +321,11 @@ export const TILE = {
   DOOR: 4,
   CRATE: 5,
   RUBBLE: 6,
+  TREE: 7,
+  FENCE: 8,
+  VEHICLE: 9,
+  STAIR: 10,
+  SECRET_DOOR: 11,
 };
 
 const C = {
@@ -276,6 +487,103 @@ function paintCrate(ctx, px, py, rng, n) {
   }
 }
 
+function paintTree(ctx, px, py, rng) {
+  paintExterior(ctx, px, py, rng);
+  const cx = px + T / 2 + ((rng() * 5) | 0) - 2;
+  const cy = py + T / 2 + ((rng() * 5) | 0) - 2;
+  const r = 8 + ((rng() * 4) | 0);
+  // canopy: dark base, lighter crown offset up-left, a few needle clumps
+  ctx.fillStyle = '#131b10';
+  ctx.beginPath(); ctx.arc(cx + 1, cy + 2, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#1a2414';
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#23301b';
+  ctx.beginPath(); ctx.arc(cx - 1.5, cy - 2, r * 0.72, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#2b3a21';
+  ctx.beginPath(); ctx.arc(cx - 3, cy - 4, r * 0.42, 0, Math.PI * 2); ctx.fill();
+  for (let i = 0; i < 10; i++) {
+    const a = rng() * Math.PI * 2, d = rng() * r * 0.95;
+    ctx.fillStyle = rng() < 0.5 ? '#35482a' : '#111a0d';
+    ctx.fillRect(cx + Math.cos(a) * d, cy + Math.sin(a) * d, 2, 1);
+  }
+}
+
+function paintFence(ctx, px, py, rng) {
+  paintExterior(ctx, px, py, rng);
+  // two rails + pickets; deliberately low so you can see and shoot over it
+  ctx.fillStyle = '#20242a';
+  ctx.fillRect(px, py + 6, T, 2);
+  ctx.fillRect(px, py + 14, T, 2);
+  for (let i = 0; i < 4; i++) {
+    const x = px + 2 + i * 6;
+    ctx.fillStyle = '#4a4640';
+    ctx.fillRect(x, py + 3, 2, 17);
+    ctx.fillStyle = '#5d584f';
+    ctx.fillRect(x, py + 3, 1, 17);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(x + 2, py + 4, 1, 16);
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(px, py + 19, T, 2);
+}
+
+function paintVehicle(ctx, px, py, rng) {
+  paintExterior(ctx, px, py, rng);
+  // rusted flatbed: body, cab hint, broken wheels
+  ctx.fillStyle = '#3d3a33';
+  ctx.fillRect(px + 1, py + 2, T - 2, T - 5);
+  ctx.fillStyle = '#4a463c';
+  ctx.fillRect(px + 1, py + 2, T - 2, 3);
+  ctx.fillStyle = '#2b2924';
+  ctx.fillRect(px + 1, py + T - 6, T - 2, 3);
+  ctx.fillStyle = '#5a4a30';
+  for (let i = 0; i < 8; i++) {
+    ctx.fillRect(px + 2 + ((rng() * (T - 5)) | 0), py + 3 + ((rng() * (T - 9)) | 0), 2, 2);
+  }
+  ctx.fillStyle = '#17181a';
+  ctx.fillRect(px + 2, py + 1, 5, T - 3);
+  ctx.fillRect(px + T - 8, py + 1, 6, T - 3);
+  ctx.fillStyle = '#0f1012';
+  ctx.fillRect(px + 3, py + 4, 3, 5);   // shattered windscreen
+  ctx.fillStyle = 'rgba(120,140,160,0.25)';
+  ctx.fillRect(px + 4, py + 5, 2, 3);
+}
+
+function paintStair(ctx, px, py, rng) {
+  ctx.fillStyle = '#191b20';
+  ctx.fillRect(px, py, T, T);
+  // treads receding into the dark
+  for (let i = 0; i < 6; i++) {
+    const y = py + 2 + i * 3;
+    ctx.fillStyle = `rgba(${110 - i * 12},${112 - i * 12},${120 - i * 12},1)`;
+    ctx.fillRect(px + 3, y, T - 6, 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(px + 3, y + 2, T - 6, 1);
+  }
+  ctx.strokeStyle = 'rgba(200,190,160,0.5)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px + 1.5, py + 1.5, T - 3, T - 3);
+  ctx.fillStyle = 'rgba(230,220,180,0.55)';
+  ctx.fillRect(px + T / 2 - 1, py + 3, 2, T - 8);
+  ctx.fillRect(px + T / 2 - 3, py + T - 7, 6, 2);
+}
+
+function paintSecretDoor(ctx, px, py, rng) {
+  // a bricked-up archway -- the mortar is slightly off, if you look closely
+  ctx.fillStyle = '#33353c';
+  ctx.fillRect(px, py, T, T);
+  speckle(ctx, px, py, 14, rng, 0.25, 0.05);
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  for (let y = 0; y < T; y += 5) ctx.fillRect(px, py + y, T, 1);
+  const off = ((px / T) | 0) % 2 ? 0 : 6;
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  for (let y = 0; y < T; y += 5) for (let x = off; x < T; x += 12) ctx.fillRect(px + x, py + y, 1, 5);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(px + T / 2 - 1, py + 3, 1, T - 6);
+  ctx.fillStyle = 'rgba(150,140,110,0.20)';
+  ctx.fillRect(px + T / 2 - 3, py + T / 2 - 1, 7, 2);
+}
+
 function paintRubble(ctx, px, py, rng) {
   paintFloor(ctx, px, py, rng, false);
   for (let i = 0; i < 6; i++) {
@@ -315,6 +623,16 @@ export function paintLevel(tiles, w, h, seed = 1337) {
           n: at(x, y - 1) === TILE.WALL, s: at(x, y + 1) === TILE.WALL,
           w: at(x - 1, y) === TILE.WALL, e: at(x + 1, y) === TILE.WALL,
         });
+      } else if (t === TILE.TREE) {
+        paintTree(ctx, px, py, trng);
+      } else if (t === TILE.FENCE) {
+        paintFence(ctx, px, py, trng);
+      } else if (t === TILE.VEHICLE) {
+        paintVehicle(ctx, px, py, trng);
+      } else if (t === TILE.STAIR) {
+        paintStair(ctx, px, py, trng);
+      } else if (t === TILE.SECRET_DOOR) {
+        paintSecretDoor(ctx, px, py, trng);
       } else if (t === TILE.EXTERIOR) {
         paintExterior(ctx, px, py, trng);
       } else {
