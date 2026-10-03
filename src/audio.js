@@ -23,13 +23,21 @@ export class AudioEngine {
     this.master.gain.value = 0.85;
     this.master.connect(this.ctx.destination);
     // every one-shot effect runs through the sfx bus; ambience has its own
+    // routing: every effect -> sfx/ambient bus -> shared bus -> master -> out.
+    // The shared bus has to exist *before* anything connects to it, otherwise
+    // connect(undefined) throws and the whole engine dies silently.
+    const bus = this.ctx.createGain();
+    bus.gain.value = 1;
+    bus.connect(this.master);
+    this.bus = bus;
+
     this.sfxBus = this.ctx.createGain();
     this.sfxBus.gain.value = 1;
-    this.sfxBus.connect(this.bus);
+    this.sfxBus.connect(bus);
+
     this.ambientBus = this.ctx.createGain();
     this.ambientBus.gain.value = 1;
-    this.ambientBus.connect(this.bus);
-    this.bus = this.sfxBus;
+    this.ambientBus.connect(bus);
 
     // shared white-noise buffer
     const len = this.ctx.sampleRate * 2;

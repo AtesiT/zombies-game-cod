@@ -389,6 +389,20 @@ const C = {
   grass: '#2c3424',
   grass2: '#333c2b',
   stone: '#3a3b38',
+  // upper storeys: laid boards underfoot, stud-and-plaster walls around you.
+  // Deliberately a different material (and a warmer, lighter tone) than the
+  // concrete and brick downstairs, so going up never looks like the same room.
+  boardA: '#5d4a33',
+  boardB: '#55432e',
+  boardC: '#66523a',
+  plankSeam: 'rgba(0,0,0,0.34)',
+  plankGrain: 'rgba(0,0,0,0.13)',
+  partSide: '#4f4a3f',
+  partSide2: '#474336',
+  partTop: '#6a6353',
+  partTopDim: '#5b5548',
+  partTopLit: '#7b7361',
+  partDark: '#2b2822',
 };
 
 function speckle(ctx, px, py, n, rng, dark = 0.16, light = 0.05) {
@@ -462,6 +476,83 @@ function paintExterior(ctx, px, py, rng) {
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.fillRect(px + ((rng() * (T - 4)) | 0), py + ((rng() * (T - 3)) | 0), 2, 1);
   }
+}
+
+function paintFloorBoards(ctx, px, py, rng, northIsWall) {
+  const plank = 6;
+  for (let y = 0; y < T; y += plank) {
+    const k = rng();
+    const base = k < 0.34 ? C.boardA : k < 0.68 ? C.boardB : C.boardC;
+    ctx.fillStyle = base;
+    ctx.fillRect(px, py + y, T, plank - 1);
+    // grain
+    ctx.fillStyle = C.plankGrain;
+    for (let i = 0; i < 3; i++) {
+      const gy = py + y + 1 + ((rng() * (plank - 2)) | 0);
+      ctx.fillRect(px + ((rng() * T) | 0), gy, 3 + ((rng() * 9) | 0), 1);
+    }
+    ctx.fillStyle = C.plankSeam;
+    ctx.fillRect(px, py + y + plank - 1, T, 1);
+  }
+  // staggered butt joints
+  ctx.fillStyle = 'rgba(0,0,0,0.26)';
+  for (let y = 0; y < T; y += plank) {
+    ctx.fillRect(px + ((rng() * T) | 0), py + y, 1, plank - 1);
+  }
+  // knots and nail heads
+  if (rng() < 0.18) {
+    ctx.fillStyle = 'rgba(30,20,12,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(px + 3 + rng() * (T - 6), py + 3 + rng() * (T - 6), 1.5 + rng() * 2, 1 + rng() * 1.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (rng() < 0.4) {
+    ctx.fillStyle = 'rgba(226,216,190,0.18)';
+    ctx.fillRect(px + 1 + ((rng() * (T - 2)) | 0), py + ((rng() * T) | 0), 1, 1);
+  }
+  speckle(ctx, px, py, 9, rng);
+  if (northIsWall) {
+    const g = ctx.createLinearGradient(0, py, 0, py + 7);
+    g.addColorStop(0, 'rgba(0,0,0,0.55)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(px, py, T, 7);
+  }
+}
+
+/** Upstairs partitions are timber stud and plaster, not brick. */
+function paintPartition(ctx, px, py, rng, n) {
+  ctx.fillStyle = rng() < 0.5 ? C.partSide : C.partSide2;
+  ctx.fillRect(px, py, T, T);
+  speckle(ctx, px, py, 11, rng, 0.2, 0.045);
+
+  // vertical studs ghosting through the plaster
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  for (let x = 5; x < T; x += 8) ctx.fillRect(px + x, py, 1, T);
+  ctx.fillStyle = 'rgba(0,0,0,0.07)';
+  ctx.fillRect(px, py + ((T / 2) | 0), T, 1);
+  // scuffed skirting and a few cracks
+  if (rng() < 0.3) {
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    const x = px + 2 + ((rng() * (T - 4)) | 0);
+    let y = py + 3 + ((rng() * 8) | 0);
+    for (let i = 0; i < 6 + ((rng() * 5) | 0); i++) {
+      ctx.fillRect(x, y, 1, 1);
+      y += 1;
+      if (y > py + T - 2) break;
+    }
+  }
+
+  const exposed = !n.n;
+  const faceH = exposed ? 5 : 3;
+  ctx.fillStyle = exposed ? C.partTop : C.partTopDim;
+  ctx.fillRect(px, py, T, faceH);
+  if (exposed) { ctx.fillStyle = C.partTopLit; ctx.fillRect(px, py, T, 1); }
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fillRect(px, py + faceH, T, 1);
+  speckle(ctx, px, py, 4, rng, 0.18, 0.06);
+  if (!n.w) { ctx.fillStyle = C.partDark; ctx.fillRect(px, py, 1, T); }
+  if (!n.e) { ctx.fillStyle = C.partDark; ctx.fillRect(px + T - 1, py, 1, T); }
 }
 
 function paintWall(ctx, px, py, rng, n) {
@@ -705,7 +796,7 @@ function paintVoid(ctx, px, py, rng, rows = 50) {
 // when the player takes the stairs, so repainting has to stay cheap
 const _levelCache = new Map();
 
-export function paintLevel(tiles, w, h, seed = 1337) {
+export function paintLevel(tiles, w, h, seed = 1337, storey = 0) {
   const hit = _levelCache.get(seed);
   if (hit && hit.w === w && hit.h === h) return hit.canvas;
   const { canvas, ctx } = makeCanvas(w * T, h * T);
@@ -720,10 +811,12 @@ export function paintLevel(tiles, w, h, seed = 1337) {
       // deterministic per-tile rng so repaints are stable
       const trng = makeRng(seed + i * 2654435761);
       if (t === TILE.WALL) {
-        paintWall(ctx, px, py, trng, {
+        const nb = {
           n: at(x, y - 1) === TILE.WALL, s: at(x, y + 1) === TILE.WALL,
           w: at(x - 1, y) === TILE.WALL, e: at(x + 1, y) === TILE.WALL,
-        });
+        };
+        if (storey > 0) paintPartition(ctx, px, py, trng, nb);
+        else paintWall(ctx, px, py, trng, nb);
       } else if (t === TILE.TREE) {
         paintTree(ctx, px, py, trng);
       } else if (t === TILE.FENCE) {
@@ -742,7 +835,9 @@ export function paintLevel(tiles, w, h, seed = 1337) {
       } else if (t === TILE.VOID) {
         paintVoid(ctx, px, py, trng, h);
       } else {
-        paintFloor(ctx, px, py, trng, at(x, y - 1) === TILE.WALL);
+        const shaded = at(x, y - 1) === TILE.WALL;
+        if (storey > 0) paintFloorBoards(ctx, px, py, trng, shaded);
+        else paintFloor(ctx, px, py, trng, shaded);
         if (t === TILE.CRATE) paintCrate(ctx, px, py, trng, { s: at(x, y + 1) === TILE.WALL });
         else if (t === TILE.RUBBLE) paintRubble(ctx, px, py, trng);
       }

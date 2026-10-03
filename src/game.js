@@ -1065,24 +1065,21 @@ export class Game {
   checkLevelLinks(dt) {
     this._linkCd = Math.max(0, (this._linkCd ?? 0) - dt);
     const p = this.player;
-    let onAny = false;
+    let on = null;
     for (const l of this.map.linksOn(this.map.floor)) {
       const at = this.map.linkPos(l, this.map.floor);
-      if (Math.abs(p.pos.x - at.x) > 14 || Math.abs(p.pos.y - at.y) > 14) continue;
-      onAny = true;
-      // Standing on a staircase must not bounce you between floors forever:
-      // you have to step off it before it will carry you again.
-      if (this._linkCd > 0 || !this._linkArmed) return;
-      const other = l.a.floor === this.map.floor ? l.b : l.a;
-      const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
-      this.goToFloor(other.floor, to, l);
-      return;
+      if (Math.abs(p.pos.x - at.x) <= 14 && Math.abs(p.pos.y - at.y) <= 14) { on = l; break; }
     }
-    // you also have to have been clear of *every* staircase for a beat first,
-    // so a horde shoving you around on the landing cannot bounce you up and
-    // down the building all night
-    if (!onAny) { this._linkOff = (this._linkOff ?? 0) + dt; if (this._linkOff > 0.45) this._linkArmed = true; }
-    else this._linkOff = 0;
+    // Stepping ONTO a staircase is what carries you up. Standing on one does
+    // nothing until you step off and come back, and you always arrive on the
+    // tile *beside* it -- so a horde jostling you on the landing cannot bounce
+    // you up and down the building all night.
+    const entered = on && !this._linkOn;
+    this._linkOn = on;
+    if (!entered || this._linkCd > 0) return;
+    const other = on.a.floor === this.map.floor ? on.b : on.a;
+    const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
+    this.goToFloor(other.floor, to, on);
   }
 
   // the nearest spot on the far side of a staircase tile: you arrive next to
@@ -1109,8 +1106,13 @@ export class Game {
     this.player.pos.x = spot.x;
     this.player.pos.y = spot.y;
     this.player.vel.x = 0; this.player.vel.y = 0;
-    this._linkCd = 0.55;
-    this._linkArmed = false;
+    this._linkCd = 0.9;
+    // remember whether we are standing on a link at the landing spot, so a
+    // cramped landing cannot immediately send us back down again
+    this._linkOn = this.map.linksOn(this.map.floor).find((l) => {
+      const at = this.map.linkPos(l, this.map.floor);
+      return Math.abs(spot.x - at.x) <= 14 && Math.abs(spot.y - at.y) <= 14;
+    }) ?? null;
     this.teleportFx = 1;
     this.particles.dust(spot.x, spot.y, randRange(0, TAU), 8);
     this.revealAround(spot.x, spot.y, 13);

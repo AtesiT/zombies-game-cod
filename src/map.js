@@ -286,32 +286,44 @@ export class GameMap {
       }));
     }
 
-    F.staticCanvas = paintLevel(tiles, MAP_W, MAP_H, 20240917 + index * 7919);
+    F.staticCanvas = paintLevel(tiles, MAP_W, MAP_H, 20240917 + index * 7919, index);
     return F;
   }
 
   // ------------------------------------------------------------ collision --
   /** Blocks movement? */
   solidAt(tx, ty) {
+    return this.solidTileOn(this.floor, tx, ty);
+  }
+
+  /**
+   * The same question, asked about a storey the player may not be standing on.
+   * Everything that used to be a bare `solidAt` on a creature that can be on
+   * another floor now comes through here -- and it must answer about *barred
+   * windows and shut doors* too, not just the tile type, or the horde walks
+   * straight through the barricades.
+   */
+  solidTileOn(floor, tx, ty) {
     if (!this.inside(tx, ty)) return true;
+    const F = floor === this.floor ? this : this.floors[floor];
+    if (!F) return true;
     const i = ty * this.w + tx;
-    switch (this.tiles[i]) {
+    switch (F.tiles[i]) {
       case TILE.WALL: case TILE.CRATE: case TILE.TREE:
       case TILE.FENCE: case TILE.VEHICLE: case TILE.VOID: return true;
-      case TILE.SECRET_DOOR: return !this.secretDoorOpen;
+      case TILE.SECRET_DOOR: return !F.secretDoorOpen;
       case TILE.WINDOW: {
-        const b = this.barricades[this.barricadeOf[i]];
+        const b = F.barricades[F.barricadeOf[i]];
         return b ? b.planks > 0 : false;
       }
       case TILE.DOOR: {
-        const d = this.doors[this.doorOf[i]];
+        const d = F.doors[F.doorOf[i]];
         return d ? !d.open : false;
       }
       default: return false;
     }
   }
 
-  /** Blocks bullets? (low fences do not) */
   blocksBullets(tx, ty) {
     if (!this.inside(tx, ty)) return true;
     const i = ty * this.w + tx;
@@ -488,17 +500,6 @@ export class GameMap {
   }
 
   /** Tile-only solidity check on a storey, without swapping the map over. */
-  solidTileOn(floor, tx, ty) {
-    if (!this.inside(tx, ty)) return true;
-    const F = this.floors[floor];
-    if (!F) return true;
-    const t = F.tiles[ty * this.w + tx];
-    if (t === TILE.VOID || t === TILE.WALL || t === TILE.CRATE
-      || t === TILE.TREE || t === TILE.FENCE || t === TILE.VEHICLE) return true;
-    if (t === TILE.SECRET_DOOR) return !F.secretDoorOpen;
-    return false;
-  }
-
   tileOn(floor, tx, ty) {
     const F = floor === this.floor ? this : this.floors[floor];
     if (!F || tx < 0 || ty < 0 || tx >= this.w || ty >= this.h) return TILE.VOID;
