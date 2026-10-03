@@ -11,8 +11,9 @@ import { Powerup, rollPowerup } from './powerups.js';
 import { Workbench, RECIPES, RECIPE_ORDER } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
+import { settings, SETTING_DEFS } from './settings.js';
 import { Lighting, drawVignette } from './lighting.js';
-import { HUD, drawTitle, drawPause, drawGameOver } from './hud.js';
+import { HUD, drawTitle, drawPause, drawGameOver, drawSettings } from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -63,9 +64,17 @@ const LAMPS = [
   phase: Math.random() * TAU, flick: 1, mains: !!l.mains,
 }));
 
+let activeGame = null;
+let settingsHooked = false;
+
 export class Game {
   constructor(input) {
     this.input = input;
+    activeGame = this;
+    if (!settingsHooked) {
+      settingsHooked = true;
+      settings.onChange(() => activeGame?.applySettings());
+    }
     this.vw = VW;
     this.vh = VH;
     this.map = new GameMap();
@@ -122,6 +131,12 @@ export class Game {
     this.banner = null;
     this.interaction = null;
     this.muzzleFlash = null;
+    this.settingsOpen = false;
+    this.settingsIndex = 0;
+    this.fps = 60;
+    this.tension = 0;
+    this.aimOnTarget = false;
+    this.aimOnHead = false;
     this.shakeMag = 0;
     this.shakeT = 0;
     this.shakeMax = 0.001;
@@ -169,6 +184,8 @@ export class Game {
   worldToScreen(wx, wy) { return { x: wx - this.cam.x, y: wy - this.cam.y }; }
 
   shake(mag, dur) {
+    mag *= (settings.get('shake') ?? 100) / 100;
+    if (mag <= 0.01) return;
     this.shakeMag = Math.max(this.shakeMag, mag);
     this.shakeT = Math.max(this.shakeT, dur);
     this.shakeMax = Math.max(this.shakeT, 0.001);
@@ -434,6 +451,7 @@ export class Game {
   }
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
+    if (!settings.get('blood')) return;
     const c = this.decalCtx;
     c.save();
     c.globalAlpha = alpha;
@@ -449,6 +467,38 @@ export class Game {
       c.fill();
     }
     c.restore();
+  }
+
+  /** Cheap version of the hitscan test, run every frame for the crosshair. */
+  updateAimTarget() {
+    const p = this.player;
+    const m = this.input.mouse;
+    const ox = p.pos.x, oy = p.pos.y;
+    let dx = m.x - ox, dy = m.y - oy;
+    const d = Math.hypot(dx, dy);
+    if (d < 1) { this.aimOnTarget = false; return; }
+    dx /= d; dy /= d;
+    const def = p.def;
+    const wall = this.map.rayWall(ox, oy, ox + dx * def.range, oy + dy * def.range);
+    const wallT = wall ? wall.t : def.range;
+    let hit = false, head = false;
+    for (const z of this.zombies) {
+      if (z.dead) continue;
+      const hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
+      const low = z.def.low ? 0.72 : 1;
+      let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
+      const headR = 5.2 * low;
+      if (res.d2 > headR * headR) {
+        res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
+        const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1);
+        if (res.d2 > bodyR * bodyR) continue;
+      } else head = true;
+      if (Math.hypot(res.cx - ox, res.cy - oy) > wallT) continue;
+      hit = true;
+      break;
+    }
+    this.aimOnTarget = hit;
+    this.aimOnHead = head;
   }
 
   // -------------------------------------------------------------- shooting
@@ -964,6 +1014,36 @@ export class Game {
   update(dt) {
     this.time += dt;
 
+    // ---- settings overlay (works anywhere, pauses the game behind it) -----
+    if (this.input.wasPressed('KeyO')) {
+      this.settingsOpen = !this.settingsOpen;
+      if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
+      else this.paused = this._wasPaused || false;
+    }
+    if (this.settingsOpen) {
+      const S = settings;
+      if (this.input.wasPressed('ArrowUp', 'KeyW')) {
+        this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
+        audio.dryFire();
+      }
+      if (this.input.wasPressed('ArrowDown', 'KeyS')) {
+        this.settingsIndex = (this.settingsIndex + 1) % SETTING_DEFS.length;
+        audio.dryFire();
+      }
+      if (this.input.wasPressed('ArrowLeft', 'KeyA')) S.nudge(SETTING_DEFS[this.settingsIndex].id, -1);
+      if (this.input.wasPressed('ArrowRight', 'KeyD')) S.nudge(SETTING_DEFS[this.settingsIndex].id, 1);
+      if (this.input.wasPressed('Enter', 'Space')) {
+        if (SETTING_DEFS[this.settingsIndex].id === 'reset') S.reset();
+        else S.activate(SETTING_DEFS[this.settingsIndex].id);
+      }
+      if (this.input.wasPressed('Escape', 'KeyP', 'KeyO')) {
+        this.settingsOpen = false;
+        this.paused = this._wasPaused || false;
+      }
+      this.hud.update(dt, this);
+      return;
+    }
+
     if (!this.started) {
       if (this.input.mouse.pressed || this.input.wasPressed('Space', 'Enter')) this.begin();
       return;
@@ -1037,6 +1117,7 @@ export class Game {
       }
     }
 
+    this.updateAimTarget();
     this.updateInteraction();
     if (!this.craftOpen) {
       if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
@@ -1137,12 +1218,30 @@ export class Game {
       if (r.life <= 0) this.shriekRings.splice(i, 1);
     }
 
+    // ---- the last few: the map goes quiet and starts breathing -------------
+    const aliveNow = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
+    const allSpawned = this.zombiesSpawned >= this.zombiesTotal;
+    const wantTension = (this.roundActive && allSpawned && aliveNow > 0 && aliveNow <= 2) ? 1 : 0;
+    this.tension = damp(this.tension ?? 0, wantTension, wantTension ? 0.9 : 1.6, dt);
+    audio.setTension(this.tension);
+    if (this.tension > 0.35) {
+      this._whimperT = (this._whimperT ?? 0) - dt;
+      if (this._whimperT <= 0) {
+        this._whimperT = randRange(2.4, 6.5);
+        audio.whimper();
+      }
+    } else this._whimperT = 1.5;
+
+    // ---- fps ----------------------------------------------------------------
+    this.fps = this.fps * 0.92 + (1 / Math.max(dt, 1e-4)) * 0.08;
+
     // ---- weather -----------------------------------------------------------
     const W = this.weather;
+    const weatherOn = settings.get('weather');
     W.wind += dt * 0.08;
     W.gust = damp(W.gust, 0.5 + Math.sin(W.wind * 1.7) * 0.5, 0.6, dt);
     const windX = 16 + W.gust * 46, windY = Math.sin(W.wind * 0.7) * 9;
-    for (const l of W.leaves) {
+    if (weatherOn) for (const l of W.leaves) {
       l.vx = damp(l.vx, windX, 1.2, dt);
       l.vy = damp(l.vy, windY + Math.sin(this.time * 2 + l.r) * 12, 1.2, dt);
       l.x += l.vx * dt * l.s;
@@ -1156,7 +1255,7 @@ export class Game {
 
     for (const p of this.particles.items) {
       if (p.decal && p.age + dt >= p.life) {
-        this.splat(p.x, p.y, p.size * randRange(1.2, 3.2), 0.35);
+        if (weatherOn) this.splat(p.x, p.y, p.size * randRange(1.2, 3.2), 0.35);
       }
     }
     this.particles.update(dt, this.map);
@@ -1166,6 +1265,7 @@ export class Game {
       this.tracers[i].life -= dt;
       if (this.tracers[i].life <= 0) this.tracers.splice(i, 1);
     }
+    if (!settings.get('flash')) { this.explosionLights.length = 0; this.flashLights.length = 0; }
     for (let i = this.flashLights.length - 1; i >= 0; i--) {
       this.flashLights[i].life -= dt;
       if (this.flashLights[i].life <= 0) this.flashLights.splice(i, 1);
@@ -1230,8 +1330,18 @@ export class Game {
     }
   }
 
+  /** Push the persisted settings into the engine. Runs at boot and on change. */
+  applySettings() {
+    audio.setVolumes({
+      master: settings.get('master'),
+      sfx: settings.get('sfx'),
+      ambient: settings.get('ambient'),
+    });
+  }
+
   begin() {
     this.started = true;
+    this.applySettings();
     audio.init();
     audio.resume();
     this.startRound(1);
@@ -1413,7 +1523,7 @@ export class Game {
     ctx.restore();     // <-- back to screen space
 
     // 9. weather: drifting leaves above the world
-    this.drawWeather(ctx, camX, camY);
+    if (settings.get('weather')) this.drawWeather(ctx, camX, camY);
 
     // 10. lighting (screen space!)
     this.drawLighting(ctx, camX, camY);
@@ -1427,7 +1537,8 @@ export class Game {
     }
     this.achievements.drawBanner?.(ctx, vw, vh);
 
-    if (!this.started) drawTitle(ctx, this, vw, vh);
+    if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
+    else if (!this.started) drawTitle(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
   }

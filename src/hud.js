@@ -6,6 +6,7 @@ import { RECIPES, RECIPE_ORDER } from './crafting.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
 import { T } from './art.js';
+import { settings, SETTING_DEFS } from './settings.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
@@ -65,6 +66,19 @@ export class HUD {
   }
 
   // -------------------------------------------------------------------------
+  _fps(ctx, game, w, h) {
+    if (!settings.get('fps')) return;
+    const f = Math.round(game.fps ?? 60);
+    const colour = f >= 55 ? '#7fbf5f' : f >= 40 ? '#f0d98a' : '#c4463a';
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.55)';
+    ctx.fillRect(w - 58, 6, 52, 18);
+    text(ctx, `${f} FPS`, w - 32, 17, {
+      font: 'bold 12px "Courier New", monospace', colour, align: 'center',
+    });
+    ctx.restore();
+  }
+
   draw(ctx, game, w, h) {
     const p = game.player;
 
@@ -91,6 +105,7 @@ export class HUD {
     this._prompt(ctx, game, w, h);
     this._minimap(ctx, game, w, h);
     this._banners(ctx, game, w, h);
+    this._fps(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
     this._toast(ctx, game, w, h);
   }
@@ -450,6 +465,7 @@ export class HUD {
   // ------------------------------------------------------------ crosshair --
   _crosshair(ctx, game, w, h) {
     const m = game.input.mouse;
+    const onTarget = settings.get('crosshair') && game.aimOnTarget;
     const spread = 5 + game.player.def.spread * 320
       + Math.hypot(game.player.vel.x, game.player.vel.y) * 0.045
       + game.player.recoil * 1.4;
@@ -463,15 +479,19 @@ export class HUD {
       ctx.lineTo(m.x + dx * (spread + len), m.y + dy * (spread + len));
       ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(240,235,215,0.9)';
-    ctx.lineWidth = 1;
+    const tight = onTarget ? spread * 0.62 : spread;
+    const ink = onTarget
+      ? (game.aimOnHead ? 'rgba(255,150,110,0.98)' : 'rgba(250,120,90,0.95)')
+      : 'rgba(240,235,215,0.9)';
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = onTarget ? 2 : 1;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       ctx.beginPath();
-      ctx.moveTo(m.x + dx * spread, m.y + dy * spread);
-      ctx.lineTo(m.x + dx * (spread + len), m.y + dy * (spread + len));
+      ctx.moveTo(m.x + dx * tight, m.y + dy * tight);
+      ctx.lineTo(m.x + dx * (tight + len), m.y + dy * (tight + len));
       ctx.stroke();
     }
-    ctx.fillStyle = 'rgba(240,235,215,0.7)';
+    ctx.fillStyle = onTarget ? 'rgba(255,150,110,0.95)' : 'rgba(240,235,215,0.7)';
     ctx.fillRect(m.x | 0, m.y | 0, 1, 1);
 
     if (this.hitMarker > 0) {
@@ -721,8 +741,91 @@ export function drawPause(ctx, game, w, h) {
   text(ctx, 'PAUSED', w / 2, h * 0.42, {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
-  text(ctx, 'P / ESC — resume      R — restart run', w / 2, h * 0.42 + 28, {
+  text(ctx, 'P / ESC — resume      O — settings      R — restart run', w / 2, h * 0.42 + 28, {
     font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  });
+  ctx.restore();
+}
+
+export function drawSettings(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.86)';
+  ctx.fillRect(0, 0, w, h);
+
+  const cw = 420, ch = 40 + SETTING_DEFS.length * 26 + 54;
+  const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
+
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  text(ctx, 'SETTINGS', cx + 14, cy + 20, {
+    font: 'bold 16px "Courier New", monospace', colour: GOLD,
+  });
+  text(ctx, 'W / S — pick      A / D — change      ENTER — flip', cx + cw - 14, cy + 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  });
+
+  let y = cy + 52;
+  for (let i = 0; i < SETTING_DEFS.length; i++) {
+    const d = SETTING_DEFS[i];
+    const sel = i === game.settingsIndex;
+    if (sel) {
+      ctx.fillStyle = 'rgba(240,217,138,0.10)';
+      ctx.fillRect(cx + 6, y - 12, cw - 12, 22);
+      ctx.fillStyle = GOLD;
+      ctx.fillRect(cx + 6, y - 12, 2, 22);
+    }
+    text(ctx, d.label, cx + 18, y + 2, {
+      font: 'bold 12px "Courier New", monospace',
+      colour: sel ? INK : INK_DIM,
+    });
+
+    if (d.type === 'range') {
+      const v = settings.get(d.id);
+      const bx = cx + cw - 148, bw = 84;
+      ctx.fillStyle = '#0c0e13';
+      ctx.fillRect(bx, y - 5, bw, 8);
+      const k = (v - d.min) / (d.max - d.min);
+      ctx.fillStyle = sel ? GOLD : '#7d8360';
+      ctx.fillRect(bx, y - 5, Math.round(bw * k), 8);
+      text(ctx, d.fmt(v), bx + bw + 54, y + 2, {
+        font: 'bold 12px "Courier New", monospace',
+        colour: sel ? INK : INK_DIM, align: 'right',
+      });
+    } else if (d.type === 'toggle') {
+      const v = settings.get(d.id);
+      const bx = cx + cw - 108;
+      ctx.fillStyle = v ? '#3d6b3a' : '#2a2d35';
+      ctx.fillRect(bx, y - 11, 46, 20);
+      ctx.fillStyle = v ? '#8fdc6a' : '#6a6a6a';
+      ctx.fillRect(v ? bx + 26 : bx + 4, y - 7, 16, 12);
+      text(ctx, v ? 'ON' : 'OFF', cx + cw - 18, y + 2, {
+        font: 'bold 12px "Courier New", monospace',
+        colour: v ? '#8fdc6a' : INK_DIM, align: 'right',
+      });
+    } else {
+      text(ctx, 'ENTER', cx + cw - 18, y + 2, {
+        font: 'bold 12px "Courier New", monospace',
+        colour: sel ? GOLD : INK_DIM, align: 'right',
+      });
+    }
+    y += 26;
+  }
+
+  // hint line for whatever is selected
+  const hint = SETTING_DEFS[game.settingsIndex]?.hint;
+  if (hint) {
+    text(ctx, hint, w / 2, cy + ch - 30, {
+      font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  }
+  text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 14, {
+    font: 'bold 11px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
   });
   ctx.restore();
 }
