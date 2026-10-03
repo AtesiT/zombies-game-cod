@@ -49,6 +49,22 @@ export const SETTING_DEFS = [
     hint: 'Frame counter in the top-right',
   },
   {
+    id: 'lighting', label: 'LIGHTING QUALITY', type: 'range',
+    min: 0, max: 2, step: 1, def: 2,
+    fmt: (v) => ['LOW', 'MEDIUM', 'HIGH'][v] ?? 'HIGH',
+    hint: 'How finely shadows are cut — high is sharpest, low is fastest',
+  },
+  {
+    id: 'autoQuality', label: 'AUTO PERFORMANCE', type: 'toggle', def: true,
+    hint: 'Eases lighting and weather down by itself if the frame rate sags',
+  },
+  {
+    id: 'simRate', label: 'SIMULATION RATE', type: 'range',
+    min: 0, max: 1, step: 1, def: 0,
+    fmt: (v) => (v ? 'HIGH 120' : 'NORMAL 60'),
+    hint: 'Steps per second — high only matters when frames are already slow',
+  },
+  {
     id: 'reset', label: 'RESTORE DEFAULTS', type: 'action', def: false,
     hint: 'Put everything back the way it shipped',
   },

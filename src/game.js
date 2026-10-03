@@ -83,6 +83,14 @@ export class Game {
     this.hud = new HUD();
     this.achievements = new Achievements();
 
+    // performance state: what the player asked for, and how far the automatic
+    // governor has backed off from it while frames are slow.
+    this.stepRate = 60;
+    this._userLighting = 2;
+    this._perfStage = 0;
+    this._slowFrames = 0;
+    this._fastFrames = 0;
+
     this._decals = [];
     this._decalFor(0);
     this.decals = this._decals[0];
@@ -1610,6 +1618,43 @@ export class Game {
       sfx: settings.get('sfx'),
       ambient: settings.get('ambient'),
     });
+    this.stepRate = settings.get('simRate') ? 120 : 60;
+    // the player moved the slider themselves, so drop whatever auto had dialled in
+    const want = settings.get('lighting') ?? 2;
+    if (this._userLighting !== want) {
+      this._userLighting = want;
+      this._perfStage = 0;
+      this._slowFrames = 0;
+      this._fastFrames = 0;
+    }
+    if (this.lighting) this._applyLightScale();
+  }
+
+  /** Lighting resolution = the player's pick, minus however far auto backed off. */
+  _applyLightScale() {
+    const SCALES = [0.25, 0.375, 0.5];
+    const i = Math.max(0, Math.min(SCALES.length - 1, (this._userLighting ?? 2) - this._perfStage));
+    this.lighting.setScale(SCALES[i]);
+  }
+
+  /**
+   * The performance governor. `workMs` is what the last frame really spent
+   * updating and drawing -- not the wall clock gap, which on a healthy machine
+   * is nearly all vsync idle. Sustained slow frames walk the lighting
+   * resolution down a step at a time; a long calm stretch walks it back up.
+   */
+  tickPerf(workMs) {
+    if (!settings.get('autoQuality')) { this._slowFrames = 0; this._fastFrames = 0; return; }
+    if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
+    else if (workMs < 11) { this._fastFrames++; this._slowFrames = 0; }
+    else { this._slowFrames = 0; this._fastFrames = 0; }
+
+    const ceil = this._userLighting ?? 2;
+    if (this._slowFrames >= 90 && this._perfStage < ceil) {
+      this._perfStage++; this._slowFrames = 0; this._applyLightScale();
+    } else if (this._fastFrames >= 900 && this._perfStage > 0) {
+      this._perfStage--; this._fastFrames = 0; this._applyLightScale();
+    }
   }
 
   begin() {
@@ -1833,7 +1878,8 @@ export class Game {
     ctx.restore();     // <-- back to screen space
 
     // 9. weather: drifting leaves above the world
-    if (settings.get('weather')) this.drawWeather(ctx, camX, camY);
+    // the governor only reaches for the weather once the lights are already low
+    if (settings.get('weather') && this._perfStage < 2) this.drawWeather(ctx, camX, camY);
 
     // 10. lighting (screen space!)
     this.drawLighting(ctx, camX, camY);

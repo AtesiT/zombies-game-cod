@@ -43,25 +43,33 @@ window.addEventListener('keydown', unlock);
 // ---------------------------------------------------------------------------
 let last = performance.now();
 let acc = 0;
-const STEP = 1 / 120;          // fixed physics step
 const MAX_FRAME = 0.25;
+// 120 Hz physics is lovely right up until the frame rate dips, at which point
+// the catch-up loop doubles the work on exactly the frames that can least
+// afford it. 60 is plenty for a top-down shooter, and it is a setting.
+const MAX_STEPS = 6;
 
 function frame(now) {
   let dt = (now - last) / 1000;
   last = now;
   if (dt > MAX_FRAME) dt = MAX_FRAME;
 
+  const t0 = performance.now();
+
+  const STEP = 1 / (game.stepRate || 60);
   acc += dt;
   let steps = 0;
-  while (acc >= STEP && steps < 12) {
+  while (acc >= STEP && steps < MAX_STEPS) {
     game.update(STEP);
     input.endFrame();
     acc -= STEP;
     steps++;
   }
-  if (steps === 12) acc = 0;
+  if (steps === MAX_STEPS) acc = 0;      // too far behind to catch up: drop time
 
   game.draw(ctx);
+
+  game.tickPerf(performance.now() - t0);
 
   requestAnimationFrame(frame);
 }

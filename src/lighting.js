@@ -82,6 +82,8 @@ function coneSprite(spread) {
 
 export class Lighting {
   constructor(w, h, scale = 0.5) {
+    this.baseW = w;
+    this.baseH = h;
     this.w = Math.max(1, Math.round(w * scale));
     this.h = Math.max(1, Math.round(h * scale));
     this.scale = scale;
@@ -103,6 +105,18 @@ export class Lighting {
   }
 
   setAmbient(rgb, alpha) { this.ambient = rgb; this.ambientAlpha = alpha; }
+
+  /** Re-cut the layers at a new resolution -- the quality switch, live. */
+  setScale(scale) {
+    if (scale === this.scale) return;
+    this.scale = scale;
+    this.w = Math.max(1, Math.round(this.baseW * scale));
+    this.h = Math.max(1, Math.round(this.baseH * scale));
+    this.canvas.width = this.w; this.canvas.height = this.h;
+    this.glowCanvas.width = this.w; this.glowCanvas.height = this.h;
+    this.ctx = this.canvas.getContext('2d');
+    this.glowCtx = this.glowCanvas.getContext('2d');
+  }
 
   begin() {
     const c = this.ctx;

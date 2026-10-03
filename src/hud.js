@@ -13,21 +13,107 @@ const INK_DIM = '#9a917c';
 const GOLD = '#f0d98a';
 const RED = '#c4463a';
 
+// ------------------------------------------------------------------ text
+// Setting ctx.font is one of the more expensive things you can ask a 2d
+// context for, and shaping a string twice (shadow + fill) is not free either.
+// The HUD asks for the same handful of strings every frame, so bake each one
+// once into its own little canvas and blit it. Readouts that change -- points,
+// ammo, round -- settle after a few frames; the cache is capped and evicts the
+// oldest entry so a long session cannot grow it without bound.
+const TEXT_CACHE = new Map();
+const TEXT_CACHE_MAX = 1200;
+const TEXT_PAD = 3;
+let _measurer = null;
+
+function measurer() {
+  if (!_measurer) {
+    const c = document.createElement('canvas');
+    c.width = 8; c.height = 8;
+    _measurer = c.getContext('2d');
+  }
+  return _measurer;
+}
+
+// A colour that fades -- a blinking prompt, a low-ammo warning -- arrives here
+// as a fresh rgba() string every frame, which would mint a new sprite every
+// frame and evict the whole cache before anything got reused. So split the
+// alpha out: bake the glyphs opaque and put the fade on globalAlpha instead.
+function splitColour(colour) {
+  const m = /^\s*rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(colour);
+  if (m) {
+    return {
+      rgb: `rgb(${Math.round(+m[1])},${Math.round(+m[2])},${Math.round(+m[3])})`,
+      a: m[4] !== undefined && Number.isFinite(+m[4]) ? +m[4] : 1,
+    };
+  }
+  return { rgb: colour, a: 1 };
+}
+
+function textSprite(str, font, colour, shadow) {
+  const { rgb, a } = splitColour(colour);
+  const key = `${font}|${rgb}|${shadow ? 1 : 0}|${str}`;
+  const hit = TEXT_CACHE.get(key);
+  if (hit) return hit;
+
+  const m = measurer();
+  m.font = font;
+  const tm = m.measureText(str);
+  const tw = Math.ceil(tm.width);
+  const asc = Math.ceil(tm.actualBoundingBoxAscent || 9);
+  const desc = Math.ceil(tm.actualBoundingBoxDescent || 3);
+
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, tw + TEXT_PAD * 2);
+  c.height = Math.max(1, asc + desc + TEXT_PAD * 2);
+  const x = c.getContext('2d');
+  x.font = font;
+  x.textAlign = 'left';
+  x.textBaseline = 'alphabetic';
+  if (shadow) {
+    x.fillStyle = 'rgba(0,0,0,0.75)';
+    x.fillText(str, TEXT_PAD + 1, TEXT_PAD + asc + 1);
+  }
+  x.fillStyle = rgb;
+  x.fillText(str, TEXT_PAD, TEXT_PAD + asc);
+
+  const sprite = { canvas: c, tw, ox: TEXT_PAD, oy: TEXT_PAD + asc, alpha: a };
+  if (TEXT_CACHE.size >= TEXT_CACHE_MAX) TEXT_CACHE.delete(TEXT_CACHE.keys().next().value);
+  TEXT_CACHE.set(key, sprite);
+  return sprite;
+}
+
 function text(ctx, str, x, y, {
   font = 'bold 12px "Courier New", monospace', colour = INK, align = 'left',
   shadow = true, alpha = 1,
 } = {}) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.font = font;
-  ctx.textAlign = align;
-  ctx.textBaseline = 'alphabetic';
-  if (shadow) {
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
-    ctx.fillText(str, x + 1, y + 1);
+  str = String(str);
+  // A blitted sprite is only crisp at 1:1. Anything drawn under a scale or a
+  // rotation -- the points readout punches up when you score -- gets the real
+  // thing instead, at its own (small) cost.
+  const m = ctx.getTransform ? ctx.getTransform() : null;
+  const scaled = m && (Math.abs(m.a - 1) > 0.02 || Math.abs(m.d - 1) > 0.02 || m.b || m.c);
+  if (scaled) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = font;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'alphabetic';
+    if (shadow) {
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillText(str, x + 1, y + 1);
+    }
+    ctx.fillStyle = colour;
+    ctx.fillText(str, x, y);
+    ctx.restore();
+    return;
   }
-  ctx.fillStyle = colour;
-  ctx.fillText(str, x, y);
+
+  const s = textSprite(str, font, colour, shadow);
+  const dx = align === 'right' ? x - s.ox - s.tw : align === 'center' ? x - s.ox - s.tw / 2 : x - s.ox;
+  const dy = y - s.oy;
+  ctx.save();
+  ctx.globalAlpha = alpha * s.alpha;
+  ctx.drawImage(s.canvas, Math.round(dx), Math.round(dy));
   ctx.restore();
 }
 
@@ -788,7 +874,7 @@ export function drawSettings(ctx, game, w, h) {
   ctx.fillStyle = 'rgba(6,7,10,0.86)';
   ctx.fillRect(0, 0, w, h);
 
-  const cw = 420, ch = 40 + SETTING_DEFS.length * 26 + 54;
+  const cw = 420, ch = 40 + SETTING_DEFS.length * 24 + 54;   // 24 keeps every row on screen
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
 
   ctx.fillStyle = '#14171d';
@@ -850,7 +936,7 @@ export function drawSettings(ctx, game, w, h) {
         colour: sel ? GOLD : INK_DIM, align: 'right',
       });
     }
-    y += 26;
+    y += 24;
   }
 
   // hint line for whatever is selected
