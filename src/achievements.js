@@ -36,6 +36,9 @@ export const ACHIEVEMENTS = [
   { id: 'packed', name: 'Punched', desc: 'Run a weapon through the Pack-a-Punch.', icon: 'P' },
   { id: 'trap_master', name: 'Home Alone', desc: 'Kill 15 zombies with traps in one run.', icon: 'T' },
   { id: 'daily_dogged', name: 'Daily Grind', desc: 'Finish a daily challenge run.', icon: 'D' },
+  { id: 'upstairs', name: 'Upstairs', desc: 'Take the stairs to the second floor.', icon: '2' },
+  { id: 'up_on_the_roof', name: 'Up On The Roof', desc: 'Climb the attic ladder and step out onto the roof.', icon: '3' },
+  { id: 'cache_raider', name: 'Cache Raider', desc: 'Crack open the supply cache in the attic.', icon: 'C' },
 ];
 
 const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));

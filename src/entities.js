@@ -513,7 +513,7 @@ export class Player {
       const f = Math.max(0, 1 - this.friction * dt);
       this.vel.x *= f; this.vel.y *= f;
     }
-    this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r);
+    this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
 
     // ---------------------------------------------------- stairwell hop ----
     if (this.portalCd <= 0) {
@@ -796,6 +796,7 @@ export class Zombie {
     this.pointsMul = d.points;
     this.shriekCd = d.ranged ? randRange(2.5, 5) : 0;
     this.standoff = d.ranged ? randRange(140, 215) : 0;
+    this.floor = 0;        // which storey it is currently on
     this.rally = 0;        // haste from a nearby Shrieker
     this.dmgMul = 1;
     this.helmet = d.helmet ?? 0;   // Stahlhelm headshots left
@@ -925,7 +926,7 @@ export class Zombie {
     if (this.frozen > 0.05) {
       // frozen solid: no movement, no attacks, just frost
       this.vel.x *= 0.82; this.vel.y *= 0.82;
-      this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r);
+      this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
       if (Math.random() < dt * 6) {
         game.particles.spark(this.pos.x + randRange(-6, 6), this.pos.y + randRange(-8, 4),
           randRange(0, TAU), 1, '#9fe9ff');
@@ -946,7 +947,11 @@ export class Zombie {
     }
 
     const p = game.player;
-    const pd = dist(this.pos.x, this.pos.y, p.pos.x, p.pos.y);
+    const sameFloor = this.floor === game.map.floor;
+    // on another storey it cannot reach you, so it cannot hurt you either
+    const pd = sameFloor
+      ? dist(this.pos.x, this.pos.y, p.pos.x, p.pos.y)
+      : 9999;
 
     // ------------------------------------------------- attack the player ---
     if (pd < 20 && !p.dead) {
@@ -983,15 +988,41 @@ export class Zombie {
       }
     }
 
+    // ------------------------------------------------- changing storey -----
+    // On the wrong floor it walks to the staircase that leads towards the
+    // player, climbs, and carries on. The climb itself is the CLIMB state so
+    // it cannot chew or swing while it is halfway up.
+    const pf = game.map.floor;
+    if (this.floor !== pf) {
+      const hop = game.map.hopTowards(this.floor, pf);
+      if (hop) {
+        const at = game.map.linkPos(hop.link, this.floor);
+        const d = dist(this.pos.x, this.pos.y, at.x, at.y);
+        if (d < 16) {
+          const other = hop.link.a.floor === this.floor ? hop.link.b : hop.link.a;
+          this.pos.x = (other.tx + 0.5) * T;
+          this.pos.y = (other.ty + 0.5) * T;
+          this.vel.x = 0; this.vel.y = 0;
+          this.floor = other.floor;
+          this.state = ZSTATE.CLIMB;
+          this.climbMax = hop.link.kind === 'ladder' ? 0.9 : 0.65;
+          this.climbT = this.climbMax;
+          game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 4);
+          audio.wood(false);
+          return;
+        }
+      }
+    }
+
     // ------------------------------------------------------- navigation ---
-    const step = this.map.flowStep(this.pos.x, this.pos.y);
+    const step = this.map.flowStep(this.pos.x, this.pos.y, this.floor);
     let tx, ty, speed = this.baseSpeed;
 
     if (!step) {
       // No step either because we are standing on the target tile itself (fine,
       // just walk straight at them) or because there is genuinely no route.
       tx = p.pos.x; ty = p.pos.y;
-      if (!this.map.reachable(this.pos.x, this.pos.y)) this.stuck += dt;
+      if (!this.map.reachable(this.pos.x, this.pos.y, this.floor)) this.stuck += dt;
     } else {
       tx = step.x; ty = step.y;
       const blocker = this._blockerOnPath(step);
@@ -1082,7 +1113,7 @@ export class Zombie {
     const lungeBoost = 1 + this.lunge * 0.9;
     this.vel.x = approach(this.vel.x, (wx + sx * 1.5) * speed * lungeBoost, 900 * dt);
     this.vel.y = approach(this.vel.y, (wy + sy * 1.5) * speed * lungeBoost, 900 * dt);
-    this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r);
+    this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
 
     const sp = Math.hypot(this.vel.x, this.vel.y);
     if (sp > 4) {
@@ -1099,7 +1130,9 @@ export class Zombie {
       this._jamT = 0;
       const moved = dist(this.pos.x, this.pos.y, this._jamX, this._jamY);
       this._jamX = this.pos.x; this._jamY = this.pos.y;
-      if (moved < 10) this.stuck += 1;
+      // a zombie that is already chewing on you has not jammed -- it is busy
+      const busy = this.state === ZSTATE.ATTACK && pd < 46;
+      if (moved < 10 && !busy) this.stuck += 1;
       else this.stuck = Math.max(0, this.stuck - 1);
     }
     if (this.stuck > 7) this.despawn(game);
@@ -1142,16 +1175,7 @@ export class Zombie {
   }
 
   _blockerOnPath(step) {
-    const t = this.map.tiles[step.ti];
-    if (t === TILE.WINDOW) {
-      const b = this.map.barricades[this.map.barricadeOf[step.ti]];
-      if (b && b.planks > 0) return { kind: 'window', obj: b };
-    } else if (t === TILE.DOOR) {
-      const d = this.map.doors[this.map.doorOf[step.ti]];
-      if (d && !d.open) return { kind: 'door', obj: d };
-    }
-    // also treat the tile we're standing in
-    return null;
+    return this.map.blockerOn(this.floor, step.ti);
   }
 
   _chew(dt, game, b) {
@@ -1249,8 +1273,9 @@ export class Zombie {
       ctx.scale(1 + k * 0.12, 1 - k * 0.55);
       ctx.translate(-px, -py);
     } else if (this.state === ZSTATE.CLIMB) {
-      const k = 1 - this.climbT / 0.55;
-      ctx.globalAlpha = k;
+      // fades out as it sinks into the stairwell, back in as it comes out
+      const k = clamp(this.climbT / (this.climbMax || 0.55), 0, 1);
+      ctx.globalAlpha = 0.15 + k * 0.85;
       ctx.translate(px, py);
       ctx.scale(1, 0.45 + k * 0.55);
       ctx.translate(-px, -py);
@@ -1298,7 +1323,7 @@ export class Zombie {
       const w = this.shriekCd < 1.2 ? 1 : 0.45;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = w * (0.5 + Math.sin(t * 6 + this.id) * 0.2);
+      ctx.globalAlpha = clamp(w * (0.5 + Math.sin(t * 6 + this.id) * 0.2), 0, 1);
       ctx.fillStyle = '#e0b0f0';
       ctx.beginPath();
       ctx.ellipse(px + (flip ? -3 : 3), py - 13, 3, 2, 0, 0, TAU);
@@ -1467,7 +1492,7 @@ export class Grenade {
     this.rot += dt * 9 * Math.sign(this.vel.x || 1);
     if (this.fuse <= 0) { this.explode(game); return; }
     const map = game.map;
-    map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r);
+    map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
     // friction
     const f = Math.max(0, 1 - 1.6 * dt);
     this.vel.x *= f; this.vel.y *= f;

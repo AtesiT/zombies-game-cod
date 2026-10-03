@@ -366,6 +366,8 @@ export const TILE = {
   VEHICLE: 9,
   STAIR: 10,
   SECRET_DOOR: 11,
+  ROOF: 12,          // walkable felt-and-gravel roof of the bunker
+  VOID: 13,          // solid nothing: the open air beyond the parapet
 };
 
 const C = {
@@ -637,16 +639,75 @@ function paintRubble(ctx, px, py, rng) {
   }
 }
 
+function paintRoof(ctx, px, py, rng, northIsWall) {
+  // rolled felt, a little lighter than the concrete inside so the roof
+  // reads as "outside, under the moon" rather than another bunker room
+  const base = rng() < 0.4 ? '#34333a' : rng() < 0.55 ? '#2f2e35' : '#38373f';
+  ctx.fillStyle = base;
+  ctx.fillRect(px, py, T, T);
+  speckle(ctx, px, py, 20, rng);
+  // felt laps
+  ctx.fillStyle = 'rgba(0,0,0,0.20)';
+  ctx.fillRect(px, py + 11, T, 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.045)';
+  ctx.fillRect(px, py + 12, T, 1);
+  // gravel
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = rng() < 0.5 ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.22)';
+    ctx.fillRect(px + 1 + ((rng() * (T - 2)) | 0), py + 1 + ((rng() * (T - 2)) | 0), 1, 1);
+  }
+  // puddles / patch repairs
+  if (rng() < 0.09) {
+    ctx.fillStyle = 'rgba(14,16,22,0.42)';
+    ctx.beginPath();
+    ctx.ellipse(px + 4 + rng() * (T - 8), py + 4 + rng() * (T - 8),
+      3 + rng() * 5, 2 + rng() * 3, rng() * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (northIsWall) {
+    const g = ctx.createLinearGradient(0, py, 0, py + 6);
+    g.addColorStop(0, 'rgba(0,0,0,0.45)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(px, py, T, 6);
+  }
+}
+
+function paintVoid(ctx, px, py, rng, rows = 50) {
+  // Open night air around an upper storey. Deliberately not a black hole: it
+  // reads as sky -- deep and starry up top, thinning into a soft haze low
+  // down where the eye expects the distant yard to be.
+  const k = Math.max(0, Math.min(1, py / (rows * T)));   // 0 top, 1 bottom
+  const r = Math.round(9 + k * 11);
+  const g = Math.round(11 + k * 13);
+  const b = Math.round(18 + k * 21);
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.fillRect(px, py, T, T);
+  // a slow drifting haze band so big empty stretches are not dead flat
+  const haze = Math.sin(py / T * 0.21) * 0.5 + 0.5;
+  if (haze > 0.42) {
+    ctx.fillStyle = `rgba(78,96,138,${(0.045 + haze * 0.055).toFixed(3)})`;
+    ctx.fillRect(px, py, T, T);
+  }
+  // stars, thinning out as the haze thickens towards the ground
+  if (rng() < 0.36 * (1 - k * 0.7)) {
+    const sx = px + ((rng() * T) | 0), sy = py + ((rng() * T) | 0);
+    ctx.fillStyle = `rgba(202,216,255,${(0.10 + rng() * 0.24).toFixed(2)})`;
+    ctx.fillRect(sx, sy, 1, 1);
+  }
+}
+
 /**
  * Paints every static tile into one canvas the size of the whole level.
  * `tiles` is a flat Uint8Array of TILE.* values, `w`/`h` the level dimensions.
  */
-let _levelCache = null;
+// one baked canvas per floor, keyed by seed -- the map is rebuilt on the fly
+// when the player takes the stairs, so repainting has to stay cheap
+const _levelCache = new Map();
 
 export function paintLevel(tiles, w, h, seed = 1337) {
-  if (_levelCache && _levelCache.w === w && _levelCache.h === h && _levelCache.seed === seed) {
-    return _levelCache.canvas;
-  }
+  const hit = _levelCache.get(seed);
+  if (hit && hit.w === w && hit.h === h) return hit.canvas;
   const { canvas, ctx } = makeCanvas(w * T, h * T);
   const rng = makeRng(seed);
   const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? TILE.WALL : tiles[y * w + x]);
@@ -675,6 +736,11 @@ export function paintLevel(tiles, w, h, seed = 1337) {
         paintSecretDoor(ctx, px, py, trng);
       } else if (t === TILE.EXTERIOR) {
         paintExterior(ctx, px, py, trng);
+      } else if (t === TILE.ROOF) {
+        paintRoof(ctx, px, py, trng, at(x, y - 1) === TILE.WALL);
+        if (at(x, y - 1) === TILE.WALL) { /* shadow already inside paintRoof */ }
+      } else if (t === TILE.VOID) {
+        paintVoid(ctx, px, py, trng, h);
       } else {
         paintFloor(ctx, px, py, trng, at(x, y - 1) === TILE.WALL);
         if (t === TILE.CRATE) paintCrate(ctx, px, py, trng, { s: at(x, y + 1) === TILE.WALL });
@@ -682,6 +748,8 @@ export function paintLevel(tiles, w, h, seed = 1337) {
       }
     }
   }
-  _levelCache = { canvas, w, h, seed };
+  _levelCache.set(seed, { canvas, w, h, seed });
+  // keep it bounded: a handful of floors, nothing more
+  if (_levelCache.size > 6) _levelCache.delete(_levelCache.keys().next().value);
   return canvas;
 }

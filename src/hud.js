@@ -106,6 +106,7 @@ export class HUD {
     this._minimap(ctx, game, w, h);
     this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
+    this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
     this._toast(ctx, game, w, h);
   }
@@ -269,6 +270,23 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- round --
+  _floor(ctx, game, w, h) {
+    if (!game.started) return;
+    const m = game.map;
+    if (!m.floorShort) return;
+    const x = 10, y = 96;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.55)';
+    ctx.fillRect(x, y, 96, 17);
+    ctx.fillStyle = m.isRoof ? '#9fd0f0' : '#e6dcc2';
+    ctx.fillRect(x, y, 2, 17);
+    text(ctx, m.floorShort === 'G' ? 'GROUND FLOOR' : m.floorName, x + 8, y + 12, {
+      font: 'bold 10px "Courier New", monospace',
+      colour: m.isRoof ? '#9fd0f0' : '#e6dcc2',
+    });
+    ctx.restore();
+  }
+
   _round(ctx, game, w, h) {
     const y = h - 16;
     text(ctx, 'ROUND', w / 2, y - 26, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
@@ -435,6 +453,8 @@ export class HUD {
       if (it.already) lines.push('ALREADY PACK-A-PUNCHED');
       else if (!game.powerOn) lines.push('PACK-A-PUNCH — NO POWER');
       else lines.push(`[E] PACK-A-PUNCH ${it.id ? game.packedDef(it.id).name.toUpperCase() : ''}  ${it.price}`);
+    } else if (it.type === 'cache') {
+      lines.push('[E] OPEN THE SUPPLY CACHE');
     } else if (it.type === 'trap') {
       const t = game.traps.list[it.i];
       lines.push(t.ready
@@ -548,11 +568,13 @@ export class HUD {
   _miniTerrain(game) {
     const map = game.map;
     const s = Math.min(130 / map.w, 92 / map.h);
-    if (!this._miniCanvas || this._miniS !== s) {
+    const key = s + ':' + game.map.floor;
+    this._miniScale = s;
+    if (!this._miniCanvas || this._miniS !== key) {
       this._miniCanvas = document.createElement('canvas');
       this._miniCanvas.width = Math.ceil(map.w * s);
       this._miniCanvas.height = Math.ceil(map.h * s);
-      this._miniS = s;
+      this._miniS = key;
       this._miniDirty = true;
     }
     if (!this._miniDirty) return this._miniCanvas;
@@ -574,6 +596,8 @@ export class HUD {
         else if (t === 9) col = '#4a3a2a';
         else if (t === 10) col = '#5a5f78';
         else if (t === 11) col = '#6a5a70';
+        else if (t === 12) col = '#3d414c';     // roof deck
+        else if (t === 13) col = '#101320';     // open air
         c.fillStyle = col;
         c.fillRect(tx * s, ty * s, cs, cs);
       }
@@ -586,7 +610,7 @@ export class HUD {
     const map = game.map;
     const pad = 10;
     const terrain = this._miniTerrain(game);
-    const s = this._miniS;
+    const s = this._miniScale;
     const mw = terrain.width, mh = terrain.height;
     const x0 = w - mw - pad, y0 = pad;
 
@@ -611,14 +635,26 @@ export class HUD {
       else if (game.powerOn) mark(ps.x, ps.y, 'rgba(240,217,138,0.75)', 2);
     }
     mark(game.box.spot.x, game.box.spot.y, '#f5d76e', 4);
-    mark(map.workbench.x, map.workbench.y, '#c8a05a', 3);
-    if (game.powerOn) mark(map.papSpot.x, map.papSpot.y, '#8fe05a', 4);
-    for (const t of game.traps.list) mark(t.x, t.y, t.ready ? '#f0a03c' : '#5a5f52', 3);
-    if (!game.powerOn) mark(map.powerSwitch.x, map.powerSwitch.y, '#8fe05a', 3);
+    if (map.workbench) mark(map.workbench.x, map.workbench.y, '#c8a05a', 3);
+    if (map.papSpot && game.powerOn) mark(map.papSpot.x, map.papSpot.y, '#8fe05a', 4);
+    if (map.powerSwitch && !game.powerOn) mark(map.powerSwitch.x, map.powerSwitch.y, '#8fe05a', 3);
+    for (const t of game.traps.list) {
+      if (t.floor !== undefined && t.floor !== map.floor) continue;
+      mark(t.x, t.y, t.ready ? '#f0a03c' : '#5a5f52', 3);
+    }
+    // staircases and ladders: the way up, and the way back down
+    for (const l of map.linksOn(map.floor)) {
+      const at = map.linkPos(l, map.floor);
+      mark(at.x, at.y, '#9fd0f0', l.kind === 'ladder' ? 3 : 4);
+    }
+    for (const c of map.cacheSpots ?? []) {
+      if (!c.taken) mark(c.x, c.y, '#f2e26a', 3);
+    }
     for (const pu of game.powerups) mark(pu.x, pu.y, pu.def.colour, 3);
 
     for (const z of game.zombies) {
       if (z.dead) continue;
+      if ((z.floor ?? 0) !== map.floor) continue;
       const tx = z.pos.x / T, ty = z.pos.y / T;
       if (!map.seen[(ty | 0) * map.w + (tx | 0)]) continue;
       ctx.fillStyle = z.type === 'brute' ? '#e07a3a' : z.type === 'dog' ? '#d05a4a' : '#c4463a';

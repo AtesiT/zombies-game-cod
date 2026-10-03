@@ -83,9 +83,9 @@ export class Game {
     this.hud = new HUD();
     this.achievements = new Achievements();
 
-    this.decals = document.createElement('canvas');
-    this.decals.width = this.map.w * T;
-    this.decals.height = this.map.h * T;
+    this._decals = [];
+    this._decalFor(0);
+    this.decals = this._decals[0];
     this.decalCtx = this.decals.getContext('2d');
 
     this.reset();
@@ -93,7 +93,10 @@ export class Game {
 
   reset() {
     this.map = new GameMap();
-    this.decalCtx.clearRect(0, 0, this.decals.width, this.decals.height);
+    this._decals = [];
+    this._decalFor(this.map.floor);
+    this.decals = this._decals[this.map.floor];
+    this.decalCtx = this.decals.getContext('2d');
     this.player = new Player(this.map, this.map.playerStart.x, this.map.playerStart.y);
     this.player.game = this;
     this.player.salvage = 0;
@@ -174,10 +177,42 @@ export class Game {
     }
     this.teleportFx = 0;
 
-    this.map.buildFlow(this.player.pos.x, this.player.pos.y);
+    this.rebuildFlow();
     this.cam.x = clamp(this.player.pos.x - VW / 2, 0, this.map.w * T - VW);
     this.cam.y = clamp(this.player.pos.y - VH / 2, 0, this.map.h * T - VH);
     this.revealAround(this.player.pos.x, this.player.pos.y, 14);
+  }
+
+  /** Rebuilds the dijkstra field on every storey that currently matters. */
+  rebuildFlow() {
+    const pf = this.map.floor;
+    const lure = this.monkeys.find((m) => m.luring && (m.floor ?? pf) === pf);
+    const tx = lure ? lure.pos.x : this.player.pos.x;
+    const ty = lure ? lure.pos.y : this.player.pos.y;
+    this.map.buildFlowOn(pf, tx, ty);
+    // every other storey aims at the staircase that leads towards the player
+    for (let f = 0; f < this.map.floors.length; f++) {
+      if (f === pf) continue;
+      const hop = this.map.hopTowards(f, pf);
+      if (!hop) continue;
+      const exit = this.map.linkPos(hop.link, f);
+      this.map.buildFlowOn(f, exit.x, exit.y);
+    }
+  }
+
+  /** Blood and scorch marks are per storey -- what happens upstairs stays upstairs. */
+  _decalFor(floor) {
+    if (this._decals[floor]) return this._decals[floor];
+    const c = document.createElement('canvas');
+    c.width = this.map.w * T;
+    c.height = this.map.h * T;
+    this._decals[floor] = c;
+    return c;
+  }
+
+  useFloor(floor) {
+    this.decals = this._decalFor(floor);
+    this.decalCtx = this.decals.getContext('2d');
   }
 
   // ------------------------------------------------------------------ utils
@@ -263,13 +298,17 @@ export class Game {
   makeZombie(sp) {
     const plan = this.roundPlan(this.round);
     const type = this.rollEnemyType();
+    const at = sp.s ?? sp;
+    const floor = sp.floor ?? this.map.floor;
     const jitter = type === 'brute' ? 4 : 10;
-    return new Zombie(this.map, sp.x + randRange(-jitter, jitter), sp.y + randRange(-jitter, jitter), {
+    const z = new Zombie(this.map, at.x + randRange(-jitter, jitter), at.y + randRange(-jitter, jitter), {
       hp: Math.round(plan.hp * randRange(0.85, 1.15)),
       speed: plan.speed * randRange(0.88, 1.12),
       dmg: 34,
       type,
     });
+    z.floor = floor;
+    return z;
   }
 
   startRound(n) {
@@ -312,25 +351,48 @@ export class Game {
   }
 
   /** Pick a spawn point outside the building that can actually reach the player. */
+  /**
+   * Which storey should the next one come from? They climb the outside of
+   * the bunker from about round 8, and start hauling themselves onto the
+   * roof a few rounds after that -- so no floor is ever a safe room.
+   */
+  pickSpawnFloor() {
+    const r = this.round;
+    const upper = Math.min(0.22, Math.max(0, (r - 7) * 0.022));
+    const roof = Math.min(0.12, Math.max(0, (r - 13) * 0.014));
+    const x = Math.random();
+    if (x < roof) return 2;
+    if (x < roof + upper) return 1;
+    return 0;
+  }
+
   pickSpawn() {
+    const floor = this.pickSpawnFloor();
+    const pts = (floor === this.map.floor ? this.map : this.map.floors[floor])?.spawnPoints ?? [];
     const cands = [];
-    for (const s of this.map.spawnPoints) {
-      if (!this.map.reachable(s.x, s.y)) continue;
-      const d = dist2(s.x, s.y, this.player.pos.x, this.player.pos.y);
-      cands.push({ s, d });
+    for (const s of pts) {
+      if (this.map.solidTileOn(floor, s.tx, s.ty)) continue;
+      // on another storey "far from the player" means nothing, so just spread out
+      const d = floor === this.map.floor
+        ? dist2(s.x, s.y, this.player.pos.x, this.player.pos.y)
+        : Math.random() * 1e6;
+      cands.push({ s, d, floor });
     }
-    if (!cands.length) return this.map.spawnPoints[0];
-    // avoid spawning right on top of the player, prefer moderately distant
+    if (!cands.length) {
+      const fb = this.map.spawnPoints;
+      return { s: fb[randInt(0, fb.length - 1)], floor: this.map.floor };
+    }
     cands.sort((a, b) => a.d - b.d);
     const lo = Math.floor(cands.length * 0.25);
     const hi = cands.length - 1;
-    return cands[randInt(lo, hi)].s;
+    return cands[randInt(lo, hi)];
   }
 
   spawnZombie() {
-    const sp = this.pickSpawn();
+    const pick = this.pickSpawn();
+    const sp = pick.s ?? pick;
     if (!sp) return;
-    this.zombies.push(this.makeZombie(sp));
+    this.zombies.push(this.makeZombie({ x: sp.x, y: sp.y, floor: pick.floor }));
     this.zombiesSpawned++;
   }
 
@@ -527,6 +589,7 @@ export class Game {
     let hit = false, head = false;
     for (const z of this.zombies) {
       if (z.dead) continue;
+      if ((z.floor ?? 0) !== this.map.floor) continue;
       const hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       const low = z.def.low ? 0.72 : 1;
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
@@ -556,6 +619,7 @@ export class Game {
     const magnet = this.player.perkFx.headMagnet;
     for (const z of this.zombies) {
       if (z.dead) continue;
+      if ((z.floor ?? 0) !== this.map.floor) continue;   // different storey
       // Deadshot Daiquiri nudges the ray toward the head box
       let hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       if (magnet > 0) {
@@ -625,6 +689,7 @@ export class Game {
         if (z.dead) continue;
         const d = dist(x, y, z.pos.x, z.pos.y);
         if (d > def.splashR) continue;
+        if ((z.floor ?? 0) !== this.map.floor) continue;
         if (this.tryCrawl(z, 0.18)) continue;
         const res = z.hurt(def.splashDmg * insta * (1 - d / def.splashR * 0.4), false, this,
           Math.atan2(z.pos.y - y, z.pos.x - x));
@@ -737,11 +802,22 @@ export class Game {
       });
     }
 
-    const dps = dist(p.pos.x, p.pos.y, this.map.powerSwitch.x, this.map.powerSwitch.y);
-    if (dps < 36) offer({ type: 'power', d: dps, price: 0, affordable: !this.powerOn });
+    if (this.map.powerSwitch) {
+      const dps = dist(p.pos.x, p.pos.y, this.map.powerSwitch.x, this.map.powerSwitch.y);
+      if (dps < 36) offer({ type: 'power', d: dps, price: 0, affordable: !this.powerOn });
+    }
 
-    const dwb = dist(p.pos.x, p.pos.y, this.workbench.x, this.workbench.y);
-    if (dwb < 40) offer({ type: 'workbench', d: dwb, price: 0, affordable: true });
+    const wb = this.map.workbench;
+    if (wb) {
+      const dwb = dist(p.pos.x, p.pos.y, wb.x, wb.y);
+      if (dwb < 40) offer({ type: 'workbench', d: dwb, price: 0, affordable: true });
+    }
+
+    for (const c of this.map.cacheSpots ?? []) {
+      if (c.taken) continue;
+      const d = dist(p.pos.x, p.pos.y, c.x, c.y);
+      if (d < 34) offer({ type: 'cache', cache: c, d, price: 0, affordable: true });
+    }
 
     const nt = this.traps.nearest(p.pos.x, p.pos.y, 46);
     if (nt) {
@@ -751,7 +827,7 @@ export class Game {
       });
     }
 
-    const dpp = dist(p.pos.x, p.pos.y, this.map.papSpot.x, this.map.papSpot.y);
+    const dpp = this.map.papSpot ? dist(p.pos.x, p.pos.y, this.map.papSpot.x, this.map.papSpot.y) : 1e9;
     if (dpp < 44) {
       const id = p.current;
       const already = p.packed.has(id);
@@ -762,7 +838,7 @@ export class Game {
       });
     }
 
-    for (const sw of this.map.secretSwitches) {
+    for (const sw of this.map.secretSwitches ?? []) {
       const d = dist(p.pos.x, p.pos.y, sw.x, sw.y);
       if (d < 32) offer({ type: 'switch', sw, d, price: 0, affordable: !sw.found });
     }
@@ -887,6 +963,28 @@ export class Game {
       return;
     }
 
+    if (it.type === 'cache') {
+      const c = it.cache;
+      if (c.taken) return;
+      c.taken = true;
+      const first = !(this._cacheOpened ?? 0);
+      this._cacheOpened = (this._cacheOpened ?? 0) + 1;
+      const salvage = randInt(3, 6);
+      p.salvage += salvage;
+      this.addPoints(first ? 1200 : 350, c.x, c.y - 14, '#f0d98a');
+      audio.chime();
+      this.shake(3, 0.3);
+      this.popups.add(c.x, c.y - 26, `+${salvage} SCRAP`, '#f0d98a', 12);
+      if (first) {
+        p.medkits = (p.medkits ?? 0) + 1;
+        if (p.armor < 60) p.armor = 60;
+        this.popups.add(c.x, c.y - 40, '+MEDKIT  +ARMOUR', '#7fd75a', 12);
+        this.bannerShow('SUPPLY CACHE', 'scrap, a medkit and a plate', { dur: 2.8, colour: '#f2e26a' });
+      }
+      this.achievements.unlock('cache_raider');
+      return;
+    }
+
     if (it.type === 'pap') {
       if (it.already) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'ALREADY PUNCHED', '#9a917c', 11); return; }
       if (!this.powerOn) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POWER', '#c4463a'); return; }
@@ -946,7 +1044,7 @@ export class Game {
       audio.wood(true);
       this.particles.dust(b.cx, b.cy, randRange(0, TAU), 3);
       if (this.stats.planks >= 50) this.achievements.unlock('handy');
-      if (b.planks === 1) this.map.buildFlow(this.player.pos.x, this.player.pos.y);
+      if (b.planks === 1) this.rebuildFlow();
     }
   }
 
@@ -955,8 +1053,75 @@ export class Game {
     this.map.secretDoorOpen = true;
     this.shake(6, 0.7);
     audio.powerUp();
-    this.map.buildFlow(this.player.pos.x, this.player.pos.y);
+    this.rebuildFlow();
     this.bannerShow('A WALL GIVES WAY', 'something opened in the east wall', { dur: 3.6, colour: '#f2e26a' });
+  }
+
+  /**
+   * Walk onto a staircase tile and you change storey: same tile coordinates,
+   * different floor, so you come out directly above (or below) where you
+   * stepped in. The whole map swaps under you.
+   */
+  checkLevelLinks(dt) {
+    this._linkCd = Math.max(0, (this._linkCd ?? 0) - dt);
+    const p = this.player;
+    let onAny = false;
+    for (const l of this.map.linksOn(this.map.floor)) {
+      const at = this.map.linkPos(l, this.map.floor);
+      if (Math.abs(p.pos.x - at.x) > 14 || Math.abs(p.pos.y - at.y) > 14) continue;
+      onAny = true;
+      // Standing on a staircase must not bounce you between floors forever:
+      // you have to step off it before it will carry you again.
+      if (this._linkCd > 0 || !this._linkArmed) return;
+      const other = l.a.floor === this.map.floor ? l.b : l.a;
+      const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
+      this.goToFloor(other.floor, to, l);
+      return;
+    }
+    // you also have to have been clear of *every* staircase for a beat first,
+    // so a horde shoving you around on the landing cannot bounce you up and
+    // down the building all night
+    if (!onAny) { this._linkOff = (this._linkOff ?? 0) + dt; if (this._linkOff > 0.45) this._linkArmed = true; }
+    else this._linkOff = 0;
+  }
+
+  // the nearest spot on the far side of a staircase tile: you arrive next to
+  // the flight, not on it
+  _besideTile(x, y) {
+    const tx = Math.floor(x / T), ty = Math.floor(y / T);
+    let best = null, bd = 1e9;
+    for (const [dx, dy] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+      const nx = tx + dx, ny = ty + dy;
+      if (this.map.solidTileOn(this.map.floor, nx, ny)) continue;
+      const d = Math.hypot(nx + 0.5 - x / T, ny + 0.5 - y / T);
+      if (d < bd) { bd = d; best = { x: (nx + 0.5) * T, y: (ny + 0.5) * T }; }
+    }
+    return best ?? { x, y };
+  }
+
+  goToFloor(n, to, link) {
+    const from = { x: this.player.pos.x, y: this.player.pos.y };
+    this.map.setFloor(n);
+    this.useFloor(n);
+    // step off the staircase itself -- land on the tile beside it, so standing
+    // still at the top never sends you straight back down
+    const spot = this._besideTile(to.x, to.y);
+    this.player.pos.x = spot.x;
+    this.player.pos.y = spot.y;
+    this.player.vel.x = 0; this.player.vel.y = 0;
+    this._linkCd = 0.55;
+    this._linkArmed = false;
+    this.teleportFx = 1;
+    this.particles.dust(spot.x, spot.y, randRange(0, TAU), 8);
+    this.revealAround(spot.x, spot.y, 13);
+    if (this.hud) this.hud._miniDirty = true;
+    this.onPlayerTeleport(from, spot);
+    this.cam.x = clamp(spot.x - VW / 2, 0, this.map.w * T - VW);
+    this.cam.y = clamp(spot.y - VH / 2, 0, this.map.h * T - VH);
+    this.bannerShow(this.map.floorName, link?.name ?? '', { dur: 1.7, colour: '#9fd0f0' });
+    if (n === 2) this.achievements.unlock('up_on_the_roof');
+    if (n === 1) this.achievements.unlock('upstairs');
+    this.rebuildFlow();
   }
 
   onPlayerTeleport(from, to) {
@@ -1025,6 +1190,7 @@ export class Game {
       if (d > r) continue;
       if (opts.blast && this.tryCrawl(z)) continue;
       const falloff = 1 - d / r;
+      if ((z.floor ?? 0) !== this.map.floor) continue;
       const res = z.hurt(dmg * falloff, false, this, Math.atan2(z.pos.y - y, z.pos.x - x));
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
     }
@@ -1113,12 +1279,14 @@ export class Game {
     }
 
     // ---- flow field refresh ------------------------------------------------
+    // One field per storey: the player's own floor points at the player, and
+    // every other floor that has zombies on it points at whichever staircase
+    // leads towards him. That is what lets a horde spread over three storeys
+    // all converge on the same room.
     this.flowTimer -= dt;
     if (this.flowTimer <= 0) {
       this.flowTimer = 0.22;
-      const lure = this.monkeys.find((m) => m.luring);
-      if (lure) this.map.buildFlow(lure.pos.x, lure.pos.y);
-      else this.map.buildFlow(this.player.pos.x, this.player.pos.y);
+      this.rebuildFlow();
     }
 
     // ---- player ------------------------------------------------------------
@@ -1131,7 +1299,8 @@ export class Game {
         if (this.input.wasPressed(`Digit${i + 1}`)) this.tryCraft(RECIPE_ORDER[i]);
       }
       if (this.input.wasPressed('Escape', 'KeyE', 'KeyQ')) this.craftOpen = false;
-      if (dist(this.player.pos.x, this.player.pos.y, this.workbench.x, this.workbench.y) > 56) {
+      if (!this.map.workbench
+        || dist(this.player.pos.x, this.player.pos.y, this.workbench.x, this.workbench.y) > 56) {
         this.craftOpen = false;
       }
     } else {
@@ -1160,6 +1329,7 @@ export class Game {
       }
     }
 
+    this.checkLevelLinks(dt);
     this.updateAimTarget();
     this.updateInteraction();
     if (!this.craftOpen) {
@@ -1201,8 +1371,9 @@ export class Game {
       if (this.spawnTimer <= 0) {
         this.respawnQueue--;
         this.zombiesSpawned++;
-        const sp = this.pickSpawn();
-        if (sp) this.zombies.push(this.makeZombie(sp));
+        const pick = this.pickSpawn();
+        const sp = pick?.s ?? pick;
+        if (sp) this.zombies.push(this.makeZombie({ x: sp.x, y: sp.y, floor: pick.floor ?? this.map.floor }));
         this.spawnTimer = 0.5;
       }
     }
@@ -1275,7 +1446,7 @@ export class Game {
       while (f.tick >= stepT) {
         f.tick -= stepT;
         for (const z of this.zombies) {
-          if (z.dead) continue;
+          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
           if (dist(f.x, f.y, z.pos.x, z.pos.y) > f.r + z.r) continue;
           const res = z.hurt(90 * stepT, false, this, randRange(0, TAU));
           z.burning = Math.max(z.burning ?? 0, 2.2);
@@ -1302,7 +1473,7 @@ export class Game {
       g.drift += dt * 0.3;
       // zombies choke in it; it is not what kills them
       for (const z of this.zombies) {
-        if (z.dead) continue;
+        if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
         if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
         z.webbed = Math.max(z.webbed ?? 0, 0.45);
       }
@@ -1478,18 +1649,19 @@ export class Game {
       const a = 0.30 * Math.min(1, k * 1.6);
       const wob = Math.sin(this.time * 1.6 + g.drift) * 3;
       ctx.save();
-      const grd = ctx.createRadialGradient(g.x, g.y, g.r * 0.15, g.x, g.y, g.r);
+      const rr = Math.max(3, g.r);
+      const grd = ctx.createRadialGradient(g.x, g.y, rr * 0.15, g.x, g.y, rr);
       grd.addColorStop(0, `rgba(150,205,90,${a})`);
       grd.addColorStop(0.6, `rgba(110,170,70,${a * 0.7})`);
       grd.addColorStop(1, 'rgba(90,140,60,0)');
       ctx.fillStyle = grd;
-      ctx.beginPath(); ctx.ellipse(g.x + wob, g.y, g.r, g.r * 0.86, 0, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(g.x + wob, g.y, rr, rr * 0.86, 0, 0, TAU); ctx.fill();
       ctx.restore();
     }
     for (const f of this.fires) {
       const k = Math.min(1, f.life / f.max);
       const flick = 0.86 + Math.sin(this.time * 13 + f.x) * 0.14;
-      const r = f.r * (0.55 + 0.45 * k) * flick;
+      const r = Math.max(3, f.r * (0.55 + 0.45 * k) * flick);
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       const grd = ctx.createRadialGradient(f.x, f.y, 1, f.x, f.y, r);
@@ -1504,7 +1676,7 @@ export class Game {
       ctx.globalAlpha = 0.30 * (1 - k * 0.4);
       ctx.strokeStyle = '#2a1a12';
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.ellipse(f.x, f.y, f.r * 0.8, f.r * 0.64, 0, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, Math.max(2, f.r * 0.8), Math.max(2, f.r * 0.64), 0, 0, TAU); ctx.stroke();
       ctx.restore();
     }
     this.traps.draw(ctx, this.time);
@@ -1520,7 +1692,7 @@ export class Game {
     this.drawPowerups(ctx);
 
     // 3. actors, sorted by feet depth
-    const actors = this.zombies.filter((z) => !z.remove);
+    const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
     const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
     list.push({ y: this.player.pos.y + 0.5, d: () => this.player.draw(ctx, this.art) });
     list.sort((a, b) => a.y - b.y);
@@ -1609,15 +1781,16 @@ export class Game {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       // a soft body so the wave reads at a glance, plus a bright leading edge
-      const grd = ctx.createRadialGradient(r.x, r.y, Math.max(0, r.r - 26), r.x, r.y, r.r);
+      const outer = Math.max(2, r.r);
+      const grd = ctx.createRadialGradient(r.x, r.y, Math.max(0, outer - 26), r.x, r.y, outer);
       grd.addColorStop(0, 'rgba(0,0,0,0)');
       grd.addColorStop(1, `rgba(208,160,232,${(k * 0.16).toFixed(3)})`);
       ctx.fillStyle = grd;
-      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(r.x, r.y, outer, 0, TAU); ctx.fill();
       ctx.globalAlpha = k * 0.75;
       ctx.strokeStyle = r.colour;
       ctx.lineWidth = 2 + k * 3;
-      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(r.x, r.y, outer, 0, TAU); ctx.stroke();
       ctx.globalAlpha = k * 0.3;
       ctx.beginPath(); ctx.arc(r.x, r.y, Math.max(0, r.r - 14), 0, TAU); ctx.stroke();
       ctx.restore();
@@ -1726,6 +1899,7 @@ export class Game {
       // Pack-a-Punch drum
       {
         const pp = this.map.papSpot;
+        if (!pp) return;
         const pulse = 0.8 + Math.sin(this.time * 2.2) * 0.2;
         L.point(sx(pp.x), sy(pp.y - 4), 130 * pulse, 0.85, 'rgba(130,235,110,0.30)', 0.55);
       }
@@ -2025,6 +2199,7 @@ export class Game {
   }
 
   drawPowerSwitch(ctx) {
+    if (!this.map.powerSwitch) return;
     const sw = this.map.powerSwitch;
     ctx.save();
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -2060,6 +2235,7 @@ export class Game {
   }
 
   drawWorkbench(ctx) {
+    if (!this.map.workbench) return;
     this.workbench.draw(ctx);
     ctx.save();
     ctx.font = 'bold 9px "Courier New", monospace';
@@ -2072,6 +2248,7 @@ export class Game {
   }
 
   drawPackAPunch(ctx) {
+    if (!this.map.papSpot) return;
     const { x, y } = this.map.papSpot;
     const t = this.time;
     const lit = this.powerOn;
@@ -2145,7 +2322,7 @@ export class Game {
   }
 
   drawSecretSwitches(ctx) {
-    for (const sw of this.map.secretSwitches) {
+    for (const sw of this.map.secretSwitches ?? []) {
       if (!this._vis(sw.x, sw.y, 40)) continue;
       ctx.save();
       ctx.fillStyle = '#2b2b30';
