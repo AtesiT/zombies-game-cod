@@ -5,3 +5,6 @@ tools/sprites_preview.png
 
 # scratch preview renders
 preview.png
+
+# harness scratch renders
+tools/harness/*.png
