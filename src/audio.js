@@ -734,6 +734,60 @@ export class AudioEngine {
     n.start(t); n.stop(t + dur + 0.2);
   }
 
+  /** Rifle round on a Stahlhelm: a bright, short, inharmonic ping. */
+  clang() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    // three inharmonic partials is what makes metal read as metal
+    for (const [f, v, d] of [[2400, 0.09, 0.26], [3310, 0.06, 0.19], [4700, 0.035, 0.13]]) {
+      this._tone('triangle', f, f * 0.94, t, d, v);
+    }
+    this._tone('square', 900, 640, t, 0.05, 0.05);
+    const n = this._noiseSrc(0.12, 0.1);
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 3000;
+    n.connect(hp);
+    const g = this._env(hp, t, 0.05, 0.004, 0.13);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.18);
+  }
+
+  /** The helmet finally comes off: a heavier, rattling version of the ping. */
+  helmetOff() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this.clang();
+    this._tone('triangle', 1500, 900, t + 0.02, 0.34, 0.10);
+    this._tone('triangle', 1120, 620, t + 0.06, 0.42, 0.07);
+    this._tone('sine', 320, 190, t + 0.02, 0.28, 0.09);
+    const n = this._noiseSrc(0.4, 0.3);
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 2200; bp.Q.value = 0.8;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.10, 0.01, 0.38);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.45);
+  }
+
+  /** Fuel going up: a whoomp, then a steady roar that fades. */
+  ignite() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc(1.4, 0.5);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(600, t);
+    f.frequency.exponentialRampToValueAtTime(2600, t + 0.09);
+    f.frequency.exponentialRampToValueAtTime(420, t + 1.4);
+    f.Q.value = 1.1;
+    n.connect(f);
+    const g = this._env(f, t, 0.34, 0.05, 1.5);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 1.6);
+    this._tone('sine', 150, 44, t, 0.55, 0.30);
+    this._tone('sawtooth', 90, 38, t + 0.02, 0.4, 0.10);
+  }
+
   /** Pack-a-Punch: the machine swallows the gun and spits it back upgraded. */
   packAPunch() {
     if (!this.ready || this.muted) return;

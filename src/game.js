@@ -107,6 +107,10 @@ export class Game {
     this.webBlasts = [];
     this.arcs = [];
     this.shriekRings = [];
+    this.fires = [];
+    this.gases = [];
+    this.inFire = 0;
+    this.inGas = 0;
     this.traps = new Traps();
     this.particles = new Particles();
     this.popups = new Popups();
@@ -234,13 +238,25 @@ export class Game {
   rollEnemyType() {
     if (this.dogRound) return 'dog';
     const r = this.round;
-    const runnerChance = Math.min(0.34, Math.max(0, (r - 5) * 0.035));
-    const bruteChance = Math.min(0.18, Math.max(0, (r - 9) * 0.020));
-    const shriekChance = Math.min(0.10, Math.max(0, (r - 11) * 0.014));
+    // The plain walker has to stay the majority all the way to the cap --
+    // specials are seasoning, not the meal. Everything together tops out at
+    // about 70 %, and each type arrives on its own round so the escalation
+    // is something you can feel happening.
+    const runnerChance = Math.min(0.26, Math.max(0, (r - 5) * 0.030));
+    const bruteChance = Math.min(0.14, Math.max(0, (r - 9) * 0.017));
+    const shriekChance = Math.min(0.07, Math.max(0, (r - 11) * 0.011));
+    const helmetChance = Math.min(0.10, Math.max(0, (r - 11) * 0.016));
+    const gasChance = Math.min(0.06, Math.max(0, (r - 13) * 0.010));
+    const napalmChance = Math.min(0.07, Math.max(0, (r - 14) * 0.011));
     const x = Math.random();
-    if (x < shriekChance) return 'shrieker';
-    if (x < shriekChance + bruteChance) return 'brute';
-    if (x < shriekChance + bruteChance + runnerChance) return 'runner';
+    let acc = 0;
+    for (const [type, chance] of [
+      ['shrieker', shriekChance], ['helmet', helmetChance], ['gasbag', gasChance],
+      ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
+    ]) {
+      acc += chance;
+      if (x < acc) return type;
+    }
     return 'walker';
   }
 
@@ -350,6 +366,33 @@ export class Game {
     if (this.player.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
     if (source === 'monkey') this._monkeyKills = (this._monkeyKills ?? 0) + 1;
     if (source === 'trap') this.traps.kills++;
+  }
+
+  /** Napalm zombies go up in a pool of burning fuel. */
+  addFire(x, y, r, life) {
+    this.fires.push({ x, y, r, life, max: life, tick: 0, puff: 0 });
+    this.particles.spark(x, y, -Math.PI / 2, 22, '#f07a2a');
+    this.particles.smoke(x, y, 10);
+  }
+
+  /** Gasbags burst into a thick, choking cloud. */
+  addGas(x, y, r, life) {
+    this.gases.push({ x, y, r, life, max: life, puff: 0, drift: randRange(0, TAU) });
+    this.particles.smoke(x, y, 16);
+  }
+
+  /**
+   * Damage over time that is not a hit: no knockback, no shake, no i-frames.
+   * It does hold the regen timer open, which is the point -- you cannot stand
+   * in a fire and heal through it.
+   */
+  scorchPlayer(dmg, game) {
+    const p = this.player;
+    if (p.dead || this.gameOver) return;
+    p.hp -= dmg;
+    p.lastHurt = this.time;
+    p.hurtFlash = Math.max(p.hurtFlash ?? 0, 0.25);
+    if (p.hp <= 0) { p.hp = 0; p.dead = true; this.gameOver = true; this.overT = 0; }
   }
 
   /**
@@ -1218,6 +1261,63 @@ export class Game {
       if (r.life <= 0) this.shriekRings.splice(i, 1);
     }
 
+    // ---- fire and gas -----------------------------------------------------
+    this.inFire = 0;
+    this.inGas = 0;
+    const p = this.player;
+    for (let i = this.fires.length - 1; i >= 0; i--) {
+      const f = this.fires[i];
+      f.life -= dt;
+      if (f.life <= 0) { this.fires.splice(i, 1); continue; }
+      // cooks zombies properly, and you if you stand in it
+      f.tick += dt;
+      const stepT = 0.25;
+      while (f.tick >= stepT) {
+        f.tick -= stepT;
+        for (const z of this.zombies) {
+          if (z.dead) continue;
+          if (dist(f.x, f.y, z.pos.x, z.pos.y) > f.r + z.r) continue;
+          const res = z.hurt(90 * stepT, false, this, randRange(0, TAU));
+          z.burning = Math.max(z.burning ?? 0, 2.2);
+          z.burnDmg = 30;
+          if (res === 2) this.onZombieKilled(z, false, null, 'fire');
+        }
+      }
+      if (!p.dead && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
+        this.inFire = 1;
+        this.scorchPlayer(20 * dt, this);
+      }
+      f.puff -= dt;
+      if (f.puff <= 0) {
+        f.puff = 0.05;
+        const a = randRange(0, TAU), d = Math.sqrt(Math.random()) * f.r;
+        this.particles.spark(f.x + Math.cos(a) * d, f.y + Math.sin(a) * d,
+          -Math.PI / 2, 1, Math.random() < 0.5 ? '#f07a2a' : '#f6c04a');
+      }
+    }
+    for (let i = this.gases.length - 1; i >= 0; i--) {
+      const g = this.gases[i];
+      g.life -= dt;
+      if (g.life <= 0) { this.gases.splice(i, 1); continue; }
+      g.drift += dt * 0.3;
+      // zombies choke in it; it is not what kills them
+      for (const z of this.zombies) {
+        if (z.dead) continue;
+        if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
+        z.webbed = Math.max(z.webbed ?? 0, 0.45);
+      }
+      if (!p.dead && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
+        this.inGas = 1;
+        this.scorchPlayer(11 * dt, this);
+      }
+      g.puff -= dt;
+      if (g.puff <= 0) {
+        g.puff = 0.11;
+        const a = randRange(0, TAU), d = Math.sqrt(Math.random()) * g.r;
+        this.particles.smoke(g.x + Math.cos(a) * d, g.y + Math.sin(a) * d, 1);
+      }
+    }
+
     // ---- the last few: the map goes quiet and starts breathing -------------
     const aliveNow = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
     const allSpawned = this.zombiesSpawned >= this.zombiesTotal;
@@ -1372,6 +1472,41 @@ export class Game {
     this.drawBarricades(ctx);
     this.drawDoors(ctx);
     this.drawSecretDoor(ctx);
+    // 2b. hazards live on the floor: gas first, then fire on top of it
+    for (const g of this.gases) {
+      const k = Math.min(1, g.life / g.max);
+      const a = 0.30 * Math.min(1, k * 1.6);
+      const wob = Math.sin(this.time * 1.6 + g.drift) * 3;
+      ctx.save();
+      const grd = ctx.createRadialGradient(g.x, g.y, g.r * 0.15, g.x, g.y, g.r);
+      grd.addColorStop(0, `rgba(150,205,90,${a})`);
+      grd.addColorStop(0.6, `rgba(110,170,70,${a * 0.7})`);
+      grd.addColorStop(1, 'rgba(90,140,60,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.ellipse(g.x + wob, g.y, g.r, g.r * 0.86, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    for (const f of this.fires) {
+      const k = Math.min(1, f.life / f.max);
+      const flick = 0.86 + Math.sin(this.time * 13 + f.x) * 0.14;
+      const r = f.r * (0.55 + 0.45 * k) * flick;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const grd = ctx.createRadialGradient(f.x, f.y, 1, f.x, f.y, r);
+      grd.addColorStop(0, `rgba(255,196,90,${0.42 * k})`);
+      grd.addColorStop(0.45, `rgba(240,120,42,${0.30 * k})`);
+      grd.addColorStop(1, 'rgba(180,50,10,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, r, r * 0.8, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+      // a charred ring so the ground reads as scorched once it burns out
+      ctx.save();
+      ctx.globalAlpha = 0.30 * (1 - k * 0.4);
+      ctx.strokeStyle = '#2a1a12';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, f.r * 0.8, f.r * 0.64, 0, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
     this.traps.draw(ctx, this.time);
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
@@ -1530,6 +1665,23 @@ export class Game {
 
     // 11. vignette + HUD
     drawVignette(ctx, vw, vh, 0.38);
+    if (this.inFire) {
+      ctx.save();
+      const a = 0.16 + Math.sin(this.time * 14) * 0.05;
+      const grd = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.22, vw / 2, vh / 2, vh * 0.72);
+      grd.addColorStop(0, 'rgba(255,140,40,0)');
+      grd.addColorStop(1, `rgba(255,120,30,${a})`);
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+    if (this.inGas) {
+      ctx.save();
+      ctx.globalAlpha = 0.20 + Math.sin(this.time * 2.2) * 0.04;
+      ctx.fillStyle = '#6ea03c';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
     if (this.started) this.hud.draw(ctx, this, vw, vh);
     if (this.teleportFx > 0) {
       ctx.fillStyle = `rgba(0,0,0,${this.teleportFx * 0.45})`;
@@ -1582,6 +1734,13 @@ export class Game {
         L.point(sx(this.map.secretLoot[0]?.x ?? 0), sy(this.map.secretLoot[0]?.y ?? 0), 120, 0.7,
           'rgba(240,220,150,0.28)', 0.4);
       }
+    }
+
+    // burning ground lights the room
+    for (const f of this.fires) {
+      const k = Math.min(1, f.life / f.max);
+      const flick = 0.8 + Math.sin(this.time * 15 + f.x) * 0.2;
+      L.point(sx(f.x), sy(f.y), f.r * 2.6, 0.85 * k * flick, hexA('#f0913a', 0.5), 0.55 * k);
     }
 
     // armed traps light their own corner of the map

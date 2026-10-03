@@ -310,6 +310,21 @@ export function buildArt() {
     zombieRunnerAtk: zombieAtk.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
     zombieBrute: zombie.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
+    // helmeted: steel pot over the skull, heavy coat
+    helmet: zombie.map((c) => tintCopy(c, '#7c8a94', 0.42)),
+    helmetFlip: zombie.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
+    helmetAtk: zombieAtk.map((c) => tintCopy(c, '#7c8a94', 0.42)),
+    helmetAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
+    // napalm: charred, glowing from the inside
+    napalm: zombie.map((c) => tintCopy(c, '#c4461c', 0.62)),
+    napalmFlip: zombie.map((c) => tintCopy(flipH(c), '#c4461c', 0.62)),
+    napalmAtk: zombieAtk.map((c) => tintCopy(c, '#c4461c', 0.62)),
+    napalmAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c4461c', 0.62)),
+    // gasbag: bloated and sickly green
+    gasbag: zombie.map((c) => tintCopy(c, '#79c04a', 0.58)),
+    gasbagFlip: zombie.map((c) => tintCopy(flipH(c), '#79c04a', 0.58)),
+    gasbagAtk: zombieAtk.map((c) => tintCopy(c, '#79c04a', 0.58)),
+    gasbagAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#79c04a', 0.58)),
     // crawlers: the lower half of each walk frame, dragging
     crawler: zombie.map(buildCrawler),
     crawlerFlip: zombie.map((c) => buildCrawler(flipH(c))),

@@ -764,6 +764,18 @@ export const ENEMY_TYPES = {
     id: 'shrieker', name: 'Shrieker', hp: 0.95, speed: 1.15, dmg: 0.55, r: 6.5, scale: 1.04,
     chew: 0.5, points: 1.7, set: 'shrieker', headOff: 1, ranged: true,
   },
+  helmet: {
+    id: 'helmet', name: 'Helmeted', hp: 1.35, speed: 0.92, dmg: 1.1, r: 7.0, scale: 1.06,
+    chew: 1.6, points: 1.55, set: 'helmet', headOff: 1.05, helmet: 3,
+  },
+  napalm: {
+    id: 'napalm', name: 'Napalm', hp: 1.3, speed: 0.82, dmg: 1.0, r: 7.0, scale: 1.08,
+    chew: 2.2, points: 1.7, set: 'napalm', headOff: 1, burns: true, fireOnDeath: true,
+  },
+  gasbag: {
+    id: 'gasbag', name: 'Gasbag', hp: 0.9, speed: 0.86, dmg: 0.9, r: 7.2, scale: 1.1,
+    chew: 1.4, points: 1.6, set: 'gasbag', headOff: 1, gasOnDeath: true,
+  },
 };
 
 export class Zombie {
@@ -786,6 +798,8 @@ export class Zombie {
     this.standoff = d.ranged ? randRange(140, 215) : 0;
     this.rally = 0;        // haste from a nearby Shrieker
     this.dmgMul = 1;
+    this.helmet = d.helmet ?? 0;   // Stahlhelm headshots left
+    this._flameT = 0;
     this.frozen = 0;        // Winter's Howl / electric traps
     this.webbed = 0;        // Widow's Wine / steam traps
     this.burning = 0;       // flame trap afterburn
@@ -816,7 +830,28 @@ export class Zombie {
 
   hurt(amount, head, game, dirAngle) {
     if (this.dead) return 0;
-    const before = this.hp;
+    // A Stahlhelm eats headshots first: three of them and it is gone. Until
+    // then the shot still lands, it just lands on steel.
+    if (head && this.helmet > 0) {
+      this.helmet--;
+      this.hurtFlash = 0.12;
+      const ang = dirAngle ?? 0;
+      game.particles.spark(this.pos.x, this.pos.y - HEAD_OFF_Y, ang, 7, '#cfe4f2');
+      game.particles.spark(this.pos.x, this.pos.y - HEAD_OFF_Y, ang + 1.4, 4, '#8fa8bd');
+      audio.clang();
+      if (this.helmet <= 0) {
+        game.popups.add(this.pos.x, this.pos.y - 34, 'HELMET OFF', '#cfe4f2', 10);
+        game.particles.chunk(this.pos.x, this.pos.y - HEAD_OFF_Y, ang, 5);
+        game.particles.spark(this.pos.x, this.pos.y - HEAD_OFF_Y, ang, 12, '#e8f2fa');
+        audio.helmetOff();
+      } else {
+        game.popups.add(this.pos.x, this.pos.y - 30, 'CLANG', '#9fb6c9', 9);
+      }
+      // half damage, no head multiplier, and it does not flinch
+      this.hp -= amount * 0.5;
+      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return 2; }
+      return 1;
+    }
     this.hp -= amount;
     this.hurtFlash = 0.12;
     const ang = dirAngle ?? 0;
@@ -847,6 +882,16 @@ export class Zombie {
     game.particles.blood(this.pos.x, this.pos.y, ang, 14, 1.4);
     game.particles.chunk(this.pos.x, this.pos.y, ang, 5);
     audio.zombieDie();
+
+    if (this.def.fireOnDeath) {
+      game.addFire(this.pos.x, this.pos.y, 52, 4.6);
+      audio.ignite();
+      game.shake(3, 0.22);
+    }
+    if (this.def.gasOnDeath) {
+      game.addGas(this.pos.x, this.pos.y, 74, 6.5);
+      audio.ignite();
+    }
   }
 
   update(dt, game) {
@@ -916,6 +961,16 @@ export class Zombie {
     } else if (this.state === ZSTATE.ATTACK && pd >= 24) {
       this.state = ZSTATE.HUNT;
       this.attackCd = Math.max(this.attackCd, 0.35);
+    }
+
+    // napalm types leave burning footprints behind them
+    if (this.def.burns) {
+      this._flameT -= dt;
+      if (this._flameT <= 0) {
+        this._flameT = 0.07;
+        game.particles.spark(this.pos.x + randRange(-4, 4), this.pos.y - randRange(2, 12),
+          -Math.PI / 2, 1, Math.random() < 0.5 ? '#f07a2a' : '#f5c04a');
+      }
     }
 
     // ------------------------------------------------- shrieker behaviour --
@@ -1074,6 +1129,7 @@ export class Zombie {
     this.type = 'crawler';
     this.def = d;
     this.r = d.r;
+    this.helmet = 0;
     this.chewMul = d.chew;
     this.pointsMul = d.points;
     this.maxHp = Math.max(16, Math.round(this.maxHp * 0.35));
@@ -1140,6 +1196,12 @@ export class Zombie {
           : (flip ? art.shriekerFlip : art.shrieker))[this._frame(attacking)],
         framed: true,
       };
+    }
+    if (s === 'helmet' || s === 'napalm' || s === 'gasbag') {
+      const set = attacking
+        ? (flip ? art[`${s}AtkFlip`] : art[`${s}Atk`])
+        : (flip ? art[`${s}Flip`] : art[s]);
+      return { img: set[this._frame(attacking)], framed: true };
     }
     if (s === 'runner') {
       return {
@@ -1214,12 +1276,21 @@ export class Zombie {
     ctx.drawImage(img, gx, gy);
     if (this.def.low) ctx.translate(0, -5);
 
-    if (this.burning > 0) {
+    if (this.burning > 0 || this.def.burns) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.35 + Math.sin(t * 20 + this.id) * 0.15;
+      ctx.globalAlpha = (this.def.burns ? 0.42 : 0.35) + Math.sin(t * 20 + this.id) * 0.15;
       ctx.fillStyle = '#f07a2a';
       ctx.beginPath(); ctx.ellipse(px, py - 2, 9, 13, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    if (this.def.id === 'gasbag') {
+      // a slow green sweat rolling off it
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.16 + Math.sin(t * 3 + this.id) * 0.07;
+      ctx.fillStyle = '#8fd45a';
+      ctx.beginPath(); ctx.ellipse(px, py - 1, 11, 9, 0, 0, TAU); ctx.fill();
       ctx.restore();
     }
     if (this.def.ranged) {
@@ -1241,6 +1312,32 @@ export class Zombie {
       ctx.strokeStyle = '#d0a0e8';
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(px, py - 2, 15, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+
+    if (this.helmet > 0) {
+      const hy = py - HEAD_OFF_Y * (this.def.headOff ?? 1) - 1;
+      ctx.save();
+      ctx.fillStyle = '#5d6a72';
+      ctx.beginPath();
+      ctx.ellipse(px, hy, 6.2, 5.0, 0, Math.PI, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#78868f';
+      ctx.beginPath();
+      ctx.ellipse(px + (flip ? -1.2 : 1.2), hy - 0.8, 4.4, 3.2, 0, Math.PI, TAU);
+      ctx.fill();
+      // brim + strap
+      ctx.fillStyle = '#4a545c';
+      ctx.fillRect(px - 7, hy - 0.5, 14, 1.6);
+      ctx.fillRect(px - 1, hy + 1, 2, 4);
+      // a highlight so it reads as curved steel
+      ctx.fillStyle = '#aebcc6';
+      ctx.fillRect(px + (flip ? -4 : 1), hy - 4, 3, 1);
+      // damage pips: one dent per shot it has already eaten
+      ctx.fillStyle = '#2f373d';
+      for (let i = 0; i < 3 - this.helmet; i++) {
+        ctx.fillRect(px - 3 + i * 3, hy - 2.5, 2, 2);
+      }
       ctx.restore();
     }
 
