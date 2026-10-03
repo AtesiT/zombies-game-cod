@@ -335,90 +335,117 @@ def _mk():
     return grid, fl, ol, pt
 
 
+def _wall_around(grid, inside):
+    """Every void tile touching the interior becomes the shell of the storey."""
+    for (x, y) in inside:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < W and 0 <= ny < H and grid[ny][nx] == '~':
+                grid[ny][nx] = '#'
+    return grid
+
+
 def build_upper():
     u, fill, outline, put = _mk()
-    X0, Y0, X1, Y1 = 13, 8, 44, 30       # inside the ground-floor walls
 
-    outline(X0, Y0, X1, Y1, '#')
-    fill(X0 + 1, Y0 + 1, X1 - 1, Y1 - 1, '.')
+    # The second floor is deliberately NOT the ground plan again. Downstairs
+    # is a four-room cross filling the whole bunker; upstairs is an L -- a
+    # long north range with a corridor down its middle, and a south-west leg
+    # hanging off it. The south-east corner is simply gone: that part of the
+    # floor caved in years ago and the night looks straight through it.
+    def in_range(x, y): return 16 <= x <= 42 and 10 <= y <= 18
+    def in_leg(x, y): return 16 <= x <= 30 and 19 <= y <= 28
+    inside = [(x, y) for y in range(H) for x in range(W) if in_range(x, y) or in_leg(x, y)]
+    for (x, y) in inside:
+        put(x, y, '.')
+    _wall_around(u, inside)
 
-    # partitions with wide openings -- upstairs is a training loop, not a lockbox
-    for y in range(Y0 + 1, Y1):
-        if 12 <= y <= 13 or 18 <= y <= 20 or 25 <= y <= 26:
-            continue
-        put(28, y, '#')
-    for x in range(X0 + 1, X1):
-        if 19 <= x <= 21 or 27 <= x <= 29 or 36 <= x <= 38:
-            continue
-        put(x, 19, '#')
+    # --- north range: cubicles opening south onto a corridor along y=14 -----
+    for x in (23, 31, 38):
+        for y in range(10, 14):
+            put(x, y, '#')
+    put(23, 13, 'D')                     # two of the cubicles have doors ...
+    put(31, 12, 'D')
+    put(38, 13, '.')                     # ... the last one is simply open
 
-    # barricaded windows: this is how they get up here
-    win = []
-    for c in (16, 24, 33, 41):
-        win += [(c, Y0), (c + 1, Y0), (c, Y1), (c + 1, Y1)]
-    for r in (12, 25):
-        win += [(X0, r), (X0, r + 1), (X1, r), (X1, r + 1)]
-    for x, y in win:
-        put(x, y, 'W')
+    # --- south row of the range: one long room and a small one --------------
+    for y in range(15, 19):
+        put(27, y, '#')
+    put(27, 17, 'D')
 
-    # furniture: bunks, a machine room, storage
-    for (x, y) in [(15, 10), (17, 10), (15, 16), (17, 16),
-                   (22, 10), (22, 16),
-                   (31, 10), (33, 10), (31, 16), (33, 16),
-                   (40, 10), (42, 10),
-                   (15, 22), (17, 22), (15, 28), (17, 28),
-                   (24, 22), (24, 28),
-                   (31, 22), (33, 22), (31, 28), (33, 28),
-                   (40, 22), (42, 22), (40, 28), (42, 28)]:
+    # --- the leg: two rooms stacked, joined by a single door ----------------
+    for x in range(16, 31):
+        put(x, 24, '#')
+    put(22, 24, 'D')
+
+    # --- barricaded windows all round the shell, on every face --------------
+    win = [(x, 9) for x in (18, 19, 26, 27, 34, 35, 40, 41)]
+    win += [(43, y) for y in (12, 13, 16, 17)]
+    win += [(15, y) for y in (12, 13)]
+    win += [(31, y) for y in (21, 22, 26, 27)]
+    win += [(x, 29) for x in (18, 19, 26, 27)]
+    for (x, y) in win:
+        if u[y][x] == '#':
+            put(x, y, 'W')
+
+    # --- furniture: bunks in the cubicles, a machine room, storage ----------
+    for (x, y) in [(20, 11), (21, 11), (26, 11), (28, 11), (34, 11), (35, 11),
+                   (40, 12), (41, 12),
+                   (18, 16), (22, 17), (33, 16), (37, 17), (41, 17),
+                   (18, 21), (25, 21), (28, 22),
+                   (18, 27), (25, 27), (28, 26)]:
         put(x, y, 'c')
-    for (x, y) in [(20, 14), (35, 12), (20, 27), (38, 26), (26, 11)]:
+    for (x, y) in [(24, 12), (33, 13), (30, 16), (36, 12), (20, 26), (27, 22)]:
         put(x, y, 'r')
 
     return u, {
-        'spawns': [(16, 9), (24, 9), (33, 9), (41, 9),
-                   (16, 29), (24, 29), (33, 29), (41, 29),
-                   (14, 12), (14, 25), (43, 12), (43, 25)],
-        'wallbuys': [(30, 12, 30, 11, 'mg42')],
-        'box': [(28, 19)],
-        'crates': [(20, 19)],
-        'lamps': [(16, 12), (24, 12), (33, 12), (41, 12),
-                  (16, 27), (24, 27), (33, 27), (41, 27), (28, 19)],
+        'spawns': [(17, 10), (24, 10), (32, 10), (41, 10),
+                   (17, 18), (24, 18), (32, 18), (41, 18),
+                   (17, 20), (29, 20), (17, 28), (29, 28)],
+        'wallbuys': [(30, 11, 31, 11, 'mg42')],
+        'box': [(25, 26)],
+        'crates': [(34, 17)],
+        'lamps': [(18, 12), (26, 14), (34, 12), (40, 14),
+                  (18, 26), (26, 26), (29, 14), (20, 20)],
+        'cache': [(20, 21), (21, 21), (20, 22)],
     }
 
 
 def build_roof():
     r, fill, outline, put = _mk()
-    X0, Y0, X1, Y1 = 13, 8, 44, 30
 
-    # the roof deck, ringed by a parapet you cannot walk off
-    fill(X0, Y0, X1, Y1, 'R')            # 'R' = roof deck, walkable
-    outline(X0, Y0, X1, Y1, '#')
+    # The roof follows the shape of the floor below it: the same L, one tile
+    # bigger all round, ringed by a parapet you cannot walk off. The attic
+    # stands on the north range; the ladder comes up on the open deck beside
+    # it, so the roof is never locked behind a door.
+    def in_north(x, y): return 15 <= x <= 43 and 9 <= y <= 19
+    def in_leg(x, y): return 15 <= x <= 31 and 19 <= y <= 29
+    deck = [(x, y) for y in range(H) for x in range(W) if in_north(x, y) or in_leg(x, y)]
+    for (x, y) in deck:
+        put(x, y, 'R')
+    _wall_around(r, deck)
 
-    # the attic sits on the roof: a low, junk-lined room, one door south
-    AX0, AY0, AX1, AY1 = 22, 13, 35, 22
+    # attic: a low, junk-lined room, one door on its south side
+    AX0, AY0, AX1, AY1 = 27, 12, 36, 20
     outline(AX0, AY0, AX1, AY1, '#')
     fill(AX0 + 1, AY0 + 1, AX1 - 1, AY1 - 1, '.')
-    put(28, AY1, 'D')                    # attic door, opens onto the roof
+    put(31, AY1, 'D')
 
-    # beams and junk up here
-    for (x, y) in [(24, 15), (30, 14), (24, 20), (31, 15), (33, 15), (31, 20),
-                   (17, 12), (19, 26), (38, 12), (41, 27), (29, 27), (21, 21)]:
+    # a vent stack, some junk, and the footings of the old antenna mast
+    for (x, y) in [(37, 10), (37, 11), (38, 10), (23, 22), (24, 22)]:
         put(x, y, 'c')
-    for (x, y) in [(27, 18), (29, 17), (25, 19), (33, 10), (16, 22)]:
+    for (x, y) in [(22, 17), (33, 17), (19, 26)]:
         put(x, y, 'r')
-    # a vent stack and the base of the antenna mast
-    for y in range(9, 13):
-        put(37, y, 'c')
 
     return r, {
-        'spawns': [(15, 9), (26, 9), (42, 9), (15, 29), (26, 29), (42, 29),
-                   (14, 19), (43, 19)],
+        'spawns': [(17, 10), (41, 10), (42, 14), (17, 18), (41, 18),
+                   (17, 21), (17, 28), (29, 28)],
         'wallbuys': [],
-        'box': [(20, 25)],
+        'box': [(25, 26)],
         'crates': [],
         'lamps': [],
         # one-per-run cache: worth the climb
-        'cache': [(28, 17), (27, 18), (30, 17)],
+        'cache': [(18, 12), (19, 12), (18, 13)],
     }
 
 
@@ -428,8 +455,8 @@ ROOF, ROOF_OBJ = build_roof()
 # vertical links. `a`/`b` are [floor, x, y]; same coordinates on both sides
 # so "up" really means "up".
 LEVEL_LINKS = [
-    {'a': [0, 14, 11], 'b': [1, 14, 11], 'kind': 'stair', 'name': 'WEST STAIR'},
-    {'a': [0, 42, 27], 'b': [1, 42, 27], 'kind': 'stair', 'name': 'EAST STAIR'},
+    {'a': [0, 18, 11], 'b': [1, 18, 11], 'kind': 'stair', 'name': 'WEST STAIR'},
+    {'a': [0, 41, 15], 'b': [1, 41, 15], 'kind': 'stair', 'name': 'EAST STAIR'},
     {'a': [1, 26, 15], 'b': [2, 26, 15], 'kind': 'ladder', 'name': 'ATTIC LADDER'},
 ]
 

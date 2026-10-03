@@ -51,8 +51,8 @@ share tile coordinates, so "up" is literally above you:
 
 | Link | Connects |
 | --- | --- |
-| West stair | ground (14,11) ↔ second floor (14,11) |
-| East stair | ground (42,27) ↔ second floor (42,27) |
+| West stair | ground (18,11) ↔ second floor (18,11) |
+| East stair | ground (41,15) ↔ second floor (41,15) |
 | Attic ladder | second floor (26,15) ↔ attic & roof (26,15) |
 
 Walk onto a link to climb. The horde follows: every storey keeps its own flow field, so zombies
@@ -60,6 +60,12 @@ on another floor walk to the staircase that leads towards you, climb it, and car
 From round 8 some of them spawn upstairs, from round 13 some on the roof. Each storey hides its
 own **supply cache**. The open air around the upper footprints is solid `VOID` (painted as night
 sky) — fall off the parapet and there is nothing there.
+
+The second floor is not the ground plan again. Downstairs is a four-room cross filling the whole
+bunker; upstairs is an **L** — a north range with a corridor down the middle and cubicles off it,
+plus a south-west leg — because the south-east corner of the floor caved in years ago. It is also
+built differently: laid boards underfoot and stud-and-plaster partitions, against the concrete
+and brick downstairs. Same building, unmistakably another floor.
 
 One big level instead of a second map:
 
