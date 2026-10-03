@@ -45,6 +45,22 @@ ES modules — opening `index.html` from `file://` will not work.)
 
 ## The map (72 × 50 tiles)
 
+**Three storeys, one building.** The bunker has a second floor and an attic that opens onto the
+roof; all three share the same 72 × 50 grid and are stitched together by vertical links that
+share tile coordinates, so "up" is literally above you:
+
+| Link | Connects |
+| --- | --- |
+| West stair | ground (14,11) ↔ second floor (14,11) |
+| East stair | ground (42,27) ↔ second floor (42,27) |
+| Attic ladder | second floor (26,15) ↔ attic & roof (26,15) |
+
+Walk onto a link to climb. The horde follows: every storey keeps its own flow field, so zombies
+on another floor walk to the staircase that leads towards you, climb it, and carry on hunting.
+From round 8 some of them spawn upstairs, from round 13 some on the roof. Each storey hides its
+own **supply cache**. The open air around the upper footprints is solid `VOID` (painted as night
+sky) — fall off the parapet and there is nothing there.
+
 One big level instead of a second map:
 
 - **Bunker** — four rooms (A/B up, C/D down) split by a central cross-wall, 20 barricaded
@@ -196,6 +212,8 @@ everything is reachable from the player start) and rewrites `src/mapData.js`.
 ## Roadmap
 
 See [`docs/IDEAS.md`](docs/IDEAS.md) — it tracks what is already in (items 1–7 plus the
-Pack-a-Punch / two-slot / trap / Crawler / Shrieker batch) and carries a fresh list of proposals:
-streak counters, helmet and napalm zombies, breakable crates, a roof, daily challenges, gamepad
-support and proper smoke tests.
+Pack-a-Punch / two-slot / trap / Crawler / Shrieker batch, the helmet / napalm / gas zombies, the
+second floor and the roof, settings and the last-zombie sound) and carries a large fresh backlog:
+wearable gizmos, a second crafting bench, teleporters and rooftop escapes, a story told through a
+keeper's diary and radio chatter, a full rooftop evacuation finale, weapon mods, daily challenges,
+gamepad support and proper smoke tests.
