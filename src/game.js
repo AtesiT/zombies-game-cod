@@ -67,6 +67,17 @@ const LAMPS = [
 let activeGame = null;
 let settingsHooked = false;
 
+// --- the decal layer -------------------------------------------------------
+// Blood and scorch used to live on one full-size canvas per storey --
+// 1728x1200 -- and every frame blitted an 800x500 window out of it whether
+// or not there was any blood in view. Half resolution is invisible on a
+// splatter (it only softens the edges) and a quarter of the pixels to move;
+// the dirty box means a clean stretch of floor costs nothing at all; and
+// the wash keeps a long session from flooding the map solid red.
+const DECAL_SCALE = 0.5;
+const DECAL_MAX = 260;
+const DECAL_WASH = 0.22;
+
 export class Game {
   constructor(input) {
     this.input = input;
@@ -91,20 +102,18 @@ export class Game {
     this._slowFrames = 0;
     this._fastFrames = 0;
 
-    this._decals = [];
-    this._decalFor(0);
-    this.decals = this._decals[0];
-    this.decalCtx = this.decals.getContext('2d');
+    this._clearDecals();
+    this.decals = this._decalFor(0);
+    this.decalCtx = this._decalCtx[0];
 
     this.reset();
   }
 
   reset() {
     this.map = new GameMap();
-    this._decals = [];
-    this._decalFor(this.map.floor);
-    this.decals = this._decals[this.map.floor];
-    this.decalCtx = this.decals.getContext('2d');
+    this._clearDecals();
+    this.decals = this._decalFor(this.map.floor);
+    this.decalCtx = this._decalCtx[this.map.floor];
     this.player = new Player(this.map, this.map.playerStart.x, this.map.playerStart.y);
     this.player.game = this;
     this.player.salvage = 0;
@@ -209,18 +218,49 @@ export class Game {
   }
 
   /** Blood and scorch marks are per storey -- what happens upstairs stays upstairs. */
+  _clearDecals() {
+    this._decals = [];
+    this._decalCtx = [];
+    this._decalCount = [];
+    this._decalBox = [];
+  }
+
   _decalFor(floor) {
     if (this._decals[floor]) return this._decals[floor];
     const c = document.createElement('canvas');
-    c.width = this.map.w * T;
-    c.height = this.map.h * T;
+    c.width = Math.ceil(this.map.w * T * DECAL_SCALE);
+    c.height = Math.ceil(this.map.h * T * DECAL_SCALE);
+    const ctx = c.getContext('2d');
+    // scale once, at creation: everything drawn on this layer can then keep
+    // thinking in world pixels
+    ctx.scale(DECAL_SCALE, DECAL_SCALE);
     this._decals[floor] = c;
+    this._decalCtx[floor] = ctx;
     return c;
+  }
+
+  /** Fade the whole layer a little, so old blood goes with the new. */
+  _washDecals(floor) {
+    const c = this._decalCtx[floor];
+    if (!c) return;
+    c.save();
+    c.globalCompositeOperation = 'destination-out';
+    c.fillStyle = `rgba(0,0,0,${DECAL_WASH})`;
+    c.fillRect(0, 0, this.map.w * T, this.map.h * T);
+    c.restore();
+    this._decalCount[floor] = 0;
   }
 
   useFloor(floor) {
     this.decals = this._decalFor(floor);
-    this.decalCtx = this.decals.getContext('2d');
+    this.decalCtx = this._decalCtx[floor];
+  }
+
+  /** Is any decal inside this world-space box? Used to skip the blit. */
+  _decalsIn(x0, y0, x1, y1) {
+    const b = this._decalBox[this.map.floor];
+    if (!b) return false;
+    return b.x1 > x0 && b.x0 < x1 && b.y1 > y0 && b.y0 < y1;
   }
 
   // ------------------------------------------------------------------ utils
@@ -272,7 +312,7 @@ export class Game {
       ? Math.min(MAX_ALIVE_BASE + Math.floor(round / 3) * 3, 40)
       : Math.min(MAX_ALIVE_BASE + Math.floor(round / 4) * 3, 34);
     const hp = dog ? Math.min(80 + (round - 1) * 30, 1600) : Math.min(120 + (round - 1) * 46, 2600);
-    const speed = Math.min(44 + (round - 1) * 1.5, 88);
+    const speed = Math.min(52 + (round - 1) * 1.6, 96);
     const interval = dog ? Math.max(0.22, 0.75 - round * 0.02) : Math.max(0.3, 1.35 - round * 0.05);
     return { total, maxAlive, hp, speed, interval, dog };
   }
@@ -391,9 +431,12 @@ export class Game {
       return { s: fb[randInt(0, fb.length - 1)], floor: this.map.floor };
     }
     cands.sort((a, b) => a.d - b.d);
-    const lo = Math.floor(cands.length * 0.25);
-    const hi = cands.length - 1;
-    return cands[randInt(lo, hi)];
+    // How much of the ring to draw from. The far side of the field is a
+    // twenty-second walk on round one, which just looks like zombies
+    // jogging about behind the fence; open it up as the rounds climb.
+    const lo = Math.floor(cands.length * Math.max(0, 0.25 - this.round * 0.03));
+    const hi = Math.floor(cands.length * Math.min(1, 0.56 + this.round * 0.06));
+    return cands[randInt(lo, Math.max(lo, hi - 1))];
   }
 
   spawnZombie() {
@@ -565,6 +608,16 @@ export class Game {
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
     if (!settings.get('blood')) return;
+    const f = this.map.floor;
+    const box = this._decalBox[f]
+      ?? (this._decalBox[f] = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
+    // remember where the mess is, so a clean stretch of floor costs nothing
+    if (x - r * 2 < box.x0) box.x0 = x - r * 2;
+    if (y - r * 2 < box.y0) box.y0 = y - r * 2;
+    if (x + r * 2 > box.x1) box.x1 = x + r * 2;
+    if (y + r * 2 > box.y1) box.y1 = y + r * 2;
+    this._decalCount[f] = (this._decalCount[f] ?? 0) + 1;
+    if (this._decalCount[f] > DECAL_MAX) this._washDecals(f);
     const c = this.decalCtx;
     c.save();
     c.globalAlpha = alpha;
@@ -1689,7 +1742,10 @@ export class Game {
 
     // 1. level + decals
     ctx.drawImage(this.map.staticCanvas, camX, camY, vw, vh, 0, 0, vw, vh);
-    ctx.drawImage(this.decals, camX, camY, vw, vh, 0, 0, vw, vh);
+    if (this._decalsIn(camX, camY, camX + vw, camY + vh)) {
+      const s = DECAL_SCALE;
+      ctx.drawImage(this.decals, camX * s, camY * s, vw * s, vh * s, 0, 0, vw, vh);
+    }
 
     ctx.save();
     ctx.translate(-camX, -camY);

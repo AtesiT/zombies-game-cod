@@ -392,11 +392,20 @@ export class HUD {
   _points(ctx, game, w, h) {
     const x = 16, y = h - 18;
     text(ctx, 'POINTS', x, y - 24, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM });
+    // The readout lerps toward the real total, so it used to bake a brand new
+    // text sprite on every frame of the catch-up. Round the *string* to a
+    // coarse step while the gap is still wide -- you cannot read the
+    // difference at that speed -- and let it land on the exact figure once
+    // it is nearly there. The number itself keeps lerping exactly.
+    const gap = Math.abs(game.points - this.shownPoints);
+    const step = gap > 500 ? 25 : gap > 120 ? 10 : gap > 8 ? 5 : 1;
+    const shown = step === 1 ? Math.round(this.shownPoints)
+      : Math.round(this.shownPoints / step) * step;
     const s = 1 + this.pointPulse * 0.25;
     ctx.save();
     ctx.translate(x, y);
     ctx.scale(s, s);
-    text(ctx, String(Math.round(this.shownPoints)), 0, 0, {
+    text(ctx, String(shown), 0, 0, {
       font: 'bold 22px "Courier New", monospace', colour: GOLD,
     });
     ctx.restore();
@@ -574,7 +583,7 @@ export class HUD {
     const onTarget = settings.get('crosshair') && game.aimOnTarget;
     const spread = 5 + game.player.def.spread * 320
       + Math.hypot(game.player.vel.x, game.player.vel.y) * 0.045
-      + game.player.recoil * 1.4;
+      + game.player.recoil * 1.4 + game.player.kickVis * 5;
     const len = 5;
     ctx.save();
     ctx.strokeStyle = 'rgba(0,0,0,0.6)';

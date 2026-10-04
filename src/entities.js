@@ -262,6 +262,7 @@ export class Player {
     this.reloadStage = 0;
     this.triggerHeld = false;
     this.recoil = 0;
+    this.kickVis = 0;          // visual kick: 1 is a pistol shove, 1.7 a shotgun
     this.walkPhase = 0;
     this.facing = 1;
     this.grenades = 0;
@@ -481,6 +482,7 @@ export class Player {
     this.invuln = Math.max(0, this.invuln - dt);
     this.hurtFlash = Math.max(0, this.hurtFlash - dt * 3);
     this.recoil = approach(this.recoil, 0, dt * 26);
+    this.kickVis = approach(this.kickVis, 0, dt * 13);
     this.knifeCd = Math.max(0, this.knifeCd - dt);
     this.knifeAnim = Math.max(0, this.knifeAnim - dt);
     this.swapTimer = Math.max(0, this.swapTimer - dt);
@@ -629,6 +631,9 @@ export class Player {
     if (this.dmTimer <= 0) s.mag--;
     this.fireTimer = d.delay * this.perkFx.fireDelayMul * (this.dmTimer > 0 ? 0.62 : 1);
     this.recoil = d.recoil;
+    // A shot you cannot feel is a shot that did not happen: the bigger the
+    // kick stat, the further the gun is shoved back into the hands.
+    this.kickVis = Math.min(1.7, 0.5 + d.kick * 0.24);
     const muzzle = this.muzzlePos();
     const ox = this.pos.x, oy = this.pos.y;
 
@@ -651,10 +656,10 @@ export class Player {
     game.particles.casing(ox, oy, this.aim);
     game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: d.tint };
     game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: d.tint });
-    game.shake(d.kick, 0.09);
+    game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
-    this.vel.x -= Math.cos(this.aim) * d.kick * 5;
-    this.vel.y -= Math.sin(this.aim) * d.kick * 5;
+    this.vel.x -= Math.cos(this.aim) * d.kick * 6.5;
+    this.vel.y -= Math.sin(this.aim) * d.kick * 6.5;
   }
 
   muzzlePos() {
@@ -683,7 +688,10 @@ export class Player {
 
     const frame = Math.floor(this.walkPhase * 2) % 4;
     let body = flip ? art.playerFlip[frame] : art.player[frame];
-    let gx = px - SPRITE_OX, gy = py - SPRITE_OY;
+    // the shot pushes the whole soldier back a step, and the gun further
+    const kv = this.kickVis;
+    const bx = -Math.cos(this.aim) * kv * 1.1, by = -Math.sin(this.aim) * kv * 1.1;
+    let gx = px - SPRITE_OX + bx, gy = py - SPRITE_OY + by;
 
     if (this.invuln > 0 && Math.floor(this.invuln * 22) % 2 === 0) {
       ctx.globalAlpha = 0.75;
@@ -694,8 +702,9 @@ export class Player {
     // gun
     const g = art.guns[this.current];
     ctx.save();
-    ctx.translate(px, py - 1 + this.recoil * 0.35);
-    ctx.rotate(this.aim);
+    ctx.translate(px + bx * 2.6, py - 1 + by * 2.6 + this.recoil * 0.35);
+    // muzzle climb: the barrel tips up as it comes back
+    ctx.rotate(this.aim - kv * 0.08 * (flip ? -1 : 1));
     if (flip) ctx.scale(1, -1);
     ctx.drawImage(flip ? g.flip : g.img, -g.pivot.x, -g.pivot.y);
     ctx.restore();
@@ -1061,7 +1070,7 @@ export class Zombie {
       speed *= pd < 15 ? 0.15 : 0.55;
     } else {
       // classic CoD behaviour: they shamble up close but sprint when far away
-      speed *= pd > 260 ? 1.55 : pd > 160 ? 1.25 : 1;
+      speed *= pd > 260 ? 1.7 : pd > 160 ? 1.3 : 1;
       if (this.def.sprinty) speed *= 1.2;
     }
     if (this.def.ranged) {

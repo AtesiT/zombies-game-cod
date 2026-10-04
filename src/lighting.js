@@ -80,6 +80,8 @@ function coneSprite(spread) {
   return c;
 }
 
+const GLOW_SCALE = 0.5;          // glow layer, relative to the darkness layer
+
 export class Lighting {
   constructor(w, h, scale = 0.5) {
     this.baseW = w;
@@ -95,8 +97,13 @@ export class Lighting {
     // meant ~1.4 Mpx of additive blending per frame -- half the whole render.
     // They are soft blobs, so they lose nothing by being added at layer
     // resolution and upscaled in one go.
+    // ...and half as much again for the coloured glow, because a soft blob
+    // at a quarter of screen resolution looks exactly like a soft blob at a
+    // half -- only a quarter of the pixels to add.
     const gc = document.createElement('canvas');
-    gc.width = this.w; gc.height = this.h;
+    this.gw = Math.max(1, Math.round(this.w * GLOW_SCALE));
+    this.gh = Math.max(1, Math.round(this.h * GLOW_SCALE));
+    gc.width = this.gw; gc.height = this.gh;
     this.glowCanvas = gc;
     this.glowCtx = gc.getContext('2d');
     this.ambient = [19, 25, 40];
@@ -113,7 +120,9 @@ export class Lighting {
     this.w = Math.max(1, Math.round(this.baseW * scale));
     this.h = Math.max(1, Math.round(this.baseH * scale));
     this.canvas.width = this.w; this.canvas.height = this.h;
-    this.glowCanvas.width = this.w; this.glowCanvas.height = this.h;
+    this.gw = Math.max(1, Math.round(this.w * GLOW_SCALE));
+    this.gh = Math.max(1, Math.round(this.h * GLOW_SCALE));
+    this.glowCanvas.width = this.gw; this.glowCanvas.height = this.gh;
     this.ctx = this.canvas.getContext('2d');
     this.glowCtx = this.glowCanvas.getContext('2d');
   }
@@ -131,7 +140,7 @@ export class Lighting {
     const gl = this.glowCtx;
     gl.setTransform(1, 0, 0, 1, 0, 0);
     gl.globalCompositeOperation = 'source-over';
-    gl.clearRect(0, 0, this.w, this.h);
+    gl.clearRect(0, 0, this.gw, this.gh);
   }
 
   /** Cone-shaped light (the player's torch). */
@@ -175,11 +184,11 @@ export class Lighting {
 
     // glows are accumulated on their own small layer, then added in one blit
     const g = this.glowCtx;
-    const s = this.scale;
+    const s = this.scale * GLOW_SCALE;
     g.globalCompositeOperation = 'lighter';
     for (const q of this.glow) {
       const X = q.x * s, Y = q.y * s, R = q.radius * s;
-      if (X + R < 0 || Y + R < 0 || X - R > this.w || Y - R > this.h) continue;
+      if (X + R < 0 || Y + R < 0 || X - R > this.gw || Y - R > this.gh) continue;
       const sprite = glowSprite(q.colour);
       g.globalAlpha = Math.min(1, q.power * glowAlpha);
       g.drawImage(sprite, X - R, Y - R, R * 2, R * 2);

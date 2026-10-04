@@ -27,9 +27,12 @@ const settle = () => { for (let i = 0; i < 3; i++) { g.player.hp = 100; g.update
 for (const [v, want, label] of [[0, 0.25, 'LOW'], [1, 0.375, 'MEDIUM'], [2, 0.5, 'HIGH']]) {
   settings.set('lighting', v);
   const L = g.lighting;
+  // the glow layer is deliberately half the darkness layer again -- soft
+  // blobs lose nothing at a quarter of screen resolution
+  const gw = Math.max(1, Math.round(L.w * 0.5)), gh = Math.max(1, Math.round(L.h * 0.5));
   ok(near(L.scale, want) && L.w === Math.round(M.VW * want) && L.h === Math.round(M.VH * want)
-    && L.glowCanvas.width === L.w,
-    `LIGHTING ${label} re-cuts both layers`, `scale ${L.scale}, ${L.w}x${L.h}`);
+    && L.glowCanvas.width === gw && L.glowCanvas.height === gh && L.gw === gw,
+    `LIGHTING ${label} re-cuts both layers`, `scale ${L.scale}, ${L.w}x${L.h} + glow ${gw}x${gh}`);
   settle();
 }
 
