@@ -146,6 +146,7 @@ export class Game {
     this.zombiesKilled = 0;
     this.respawnQueue = 0;
     this.spawnTimer = 0;
+    this._fusionCd = 6;          // no amalgams in the first seconds of a round
     this.intermission = 3.0;
     this.roundActive = false;
     this.started = false;
@@ -325,17 +326,25 @@ export class Game {
     // specials are seasoning, not the meal. Everything together tops out at
     // about 70 %, and each type arrives on its own round so the escalation
     // is something you can feel happening.
-    const runnerChance = Math.min(0.26, Math.max(0, (r - 5) * 0.030));
-    const bruteChance = Math.min(0.14, Math.max(0, (r - 9) * 0.017));
-    const shriekChance = Math.min(0.07, Math.max(0, (r - 11) * 0.011));
-    const helmetChance = Math.min(0.10, Math.max(0, (r - 11) * 0.016));
-    const gasChance = Math.min(0.06, Math.max(0, (r - 13) * 0.010));
-    const napalmChance = Math.min(0.07, Math.max(0, (r - 14) * 0.011));
+    // Room was made for the item-B types by trimming the others. Everything
+    // together tops out at about 60 %, so the plain walker stays the single
+    // biggest group at every round, and each type arrives on its own round
+    // so the escalation is something you can feel happening.
+    const runnerChance = Math.min(0.17, Math.max(0, (r - 5) * 0.021));
+    const bruteChance = Math.min(0.09, Math.max(0, (r - 9) * 0.012));
+    const shriekChance = Math.min(0.045, Math.max(0, (r - 11) * 0.008));
+    const helmetChance = Math.min(0.065, Math.max(0, (r - 11) * 0.011));
+    const gasChance = Math.min(0.035, Math.max(0, (r - 13) * 0.007));
+    const napalmChance = Math.min(0.04, Math.max(0, (r - 14) * 0.008));
+    const minerChance = Math.min(0.065, Math.max(0, (r - 11) * 0.010));
+    const medicChance = Math.min(0.05, Math.max(0, (r - 12) * 0.009));
+    const mimicChance = Math.min(0.04, Math.max(0, (r - 14) * 0.007));
     const x = Math.random();
     let acc = 0;
     for (const [type, chance] of [
       ['shrieker', shriekChance], ['helmet', helmetChance], ['gasbag', gasChance],
       ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
+      ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
     ]) {
       acc += chance;
       if (x < acc) return type;
@@ -343,9 +352,9 @@ export class Game {
     return 'walker';
   }
 
-  makeZombie(sp) {
+  makeZombie(sp, forceType = null) {
     const plan = this.roundPlan(this.round);
-    const type = this.rollEnemyType();
+    const type = forceType ?? this.rollEnemyType();
     const at = sp.s ?? sp;
     const floor = sp.floor ?? this.map.floor;
     const jitter = type === 'brute' ? 4 : 10;
@@ -371,6 +380,7 @@ export class Game {
     this.roundActive = true;
     this.intermission = 0;
     this.spawnTimer = 0.35;
+    this._fusionCd = 6;
     this.workbench.onRoundStart();
     if (plan.dog) {
       this.bannerShow(`ROUND ${n}`, 'something is out there', { dur: 2.6, big: true, colour: '#e0705a' });
@@ -396,6 +406,62 @@ export class Game {
 
   get zombiesLeft() {
     return Math.max(0, this.zombiesTotal - this.zombiesKilled);
+  }
+
+  /**
+   * Item B: the amalgam. Walkers that have been standing on top of each other
+   * for a few seconds stop queueing and become one large one. It is the horde
+   * solving its own traffic problem, and it punishes a player who lets a knot
+   * build up in a doorway instead of thinning it out.
+   */
+  _updateFusion(dt) {
+    this._fusionCd = (this._fusionCd ?? 0) - dt;
+    // Not from the start: on round one a knot of three walkers is just the
+    // spawn point, and an amalgam there would be the whole round. It is a
+    // thing that happens to a crowd you let build up, from round 8 on.
+    if (this.round < 8 || this.dogRound) return;
+    const live = this.zombies.filter((z) => !z.dead && !z.remove && !z.hidden
+      && z.floor === this.map.floor && (z.type === 'walker' || z.type === 'runner'));
+    // how long each one has been part of a knot
+    for (const z of live) {
+      let n = 0;
+      for (const o of live) {
+        if (o === z) continue;
+        if (dist2(z.pos.x, z.pos.y, o.pos.x, o.pos.y) < 46 * 46) n++;
+      }
+      z.clusterT = n >= 2 ? z.clusterT + dt : Math.max(0, z.clusterT - dt * 2);
+    }
+    if (this._fusionCd > 0 || live.length < 3) return;
+    let seed = null;
+    for (const z of live) if (!seed || z.clusterT > seed.clusterT) seed = z;
+    if (!seed || seed.clusterT < 5) return;
+
+    const group = [seed];
+    for (const o of live) {
+      if (o === seed) continue;
+      if (dist2(seed.pos.x, seed.pos.y, o.pos.x, o.pos.y) < 52 * 52) group.push(o);
+    }
+    if (group.length < 3) return;
+
+    let cx = 0, cy = 0, hp = 0;
+    for (const g of group) { cx += g.pos.x; cy += g.pos.y; hp += g.maxHp; }
+    cx /= group.length; cy /= group.length;
+
+    const fused = this.makeZombie({ x: cx, y: cy, floor: this.map.floor }, 'fusion');
+    fused.maxHp = Math.round(hp * 1.15);
+    fused.hp = fused.maxHp;
+    fused.state = 0;                 // CLIMB: a moment of it heaving itself together
+    fused.climbT = 0.6; fused.climbMax = 0.6;
+    for (const g of group) { g.dead = true; g.remove = true; g.deadT = 99; }
+    this.zombies.push(fused);
+    // it counts as the ones it replaced, or the round would never end
+    this.zombiesKilled += group.length - 1;
+    this._fusionCd = 14;
+    this.shake(5, 0.3);
+    this.popups.add(cx, cy - 34, 'AMALGAM', '#c8a0e0', 13);
+    this.particles.chunk(cx, cy, randRange(0, TAU), 9);
+    this.particles.blood(cx, cy, randRange(0, TAU), 10, 1.4);
+    audio.zombieDie();
   }
 
   /** Pick a spawn point outside the building that can actually reach the player. */
@@ -1423,6 +1489,9 @@ export class Game {
       this.intermission -= dt;
       if (this.intermission <= 0) this.startRound(this.round + 1);
     }
+
+    // ---- item B: three of them get tired of queueing ----------------------
+    this._updateFusion(dt);
 
     // ---- entities ----------------------------------------------------------
     for (const z of this.zombies) z.update(dt, this);

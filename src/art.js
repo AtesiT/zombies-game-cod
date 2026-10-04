@@ -261,6 +261,20 @@ function buildCrawler(src) {
   return canvas;
 }
 
+function buildCorpse(src) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  // a heap on the floor: only the bottom third, pulled down and to one side
+  const cut = Math.round(src.height * 0.62);
+  const h = src.height - cut;
+  ctx.drawImage(src, 0, cut, src.width, h, -1, src.height - h - 1, src.width, h);
+  // one flung arm, so it does not read as a painted-on puddle
+  ctx.fillStyle = '#4c6b3a';
+  ctx.fillRect(src.width - 7, src.height - h + 1, 6, 2);
+  ctx.fillStyle = '#3b5430';
+  ctx.fillRect(src.width - 10, src.height - h + 3, 4, 2);
+  return canvas;
+}
+
 let cache = null;
 
 export function buildArt() {
@@ -336,6 +350,30 @@ export function buildArt() {
     zombieBruteFlip: zombie.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),
     zombieBruteAtk: zombieAtk.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
     zombieBruteAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#6b7a6a', 0.50)),
+    // ---- item B -------------------------------------------------------
+    // miner: earth-stained, with grit worked into the cloth
+    miner: zombie.map((c) => tintCopy(c, '#6b5330', 0.55)),
+    minerFlip: zombie.map((c) => tintCopy(flipH(c), '#6b5330', 0.55)),
+    minerAtk: zombieAtk.map((c) => tintCopy(c, '#6b5330', 0.55)),
+    minerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#6b5330', 0.55)),
+    // medic: field grey with a pale apron, and a red cross drawn at runtime
+    medic: zombie.map((c) => tintCopy(c, '#7d8b94', 0.52)),
+    medicFlip: zombie.map((c) => tintCopy(flipH(c), '#7d8b94', 0.52)),
+    medicAtk: zombieAtk.map((c) => tintCopy(c, '#7d8b94', 0.52)),
+    medicAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#7d8b94', 0.52)),
+    // mimic: whatever is lying on the floor already
+    mimic: zombie.map(buildCorpse),
+    mimicFlip: zombie.map((c) => buildCorpse(flipH(c))),
+    mimicUp: zombie.map((c) => tintCopy(c, '#a8455a', 0.5)),
+    mimicUpFlip: zombie.map((c) => tintCopy(flipH(c), '#a8455a', 0.5)),
+    mimicUpAtk: zombieAtk.map((c) => tintCopy(c, '#a8455a', 0.5)),
+    mimicUpAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#a8455a', 0.5)),
+    // amalgam: three of them got tired of queueing
+    fusion: zombie.map((c) => tintCopy(c, '#4a3f52', 0.6)),
+    fusionFlip: zombie.map((c) => tintCopy(flipH(c), '#4a3f52', 0.6)),
+    fusionAtk: zombieAtk.map((c) => tintCopy(c, '#4a3f52', 0.6)),
+    fusionAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#4a3f52', 0.6)),
+
     dogWhite: flatCopy(buildDog(), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),
     playerWhiteFlip: player.map((c) => flatCopy(flipH(c), '#ffffff')),

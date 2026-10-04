@@ -742,7 +742,13 @@ export class Player {
 // ---------------------------------------------------------------------------
 let ZOMBIE_ID = 0;
 
-export const ZSTATE = { CLIMB: 0, HUNT: 1, BARRICADE: 2, DOOR: 3, ATTACK: 4, DEAD: 5 };
+export const ZSTATE = {
+  CLIMB: 0, HUNT: 1, BARRICADE: 2, DOOR: 3, ATTACK: 4, DEAD: 5,
+  BURIED: 6,     // miner: under the ground, cannot move or be hurt
+  EMERGE: 7,     // miner: climbing out, a beat to shoot it or run
+  HIDDEN: 8,     // mimic: playing dead until you walk past
+  REVIVING: 9,   // medic: hauling a crawler back onto its feet
+};
 
 /**
  * Enemy archetypes. Every value is a multiplier on the round's base stats,
@@ -784,6 +790,25 @@ export const ENEMY_TYPES = {
   gasbag: {
     id: 'gasbag', name: 'Gasbag', hp: 0.9, speed: 0.86, dmg: 0.9, r: 7.2, scale: 1.1,
     chew: 1.4, points: 1.6, set: 'gasbag', headOff: 1, gasOnDeath: true,
+  },
+  // ---- round of ideas, item B -------------------------------------------
+  miner: {
+    id: 'miner', name: 'Miner', hp: 0.85, speed: 1.05, dmg: 1.35, r: 6.5, scale: 1.02,
+    chew: 0.5, points: 1.8, set: 'miner', headOff: 1, burrows: true,
+  },
+  mimic: {
+    id: 'mimic', name: 'Mimic', hp: 1.15, speed: 1.35, dmg: 1.6, r: 6.5, scale: 1,
+    chew: 0.8, points: 1.9, set: 'mimic', headOff: 1, ambush: true,
+  },
+  medic: {
+    id: 'medic', name: 'Field Medic', hp: 1.0, speed: 0.94, dmg: 0.55, r: 6.5, scale: 1.02,
+    chew: 0.6, points: 2.2, set: 'medic', headOff: 1, medic: true, standoff: 240,
+  },
+  fusion: {
+    // not spawned: three or four walkers that have been standing on top of
+    // each other long enough get tired of the queue and become one
+    id: 'fusion', name: 'Amalgam', hp: 3.6, speed: 0.7, dmg: 2.0, r: 11, scale: 1.6,
+    chew: 3.0, points: 3.4, set: 'fusion', headOff: 1.3, smash: true,
   },
 };
 
@@ -834,12 +859,26 @@ export class Zombie {
     this.lunge = 0;
     this.lastDist = Infinity;
     this.spawnTint = opts.tint ?? 0;
+    // ---- item B: miner, mimic, medic, fusion ----
+    this.hidden = !!d.ambush;                             // mimic: playing dead
+    this.burrowCd = d.burrows ? randRange(0.6, 1.4) : 0;  // until it digs in
+    this.emergeT = 0;                                     // climbing out of the ground
+    this.reviveT = 0;                                     // medic: reviving a crawler
+    this.reviveTarget = null;
+    this.clusterT = 0;                                    // fusion: time spent in a huddle
+    this.medicCd = 0;                                     // how often it looks for a patient
+    if (this.hidden) this.state = ZSTATE.HIDDEN;   // a mimic starts out on the floor
   }
 
   get alive() { return !this.dead; }
 
   hurt(amount, head, game, dirAngle) {
     if (this.dead) return 0;
+    // it is under the ground -- the bullets only stir the dirt
+    if (this.state === ZSTATE.BURIED) {
+      game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 2);
+      return 0;
+    }
     // A Stahlhelm eats headshots first: three of them and it is gone. Until
     // then the shot still lands, it just lands on steel.
     if (head && this.helmet > 0) {
@@ -962,6 +1001,113 @@ export class Zombie {
       ? dist(this.pos.x, this.pos.y, p.pos.x, p.pos.y)
       : 9999;
 
+    // ------------------------------------------------ item B: four of them --
+    // Miner. It does not walk at you across open ground, it digs in on the
+    // way over and waits under your feet. You get a puff of dirt when it
+    // goes down and half a second of heaving soil when it comes back up --
+    // long enough to move, if you were paying attention.
+    if (this.def.burrows) {
+      if (this.state === ZSTATE.BURIED) {
+        this.vel.x = 0; this.vel.y = 0;
+        this.stuck = 0;
+        if (pd < 58) {
+          this.state = ZSTATE.EMERGE;
+          this.emergeT = 0.5;
+          game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 10);
+          game.shake(1.6, 0.14);
+          audio.growl(0.72, 1);
+        }
+        return;
+      }
+      if (this.state === ZSTATE.EMERGE) {
+        this.vel.x = 0; this.vel.y = 0;
+        this.emergeT -= dt;
+        if (this.emergeT <= 0) {
+          this.state = ZSTATE.HUNT;
+          this.burrowCd = randRange(7, 12);
+          this.lunge = 1;
+        }
+        return;
+      }
+      this.burrowCd -= dt;
+      // never in your face, never while you are on another storey
+      if (this.burrowCd <= 0 && sameFloor && pd > 96 && pd < 520) {
+        this.state = ZSTATE.BURIED;
+        this.vel.x = 0; this.vel.y = 0;
+        game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 7);
+        audio.wood(false);
+        return;
+      }
+    }
+
+    // Mimic. Lies down among the bodies you made and stays there until you
+    // are close enough to reach. It is not invisible and it is not immune --
+    // a careful player shoots the ones on the floor before walking past.
+    if (this.hidden) {
+      this.vel.x *= 0.8; this.vel.y *= 0.8;
+      this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
+      this.stuck = 0;
+      if (sameFloor && pd < 72) {
+        this.hidden = false;
+        this.state = ZSTATE.HUNT;
+        this.lunge = 1;
+        this.attackCd = 0.25;
+        game.shake(2.4, 0.2);
+        game.popups.add(this.pos.x, this.pos.y - 32, 'IT MOVED', '#e07a7a', 11);
+        audio.growl(0.7, 1);
+      }
+      return;
+    }
+
+    // Field medic. It does not fight you: it hangs at the back and puts the
+    // crawlers you worked for back on their feet. Kill it first, and the
+    // floor stays clear of everything you already paid to put down.
+    if (this.def.medic) {
+      this.medicCd -= dt;
+      const t = this.reviveTarget;
+      if (t && (t.dead || t.type !== 'crawler' || t.floor !== this.floor)) {
+        this.reviveTarget = null; this.reviveT = 0;
+      }
+      if (this.reviveT > 0) {
+        this.vel.x = 0; this.vel.y = 0;
+        this.stuck = 0;
+        this.reviveT -= dt;
+        if (this.reviveT <= 0 && this.reviveTarget && !this.reviveTarget.dead) {
+          this.reviveTarget.riseUp(game);
+          this.reviveTarget = null;
+          this.medicCd = randRange(3.5, 6);
+        }
+        return;
+      }
+      if (!this.reviveTarget && this.medicCd <= 0) {
+        this.medicCd = 0.8;
+        let best = null, bd = 420 * 420;
+        for (const z of game.zombies) {
+          if (z === this || z.dead || z.type !== 'crawler' || z.floor !== this.floor) continue;
+          const d2 = dist2(this.pos.x, this.pos.y, z.pos.x, z.pos.y);
+          if (d2 < bd) { bd = d2; best = z; }
+        }
+        this.reviveTarget = best;
+      }
+      // Walk straight at the patient when there is a clear line to it, and
+      // follow the horde's own route when there is not: a straight line
+      // through a partition wall only pins it in a corner forever.
+      const pt = this.reviveTarget;
+      const clear = pt && !this.map.rayWall(this.pos.x, this.pos.y, pt.pos.x, pt.pos.y);
+      this._goto = clear ? { x: pt.pos.x, y: pt.pos.y } : null;
+      // it walks at the patient in a straight line, which is fine across a
+      // room and useless through a wall -- if it is plainly not getting
+      // there, drop the patient and look for another
+      if (this.reviveTarget && this.stuck > 1.2) { this.reviveTarget = null; this.medicCd = 2; return; }
+      if (this.reviveTarget
+        && dist(this.pos.x, this.pos.y, this.reviveTarget.pos.x, this.reviveTarget.pos.y) < 36) {
+        this.reviveT = 1.7;
+        this.vel.x = 0; this.vel.y = 0;
+        game.particles.spark(this.reviveTarget.pos.x, this.reviveTarget.pos.y - 4,
+          -Math.PI / 2, 3, '#8fd47a');
+      }
+    }
+
     // ------------------------------------------------- attack the player ---
     if (pd < 20 && !p.dead) {
       this.state = ZSTATE.ATTACK;
@@ -1064,6 +1210,9 @@ export class Zombie {
       }
     }
 
+    // a medic with somebody to fix walks at them instead of at the horde's route
+    if (this._goto) { tx = this._goto.x; ty = this._goto.y; }
+
     // -------------------------------------------------------- movement ----
     if (this.state === ZSTATE.ATTACK) {
       tx = p.pos.x; ty = p.pos.y;
@@ -1073,9 +1222,9 @@ export class Zombie {
       speed *= pd > 260 ? 1.7 : pd > 160 ? 1.3 : 1;
       if (this.def.sprinty) speed *= 1.2;
     }
-    if (this.def.ranged) {
-      // hover at its own preferred screaming range, with a dead band so it
-      // does not jitter on the boundary
+    if (this.def.ranged || (this.def.medic && !this._goto)) {
+      // hover at its own preferred range, with a dead band so it does not
+      // jitter on the boundary
       if (pd < this.standoff) speed *= 1.15;
       else if (pd > this.standoff + 70) speed *= 1.25;
       else speed *= 0.7;
@@ -1097,7 +1246,7 @@ export class Zombie {
     }
 
     let dx = tx - this.pos.x, dy = ty - this.pos.y;
-    if (this.def.ranged && pd < this.standoff) { dx = -dx; dy = -dy; }
+    if ((this.def.ranged || (this.def.medic && !this._goto)) && pd < this.standoff) { dx = -dx; dy = -dy; }
     const len = Math.hypot(dx, dy) || 1;
     dx /= len; dy /= len;
 
@@ -1168,6 +1317,8 @@ export class Zombie {
   /** Explosive death: sometimes they keep coming on their elbows. */
   becomeCrawler(game) {
     const d = ENEMY_TYPES.crawler;
+    // remember what it had when it could still walk -- a medic can restore it
+    if (!this._wasWalker) this._wasWalker = { maxHp: this.maxHp, baseSpeed: this.baseSpeed, type: this.type };
     this.type = 'crawler';
     this.def = d;
     this.r = d.r;
@@ -1181,6 +1332,26 @@ export class Zombie {
     this.state = ZSTATE.HUNT;
     game.particles.chunk(this.pos.x, this.pos.y, randRange(0, TAU), 5);
     game.splat(this.pos.x, this.pos.y, 13, 0.45);
+  }
+
+  /** A medic got to it: back on its feet, more or less as good as new. */
+  riseUp(game) {
+    const back = this._wasWalker;
+    const d = ENEMY_TYPES[back?.type] ?? ENEMY_TYPES.walker;
+    this.type = d.id;
+    this.def = d;
+    this.r = d.r;
+    this.chewMul = d.chew;
+    this.pointsMul = d.points;
+    this.maxHp = Math.max(40, Math.round((back?.maxHp ?? this.maxHp) * 0.85));
+    this.hp = this.maxHp;
+    this.baseSpeed = back?.baseSpeed ?? this.baseSpeed / 0.7;
+    this.state = ZSTATE.HUNT;
+    this.hidden = false;
+    this._wasWalker = null;
+    game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 8);
+    game.particles.spark(this.pos.x, this.pos.y - 6, -Math.PI / 2, 5, '#8fd47a');
+    game.popups.add(this.pos.x, this.pos.y - 30, 'BACK UP', '#8fd47a', 10);
   }
 
   _blockerOnPath(step) {
@@ -1230,10 +1401,20 @@ export class Zombie {
         framed: true,
       };
     }
-    if (s === 'helmet' || s === 'napalm' || s === 'gasbag') {
+    if (s === 'helmet' || s === 'napalm' || s === 'gasbag'
+      || s === 'miner' || s === 'medic' || s === 'fusion') {
       const set = attacking
         ? (flip ? art[`${s}AtkFlip`] : art[`${s}Atk`])
         : (flip ? art[`${s}Flip`] : art[s]);
+      return { img: set[this._frame(attacking)], framed: true };
+    }
+    if (s === 'mimic') {
+      // dead on the floor until you are close, then a livid thing on its feet
+      const set = this.hidden
+        ? (flip ? art.mimicFlip : art.mimic)
+        : (attacking
+          ? (flip ? art.mimicUpAtkFlip : art.mimicUpAtk)
+          : (flip ? art.mimicUpFlip : art.mimicUp));
       return { img: set[this._frame(attacking)], framed: true };
     }
     if (s === 'runner') {
@@ -1259,11 +1440,28 @@ export class Zombie {
     return attacking ? (Math.floor(this.walkPhase * 1.6) % 4) : (Math.floor(this.walkPhase) % 4);
   }
 
+  /** The only sign of a miner: a heap of disturbed earth, breathing. */
+  _drawMound(ctx, px, py, t, alpha = 1) {
+    const j = Math.sin(t * 19 + this.id) * 0.7;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#2e2718';
+    ctx.beginPath(); ctx.ellipse(px + j, py + 3, 11, 5.5, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#4a3d24';
+    ctx.beginPath(); ctx.ellipse(px + j, py + 2, 8, 3.6, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5d4c2c';
+    ctx.beginPath(); ctx.ellipse(px + j - 1, py + 1, 4.5, 1.8, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
   draw(ctx, art, t = 0) {
     const px = Math.round(this.pos.x);
     const py = Math.round(this.pos.y);
     const flip = this.facing < 0;
     const sc = this.def.scale;
+
+    // underground: all you get is the dirt
+    if (this.state === ZSTATE.BURIED && !this.dead) { this._drawMound(ctx, px, py, t); return; }
 
     ctx.save();
     ctx.globalAlpha = 0.34;
@@ -1288,6 +1486,10 @@ export class Zombie {
       ctx.translate(px, py);
       ctx.scale(1, 0.45 + k * 0.55);
       ctx.translate(-px, -py);
+    } else if (this.state === ZSTATE.EMERGE) {
+      // hauling itself up out of the hole: nothing but the dirt shows at first
+      this._emergeK = 1 - clamp(this.emergeT / 0.5, 0, 1);
+      ctx.translate(0, (1 - this._emergeK) * 13);
     }
     if (sc !== 1) { ctx.translate(px, py); ctx.scale(sc, sc); ctx.translate(-px, -py); }
 
@@ -1310,6 +1512,37 @@ export class Zombie {
     ctx.drawImage(img, gx, gy);
     if (this.def.low) ctx.translate(0, -5);
 
+    if (this.state === ZSTATE.EMERGE) {
+      // the hole it is climbing out of, drawn over the legs
+      this._drawMound(ctx, px, py + (1 - this._emergeK) * -13, t);
+    }
+    if (this.reviveT > 0 && this.reviveTarget && !this.reviveTarget.dead) {
+      // you can see exactly who it is fixing, and you can stop it
+      const q = this.reviveTarget;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = '#8fd47a';
+      ctx.globalAlpha = 0.35 + Math.sin(t * 14) * 0.2;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(px, py - 8);
+      ctx.lineTo(q.pos.x, q.pos.y - 4);
+      ctx.stroke();
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = '#8fd47a';
+      ctx.beginPath(); ctx.ellipse(q.pos.x, q.pos.y + 2, 9, 3.5, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    if (this.def.medic) {
+      // a red cross, so it stands out from the thing it is standing behind
+      ctx.save();
+      ctx.fillStyle = '#d84a4a';
+      ctx.fillRect(px - 1, py - SPRITE_OY - 6, 2, 6);
+      ctx.fillRect(px - 3, py - SPRITE_OY - 4, 6, 2);
+      ctx.restore();
+    }
     if (this.burning > 0 || this.def.burns) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
