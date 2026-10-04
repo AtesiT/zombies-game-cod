@@ -373,10 +373,14 @@ def build_upper():
         put(27, y, '#')
     put(27, 17, 'D')
 
-    # --- the leg: two rooms stacked, joined by a single door ----------------
+    # --- the leg: two rooms, joined by a wide opening -----------------------
+    # This used to be a single buyable door. Zombies do not carry cash, so
+    # anything that spawned in the south room was marooned there -- it stood
+    # about overhead and never came down. An opening instead.
     for x in range(16, 31):
         put(x, 24, '#')
-    put(22, 24, 'D')
+    for x in (21, 22, 23):
+        put(x, 24, '.')
 
     # --- barricaded windows all round the shell, on every face --------------
     win = [(x, 9) for x in (18, 19, 26, 27, 34, 35, 40, 41)]
@@ -388,26 +392,45 @@ def build_upper():
         if u[y][x] == '#':
             put(x, y, 'W')
 
-    # --- furniture: bunks in the cubicles, a machine room, storage ----------
-    for (x, y) in [(20, 11), (21, 11), (26, 11), (28, 11), (34, 11), (35, 11),
-                   (40, 12), (41, 12),
-                   (18, 16), (22, 17), (33, 16), (37, 17), (41, 17),
-                   (18, 21), (25, 21), (28, 22),
-                   (18, 27), (25, 27), (28, 26)]:
-        put(x, y, 'c')
-    for (x, y) in [(24, 12), (33, 13), (30, 16), (36, 12), (20, 26), (27, 22)]:
-        put(x, y, 'r')
+    # --- furniture: a barracks, not an empty loft --------------------------
+    # Bunks and lockers line the walls, the corridor along y=14 stays clear,
+    # and nothing stands in a doorway, on a spawn point, or in the new opening
+    # at y=24. The validator below shouts if any of that gets broken.
+    for (x, y) in [(18, 10), (19, 10), (19, 11),          # 18,11 is the stair landing
+                   (25, 10), (26, 10), (25, 13), (26, 13),
+                   (33, 10), (34, 10), (33, 13), (34, 13),
+                   (39, 10), (40, 10), (39, 13), (40, 13),
+                   (17, 16), (18, 16), (17, 17), (18, 17),
+                   (28, 15), (29, 15), (28, 16), (29, 16),
+                   (18, 21), (19, 21), (18, 22), (19, 22),
+                   (17, 26), (18, 26), (17, 27), (18, 27)]:
+        put(x, y, 'b')                       # bunks
+    for (x, y) in [(16, 12), (16, 13), (22, 10), (22, 11),
+                   (37, 10), (37, 11),
+                   (16, 20), (16, 23), (16, 28),
+                   (29, 23), (29, 26), (29, 27), (30, 20)]:
+        put(x, y, 'k')                       # lockers
+    for (x, y) in [(25, 12), (35, 12), (24, 17), (33, 17),
+                   (25, 21), (26, 27), (21, 17), (36, 17)]:
+        put(x, y, 't')                       # trestle tables
+    for (x, y) in [(21, 12), (28, 11), (36, 13), (41, 12),
+                   (25, 22), (27, 26)]:
+        put(x, y, 'c')                       # stores and crates
+    for (x, y) in [(24, 15), (33, 13), (30, 18), (36, 16),
+                   (20, 25), (27, 23), (22, 26), (19, 13)]:
+        put(x, y, 'r')                       # rubbish, walkable
 
     return u, {
         'spawns': [(17, 10), (24, 10), (32, 10), (41, 10),
                    (17, 18), (24, 18), (32, 18), (41, 18),
                    (17, 20), (29, 20), (17, 28), (29, 28)],
-        'wallbuys': [(30, 11, 31, 11, 'mg42')],
+        'wallbuys': [(30, 11, 31, 11, 'mg42'), (16, 22, 15, 22, 'mp40'),
+                     (42, 16, 43, 16, 'kar98k')],
         'box': [(25, 26)],
-        'crates': [(34, 17)],
+        'crates': [(34, 17), (21, 27)],
         'lamps': [(18, 12), (26, 14), (34, 12), (40, 14),
                   (18, 26), (26, 26), (29, 14), (20, 20)],
-        'cache': [(20, 21), (21, 21), (20, 22)],
+        'cache': [(20, 21), (21, 21), (20, 22), (28, 25), (29, 25), (22, 16)],
     }
 
 
@@ -490,7 +513,7 @@ def walkable_tiles(grid, legend_solid, start=None):
     return seen
 
 
-SOLIDISH = set('#TFV*c*~')
+SOLIDISH = set('#TFV*c*~bkt')     # b/k/t are the upstairs furniture: solid
 for f in FLOORS[1:]:
     grid = f['grid']
     # flood from the landing you actually arrive at
@@ -508,6 +531,22 @@ for f in FLOORS[1:]:
     if f['obj'].get('cache'):
         for c in f['obj']['cache']:
             assert tuple(c) in reach, f"{f['key']}: cache {c} unreachable"
+
+    # A spawn the horde cannot walk out of is a zombie that just stands there.
+    # So check the route a zombie would really take: boards get chewed through,
+    # but a door you have to buy your way past might as well be brick.
+    horde = walkable_tiles(grid, (SOLIDISH | {'D'}) - {'W'}, start=entry)
+    for s in f['obj']['spawns']:
+        assert tuple(s) in horde, (
+            f"{f['key']}: spawn {tuple(s)} only reaches a staircase through a "
+            f"buyable door -- anything that spawns there is stuck upstairs")
+    # nothing walkable may be cut off: a pocket is where zombies go to stand
+    # still for the rest of the round
+    every = walkable_tiles(grid, SOLIDISH)
+    pockets = sorted(set(every) - set(reach))
+    assert not pockets, (
+        f"{f['key']}: {len(pockets)} walkable tiles are cut off from the "
+        f"staircase, first few {pockets[:6]}")
     print(f"floor {f['key']}: {len(reach)} reachable tiles from {entry}")
 
 # the ground-floor tiles the staircases land on must be walkable too

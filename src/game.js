@@ -13,7 +13,7 @@ import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Lighting, drawVignette } from './lighting.js';
-import { HUD, drawTitle, drawPause, drawGameOver, drawSettings } from './hud.js';
+import { HUD, drawTitle, drawPause, drawGameOver, drawSettings, text } from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -1234,8 +1234,15 @@ export class Game {
     this.time += dt;
 
     // ---- settings overlay (works anywhere, pauses the game behind it) -----
-    if (this.input.wasPressed('KeyO')) {
+    // `wasPressed` stays true for the whole step, so a single O used to open
+    // the panel and then immediately read as the "close" press further down.
+    // Remember which way this press went and let the close check skip O.
+    const oPressed = this.input.wasPressed('KeyO');
+    let openedByO = false;
+    if (oPressed) {
+      const was = this.settingsOpen;
       this.settingsOpen = !this.settingsOpen;
+      openedByO = !was;
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
     }
@@ -1255,7 +1262,7 @@ export class Game {
         if (SETTING_DEFS[this.settingsIndex].id === 'reset') S.reset();
         else S.activate(SETTING_DEFS[this.settingsIndex].id);
       }
-      if (this.input.wasPressed('Escape', 'KeyP', 'KeyO')) {
+      if (this.input.wasPressed('Escape', 'KeyP') || (oPressed && !openedByO)) {
         this.settingsOpen = false;
         this.paused = this._wasPaused || false;
       }
@@ -1690,6 +1697,7 @@ export class Game {
     this.drawBarricades(ctx);
     this.drawDoors(ctx);
     this.drawSecretDoor(ctx);
+    this.drawStairs(ctx);
     // 2b. hazards live on the floor: gas first, then fire on top of it
     for (const g of this.gases) {
       const k = Math.min(1, g.life / g.max);
@@ -2386,6 +2394,49 @@ export class Game {
         ctx.beginPath(); ctx.arc(sw.x, sw.y, 12, 0, TAU); ctx.stroke();
       }
       ctx.restore();
+    }
+  }
+
+  /**
+   * A staircase is just a differently shaded floor tile, and the first two
+   * players to reach the second floor both found them by accident. So mark
+   * them: a frame, an arrow pointing the way the stair takes you, and its
+   * name and destination once you are near enough to be deciding.
+   */
+  drawStairs(ctx) {
+    const f = this.map.floor;
+    const pulse = 0.55 + Math.sin(this.time * 2.6) * 0.25;
+    for (const l of this.map.linksOn(f)) {
+      const here = l.a.floor === f ? l.a : l.b;
+      const there = l.a.floor === f ? l.b : l.a;
+      const up = there.floor > f;
+      const x = (here.tx + 0.5) * T, y = (here.ty + 0.5) * T;
+      if (!this._vis(x, y, 70)) continue;
+
+      ctx.save();
+      ctx.strokeStyle = `rgba(240,217,138,${0.3 + pulse * 0.4})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(here.tx * T + 1.5, here.ty * T + 1.5, T - 3, T - 3);
+
+      // arrow bobbing over the tile, pointing where it takes you
+      ctx.fillStyle = `rgba(240,217,138,${0.5 + pulse * 0.45})`;
+      const ax = x, ay = y - 15 + Math.sin(this.time * 3) * 1.5;
+      ctx.beginPath();
+      if (up) { ctx.moveTo(ax, ay - 6); ctx.lineTo(ax - 5, ay + 3); ctx.lineTo(ax + 5, ay + 3); }
+      else { ctx.moveTo(ax, ay + 4); ctx.lineTo(ax - 5, ay - 5); ctx.lineTo(ax + 5, ay - 5); }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      if (dist(this.player.pos.x, this.player.pos.y, x, y) < 96) {
+        const dest = this.map.floors[there.floor]?.def?.name ?? (up ? 'UPSTAIRS' : 'DOWNSTAIRS');
+        text(ctx, `${l.name} — ${up ? 'UP' : 'DOWN'} TO ${dest}`, x, y - 24, {
+          font: 'bold 10px "Courier New", monospace', colour: '#f0d98a', align: 'center',
+        });
+        text(ctx, 'step on to climb', x, y + T / 2 + 13, {
+          font: 'bold 9px "Courier New", monospace', colour: 'rgba(230,220,180,0.75)', align: 'center',
+        });
+      }
     }
   }
 

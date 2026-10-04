@@ -17,6 +17,15 @@ const COST_STAIR = 300;     // stairwells are a shortcut, not an obstacle
 
 const MAX_PLANKS = 6;
 
+// Tiles the flow field refuses to route through. Kept in one place, next to
+// solidTileOn, because the hand-written list that used to live inside
+// buildFlow went stale the moment furniture went in upstairs -- and then the
+// horde cheerfully tried to walk through bunks and jammed itself on them.
+const BLOCKS_FLOW = new Set([
+  TILE.WALL, TILE.CRATE, TILE.TREE, TILE.VEHICLE, TILE.VOID, TILE.FENCE,
+  TILE.BUNK, TILE.LOCKER, TILE.TABLE, TILE.SECRET_DOOR,
+]);
+
 const N8 = [
   [1, 0, COST_FLOOR], [-1, 0, COST_FLOOR], [0, 1, COST_FLOOR], [0, -1, COST_FLOOR],
   [1, 1, COST_DIAG], [1, -1, COST_DIAG], [-1, 1, COST_DIAG], [-1, -1, COST_DIAG],
@@ -28,6 +37,7 @@ const CHAR_TO_TILE = {
   F: TILE.FENCE, V: TILE.VEHICLE, S: TILE.STAIR, '*': TILE.SECRET_DOOR,
   '@': TILE.FLOOR,
   R: TILE.ROOF, '~': TILE.VOID,
+  b: TILE.BUNK, k: TILE.LOCKER, t: TILE.TABLE,
 };
 
 export class GameMap {
@@ -35,6 +45,11 @@ export class GameMap {
     this.w = MAP_W;
     this.h = MAP_H;
     this.n = MAP_W * MAP_H;
+
+    // Whether the bricked-up cache has been opened. Whole-map state: it is
+    // checked from solidTileOn, which is asked about storeys the player is
+    // not standing on, so it cannot live on a storey.
+    this.secretDoorOpen = false;
 
     // --- vertical links ----------------------------------------------------
     // `a` and `b` deliberately share tile coordinates, so climbing the west
@@ -91,7 +106,10 @@ export class GameMap {
     this.next = F.next;
     this._heap = F._heap;
     this.secretDoorIdx = F.secretDoorIdx;
-    this.secretDoorOpen = F.secretDoorOpen;
+    // NB: secretDoorOpen is deliberately *not* copied from the storey. The
+    // cache is one thing for the whole map, and copying it here meant every
+    // flow rebuild (which hops storeys) reset a door the player had already
+    // opened straight back to shut.
     for (const k of ['perkSpots', 'powerSwitch', 'workbench', 'papSpot',
       'secretSwitches', 'secretLoot']) this[k] = F[k];
     this.flowDirty = true;
@@ -310,8 +328,9 @@ export class GameMap {
     const i = ty * this.w + tx;
     switch (F.tiles[i]) {
       case TILE.WALL: case TILE.CRATE: case TILE.TREE:
-      case TILE.FENCE: case TILE.VEHICLE: case TILE.VOID: return true;
-      case TILE.SECRET_DOOR: return !F.secretDoorOpen;
+      case TILE.FENCE: case TILE.VEHICLE: case TILE.VOID:
+      case TILE.BUNK: case TILE.LOCKER: case TILE.TABLE: return true;
+      case TILE.SECRET_DOOR: return !this.secretDoorOpen;   // whole-map state, not per storey
       case TILE.WINDOW: {
         const b = F.barricades[F.barricadeOf[i]];
         return b ? b.planks > 0 : false;
@@ -448,9 +467,7 @@ export class GameMap {
         const ni = ny * w + nx;
         if (dist[ni] <= cd) continue;
         const t = tiles[ni];
-        if (t === TILE.WALL || t === TILE.CRATE || t === TILE.TREE || t === TILE.VEHICLE
-          || t === TILE.VOID) continue;
-        if (t === TILE.FENCE || t === TILE.SECRET_DOOR) continue;
+        if (BLOCKS_FLOW.has(t)) continue;
         if (dx && dy && (this.solidAt(cx + dx, cy) || this.solidAt(cx, cy + dy))) continue;
         let extra = 0;
         if (t === TILE.WINDOW) extra = COST_WINDOW;

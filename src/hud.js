@@ -82,7 +82,7 @@ function textSprite(str, font, colour, shadow) {
   return sprite;
 }
 
-function text(ctx, str, x, y, {
+export function text(ctx, str, x, y, {
   font = 'bold 12px "Courier New", monospace', colour = INK, align = 'left',
   shadow = true, alpha = 1,
 } = {}) {
@@ -728,10 +728,20 @@ export class HUD {
       if (t.floor !== undefined && t.floor !== map.floor) continue;
       mark(t.x, t.y, t.ready ? '#f0a03c' : '#5a5f52', 3);
     }
-    // staircases and ladders: the way up, and the way back down
+    // Staircases and ladders, drawn even where you have never stood: the
+    // trouble was never walking to them, it was knowing they were there. The
+    // chevron says which way they go.
     for (const l of map.linksOn(map.floor)) {
       const at = map.linkPos(l, map.floor);
-      mark(at.x, at.y, '#9fd0f0', l.kind === 'ladder' ? 3 : 4);
+      const up = (l.a.floor === map.floor ? l.b.floor : l.a.floor) > map.floor;
+      const mx = x0 + at.tx * s, my = y0 + at.ty * s;
+      ctx.fillStyle = '#9fd0f0';
+      ctx.fillRect(mx - 2, my - 2, 4, 4);
+      ctx.fillStyle = '#e8f4ff';
+      for (let i = 0; i < 2; i++) {
+        const w2 = i === 0 ? 4 : 2;
+        ctx.fillRect(mx - w2 / 2, up ? my - 5 - i * 2 : my + 4 + i * 2, w2, 1);
+      }
     }
     for (const c of map.cacheSpots ?? []) {
       if (!c.taken) mark(c.x, c.y, '#f2e26a', 3);

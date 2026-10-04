@@ -368,6 +368,9 @@ export const TILE = {
   SECRET_DOOR: 11,
   ROOF: 12,          // walkable felt-and-gravel roof of the bunker
   VOID: 13,          // solid nothing: the open air beyond the parapet
+  BUNK: 14,          // barracks furniture, upstairs only: solid, but low
+  LOCKER: 15,        // steel locker against a wall
+  TABLE: 16,         // trestle table -- solid, so it earns its footprint
 };
 
 const C = {
@@ -840,6 +843,9 @@ export function paintLevel(tiles, w, h, seed = 1337, storey = 0) {
         else paintFloor(ctx, px, py, trng, shaded);
         if (t === TILE.CRATE) paintCrate(ctx, px, py, trng, { s: at(x, y + 1) === TILE.WALL });
         else if (t === TILE.RUBBLE) paintRubble(ctx, px, py, trng);
+        else if (t === TILE.BUNK) paintBunk(ctx, px, py, trng);
+        else if (t === TILE.LOCKER) paintLocker(ctx, px, py, trng);
+        else if (t === TILE.TABLE) paintTable(ctx, px, py, trng);
       }
     }
   }
@@ -847,4 +853,92 @@ export function paintLevel(tiles, w, h, seed = 1337, storey = 0) {
   // keep it bounded: a handful of floors, nothing more
   if (_levelCache.size > 6) _levelCache.delete(_levelCache.keys().next().value);
   return canvas;
+}
+
+// ---------------------------------------------------------------- furniture
+// Upstairs used to be empty floor with the odd crate. A barracks should look
+// slept in: bunks, lockers, a table to sit at.
+
+function bunkRng(x, y) {
+  let h = x * 374761393 + y * 668265263;
+  h = (h ^ (h >> 13)) * 1274126177;
+  return ((h ^ (h >> 16)) >>> 0) / 4294967296;
+}
+
+function paintBunk(ctx, px, py, rng) {
+  paintFloorBoards(ctx, px, py, rng, false);
+  const x = px + 1, y = py + 1, w = T - 2, h = T - 2;
+  // frame
+  ctx.fillStyle = '#3b3e47';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#4b4f59';
+  ctx.fillRect(x + 1, y + 1, w - 2, h - 4);
+  // two mattresses, end on, one above the other
+  for (let i = 0; i < 2; i++) {
+    const my = y + 3 + i * 9;
+    ctx.fillStyle = '#75725e';
+    ctx.fillRect(x + 2, my, w - 4, 6);
+    ctx.fillStyle = '#8b876f';
+    ctx.fillRect(x + 2, my, w - 4, 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(x + 2, my + 4, w - 4, 2);
+    // a folded blanket at the foot
+    ctx.fillStyle = i ? '#5c4f42' : '#605440';
+    ctx.fillRect(x + w - 8, my, 6, 6);
+  }
+  // corner posts
+  ctx.fillStyle = '#23252b';
+  ctx.fillRect(x, y, 2, h);
+  ctx.fillRect(x + w - 2, y, 2, h);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(x + 2, y + 2, w - 4, 1);
+}
+
+function paintLocker(ctx, px, py, rng) {
+  paintFloorBoards(ctx, px, py, rng, false);
+  const x = px + 3, y = py + 1, w = T - 6, h = T - 2;
+  ctx.fillStyle = '#454b51';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#555c63';
+  ctx.fillRect(x + 1, y + 1, w / 2 - 1, h - 2);
+  ctx.fillStyle = '#4c535a';
+  ctx.fillRect(x + w / 2, y + 1, w / 2 - 1, h - 2);
+  // handles and vents
+  ctx.fillStyle = '#20242a';
+  ctx.fillRect(x + w / 2 - 3, y + h / 2 - 1, 2, 3);
+  ctx.fillRect(x + w - 3, y + h / 2 - 1, 2, 3);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  for (let i = 0; i < 3; i++) {
+    ctx.fillRect(x + 2, y + 3 + i * 3, w / 2 - 3, 1);
+    ctx.fillRect(x + w / 2 + 1, y + 3 + i * 3, w / 2 - 3, 1);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fillRect(x, y, w, 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x, y + h - 2, w, 2);
+}
+
+function paintTable(ctx, px, py, rng) {
+  paintFloorBoards(ctx, px, py, rng, false);
+  const x = px + 1, y = py + 5, w = T - 2, h = T - 11;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(x + 1, y + h, w - 2, 2);
+  ctx.fillStyle = '#5a4527';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#71593a';
+  ctx.fillRect(x, y, w, 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(x, y + h - 1, w, 1);
+  // things left on it
+  const r = bunkRng(px, py);
+  if (r > 0.55) {                       // a mug
+    ctx.fillStyle = '#8d8578';
+    ctx.fillRect(x + 3, y + 2, 3, 4);
+  } else if (r > 0.3) {                 // a spread map or a deck of cards
+    ctx.fillStyle = '#9a9276';
+    ctx.fillRect(x + 4, y + 2, 8, 4);
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(x + 4, y + 3, 8, 1);
+  }
+  speckle(ctx, x, y, 5, rng, 0.2, 0.05);
 }
