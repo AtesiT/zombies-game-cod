@@ -20,7 +20,7 @@ ok(g.paused === true, 'the game behind it is paused');
 // navigation must work while it is open
 const before = g.settingsIndex;
 tap('ArrowDown');
-ok(g.settingsIndex === (before + 1) % 13, 'ArrowDown moves the cursor', `${before} -> ${g.settingsIndex}`);
+ok(g.settingsIndex === (before + 1) % M.SETTING_DEFS.length, 'ArrowDown moves the cursor', `${before} -> ${g.settingsIndex}`);
 tap('ArrowUp');
 ok(g.settingsIndex === before, 'ArrowUp moves it back');
 

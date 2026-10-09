@@ -10,6 +10,8 @@ export class Input {
     this.mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false, pressed: false, released: false, rdown: false };
     this.wheel = 0;
     this.anyInput = false;
+    // filled in by the on-screen stick (see src/touch.js); null on desktop
+    this.stick = { x: 0, y: 0 };
 
     const onKey = (e, down) => {
       if (e.repeat) return;
@@ -55,7 +57,7 @@ export class Input {
   wasPressed(...codes) { return codes.some((c) => this.pressed.has(c)); }
   wasReleased(...codes) { return codes.some((c) => this.released.has(c)); }
 
-  /** Movement vector from WASD / arrows, normalised. */
+  /** Movement vector from WASD / arrows and the on-screen stick, normalised. */
   moveVector() {
     let x = 0, y = 0;
     if (this.isDown('KeyA', 'ArrowLeft')) x -= 1;
@@ -63,6 +65,12 @@ export class Input {
     if (this.isDown('KeyW', 'ArrowUp')) y -= 1;
     if (this.isDown('KeyS', 'ArrowDown')) y += 1;
     if (x && y) { const k = Math.SQRT1_2; x *= k; y *= k; }
+    const st = this.stick;
+    if (st && (st.x || st.y)) {
+      x += st.x; y += st.y;
+      const len = Math.hypot(x, y);
+      if (len > 1) { x /= len; y /= len; }
+    }
     return { x, y };
   }
 

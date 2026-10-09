@@ -2,6 +2,7 @@
 import { Input } from './input.js';
 import { Game, VW, VH } from './game.js';
 import { audio } from './audio.js';
+import { TouchControls, isTouchDevice } from './touch.js';
 
 const canvas = document.getElementById('game');
 canvas.width = VW;
@@ -33,6 +34,18 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+// ---------------------------------------------------------------------------
+//  On-screen controls. Mounted on the stage wrapper so they scale with the
+//  game, shown when the setting says so (AUTO = any touch screen).
+// ---------------------------------------------------------------------------
+const touch = new TouchControls(input, { mount: wrap });
+function syncTouch() {
+  const mode = game.settings.get('touch');
+  touch.show(mode === 2 || (mode === 0 && isTouchDevice()));
+}
+game.settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist') syncTouch(); });
+syncTouch();
+
 // first gesture unlocks WebAudio
 const unlock = () => { audio.init(); audio.resume(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
 window.addEventListener('pointerdown', unlock);
@@ -60,6 +73,7 @@ function frame(now) {
   acc += dt;
   let steps = 0;
   while (acc >= STEP && steps < MAX_STEPS) {
+    touch.update(game);
     game.update(STEP);
     input.endFrame();
     acc -= STEP;
@@ -77,3 +91,4 @@ requestAnimationFrame(frame);
 
 // expose a little handle for debugging in the console
 window.GAME = game;
+window.TOUCH = touch;

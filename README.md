@@ -24,6 +24,38 @@ python3 -m http.server 8080          # or:  node server.mjs 8080
 Nothing to install, nothing to compile. (A server is required because the game uses
 ES modules — opening `index.html` from `file://` will not work.)
 
+## Multiplayer over the local network
+
+The bundled server doubles as a relay, so co-op needs no extra software:
+
+```bash
+node server.mjs 8080
+# it prints the addresses it is listening on, e.g.
+#   on your network:  http://192.168.1.5:8080/   (multiplayer ready)
+```
+
+1. Whoever runs the server picks **MULTIPLAYER → HOST A GAME** and starts playing.
+2. Everybody else — laptops, phones, tablets on the same wi-fi — opens that address
+   and picks **MULTIPLAYER → JOIN A GAME**, then the room.
+3. **You can join mid-round.** Latecomers are dropped in next to the host with 500
+   points and whatever the round has left to throw at them.
+
+Up to four players. The host simulates the world and the rest draw snapshots of it
+20 times a second, so a phone makes a perfectly good second player. Going down is
+not going out: a downed player crawls for 32 s and any team-mate can stand over
+them and hold `F` for 1.3 s. Points are per player, rounds are shared, and the
+horde grows by 32 % for every extra body in the building. If the host quits, the
+relay hands the room to the longest-standing guest.
+
+## Phone / touch controls
+
+On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
+`AUTO` by default): a stick to walk with on the left, a stick to aim with and the
+FIRE / F / R / Q / sprint / frag / medkit / knife buttons on the right, plus a
+pause button in the corner. A tap anywhere else reaches the game underneath, so
+the menus work with a thumb. `AIM ASSIST` points the barrel at the nearest walker
+while you are not touching the aim stick.
+
 ## Controls
 
 | Input | Action |
@@ -41,7 +73,8 @@ ES modules — opening `index.html` from `file://` will not work.)
 | `G` | Throw a frag grenade |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
-| `M` | Mute · `P` / `Esc` pause · `R` restart after death |
+| `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
+| `F` | Same as `E` — and how you revive a downed team-mate in co-op |
 
 ## The map (72 × 50 tiles)
 

@@ -23,11 +23,11 @@ globalThis.localStorage = { _d: {}, getItem(k) { return this._d[k] ?? null; }, s
 globalThis.AudioContext = undefined;
 
 export async function load() {
-  const [game, input, ent, wep, perks, craft, ach, tr, set, pu] = await Promise.all([
+  const [game, input, ent, wep, perks, craft, ach, tr, set, pu, hud] = await Promise.all([
     import(SRC + '/game.js'), import(SRC + '/input.js'), import(SRC + '/entities.js'),
     import(SRC + '/weapons.js'), import(SRC + '/perks.js'), import(SRC + '/crafting.js'),
     import(SRC + '/achievements.js'), import(SRC + '/traps.js'), import(SRC + '/settings.js'),
-    import(SRC + '/powerups.js'),
+    import(SRC + '/powerups.js'), import(SRC + '/hud.js'),
   ]);
   return {
     Game: game.Game, VW: game.VW, VH: game.VH, Input: input.Input,
@@ -35,5 +35,6 @@ export async function load() {
     PERKS: perks.PERKS, RECIPE_ORDER: craft.RECIPE_ORDER, ENEMY_TYPES: ent.ENEMY_TYPES,
     Zombie: ent.Zombie, Grenade: ent.Grenade, settings: set.settings, SETTING_DEFS: set.SETTING_DEFS,
     TRAP_PRICE: tr.TRAP_PRICE, POWERUPS: pu.POWERUPS ?? {},
+    menuRows: hud.menuRows, menuHitTest: hud.menuHitTest,
   };
 }

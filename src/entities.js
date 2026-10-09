@@ -267,6 +267,11 @@ export class Player {
     this.facing = 1;
     this.grenades = 0;
     this.dead = false;
+    this.downed = false;      // on the floor, but not out of it yet
+    this.bleedT = 0;          // seconds left before a downed body is finished
+    this.netId = 0;           // who this is, on the wire
+    this.name = '';
+    this.points = 0;
     this.hurtFlash = 0;
     this.hitDirs = [];       // {angle, age}
     this.breath = 0;
@@ -447,6 +452,15 @@ export class Player {
 
   hurt(amount, srcX, srcY, game) {
     if (this.invuln > 0 || this.dead) return false;
+    // already on the floor: the hits do not kill you, they hurry you up
+    if (this.downed) {
+      this.bleedT = Math.max(0, this.bleedT - 3);
+      this.hurtFlash = 1;
+      this.lastHurt = game.time;
+      audio.playerHurt();
+      game.shake?.(4, 0.2);
+      return true;
+    }
     // armour plates soak damage first
     if (this.armor > 0) {
       const absorbed = Math.min(this.armor, amount);
@@ -472,7 +486,20 @@ export class Player {
     this.vel.y -= Math.sin(a) * 70;
     audio.playerHurt();
     game.shake(6, 0.28);
-    if (this.hp <= 0) { this.hp = 0; this.dead = true; }
+    if (this.hp <= 0) {
+      this.hp = 0;
+      // with somebody else in the building, going down is not the end of it
+      const coop = (game.players?.length ?? 1) > 1;
+      if (coop && !this.downed) {
+        this.downed = true;
+        this.bleedT = 32;
+        this.invuln = 1.2;
+        game.shake?.(9, 0.5);
+        game.popups?.add?.(this.pos.x, this.pos.y - 34, 'DOWN', '#c4463a', 13);
+      } else {
+        this.dead = true;
+      }
+    }
     return true;
   }
 
@@ -490,11 +517,23 @@ export class Player {
     this.hitDirs = this.hitDirs.filter((h) => h.age < 1.6);
 
     // health regen
-    if (!this.dead && game.time - this.lastHurt > this.regenDelay && this.hp < this.maxHp) {
+    if (!this.dead && !this.downed && game.time - this.lastHurt > this.regenDelay && this.hp < this.maxHp) {
       this.hp = Math.min(this.maxHp, this.hp + this.regenRate * dt);
     }
 
     if (this.dead) return;
+
+    // ---- last stand: crawl, bleed, wait for somebody ---------------------
+    if (this.downed && !this.dead) {
+      this.bleedT -= dt;
+      this.invuln = Math.max(0, this.invuln - dt);
+      this.hurtFlash = Math.max(0, this.hurtFlash - dt * 3);
+      if (this.bleedT <= 0) {
+        this.downed = false;
+        this.dead = true;
+        game.popups?.add?.(this.pos.x, this.pos.y - 30, 'BLEED OUT', '#c4463a', 12);
+      }
+    }
 
     // --------------------------------------------------------- timers ------
     this.dmTimer = Math.max(0, this.dmTimer - dt);
@@ -503,9 +542,10 @@ export class Player {
     // ---------------------------------------------------------- movement ---
     const mv = game.paused ? { x: 0, y: 0 } : input.moveVector();
     const moving = mv.x !== 0 || mv.y !== 0;
-    this.sprinting = moving && !game.paused
+    this.sprinting = moving && !game.paused && !this.downed
       && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
-    this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1);
+    this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
+      * (this.downed ? 0.34 : 1);
     const targetVx = mv.x * this.speed;
     const targetVy = mv.y * this.speed;
     const a = (moving ? this.accel : this.accel * 1.6) * dt;
@@ -560,6 +600,7 @@ export class Player {
     }
 
     // -------------------------------------------------------------- fire ---
+    if (this.downed) { this.reloading = false; this.recoil = 0; return; }
     const wantFire = isAuto(d) ? input.mouse.down : input.mouse.pressed;
     if (wantFire && !this.reloading && !game.paused && this.swapTimer <= 0) {
       if (this.slot.mag > 0) {
@@ -605,7 +646,7 @@ export class Player {
     for (const h of hits.slice(0, 2)) {
       const z = h.z;
       const ang = Math.atan2(z.pos.y - this.pos.y, z.pos.x - this.pos.x);
-      const res = z.hurt(dmg, false, game, ang);
+      const res = z.hurt(dmg, false, game, ang, this);
       any = true;
       if (res === 2) game.onZombieKilled(z, false, 130);
     }
@@ -643,11 +684,11 @@ export class Player {
     const pellets = d.pellets ?? 1;
 
     if (d.special === 'shock') {
-      game.fireShockwave(ox, oy, this.aim, d);
+      game.fireShockwave(ox, oy, this.aim, d, this);
     } else {
       for (let p = 0; p < pellets; p++) {
         const ang = this.aim + randRange(-spread, spread) + randRange(-0.006, 0.006);
-        game.fireHitscan(ox, oy, ang, d, muzzle);
+        game.fireHitscan(ox, oy, ang, d, muzzle, this);
       }
     }
 
@@ -874,7 +915,8 @@ export class Zombie {
 
   get alive() { return !this.dead; }
 
-  hurt(amount, head, game, dirAngle) {
+  hurt(amount, head, game, dirAngle, by = null) {
+    if (by) this._by = by;
     if (this.dead) return 0;
     // it is under the ground -- the bullets only stir the dirt
     if (this.state === ZSTATE.BURIED) {
@@ -996,8 +1038,15 @@ export class Zombie {
       return;
     }
 
-    const p = game.player;
-    const sameFloor = this.floor === game.map.floor;
+    // In co-op the hound picks a body: nearest one, same storey preferred,
+    // and the ones still standing before the ones on the floor.
+    this._tgtT = (this._tgtT ?? 0) - dt;
+    if (this._tgtT <= 0 || !this._tgt || this._tgt.dead || this._tgt.downed) {
+      this._tgt = game.pickTarget ? game.pickTarget(this) : game.player;
+      this._tgtT = 0.6;
+    }
+    const p = this._tgt ?? game.player;
+    const sameFloor = this.floor === (p.floor ?? game.map.floor);
     // on another storey it cannot reach you, so it cannot hurt you either
     const pd = sameFloor
       ? dist(this.pos.x, this.pos.y, p.pos.x, p.pos.y)

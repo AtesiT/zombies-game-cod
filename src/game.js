@@ -12,8 +12,11 @@ import { Workbench, RECIPES, RECIPE_ORDER } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
+import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette } from './lighting.js';
-import { HUD, drawTitle, drawPause, drawGameOver, drawSettings, text } from './hud.js';
+import {
+  HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text,
+} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -110,6 +113,13 @@ export class Game {
     this.lighting = new Lighting(VW, VH, 0.5);
     this.hud = new HUD();
     this.achievements = new Achievements();
+    this.net = new Net(this);
+    // the front door: SOLO / MULTIPLAYER / SETTINGS before anything else runs
+    this.scene = 'menu';
+    this.menuIndex = 0;
+    this.menuHover = -1;
+    this.mpIndex = 0;
+    this.netMsg = null;
 
     // performance state: what the player asked for, and how far the automatic
     // governor has backed off from it while frames are slow.
@@ -133,6 +143,12 @@ export class Game {
     this.decalCtx = this._decalCtx[this.map.floor];
     this.player = new Player(this.map, this.map.playerStart.x, this.map.playerStart.y);
     this.player.game = this;
+    this.player.netId = 0;
+    this.player.name = this.net?.name || 'PLAYER';
+    this.player.floor = this.map.floor;
+    // every body in the round, local one first: the host simulates all of
+    // them, a guest only ever draws them
+    this.players = [this.player];
     this.player.salvage = 0;
     this.player.medkits = 0;
     this.player.armor = 0;
@@ -218,17 +234,49 @@ export class Game {
     this.revealAround(this.player.pos.x, this.player.pos.y, 14);
   }
 
-  /** Rebuilds the dijkstra field on every storey that currently matters. */
+  /**
+   * Rebuilds the dijkstra field on every storey that currently matters. With
+   * four of you scattered over three floors there is no single target, so a
+   * storey points at whoever its own horde is mostly after, and empty
+   * storeys aim at the stairwell that leads to the nearest living body.
+   */
   rebuildFlow() {
-    const pf = this.map.floor;
-    const lure = this.monkeys.find((m) => m.luring && (m.floor ?? pf) === pf);
-    const tx = lure ? lure.pos.x : this.player.pos.x;
-    const ty = lure ? lure.pos.y : this.player.pos.y;
-    this.map.buildFlowOn(pf, tx, ty);
-    // every other storey aims at the staircase that leads towards the player
+    const live = (this.players ?? [this.player]).filter((pl) => pl && !pl.dead);
+    if (!live.length) return;
+    const floorOf = (pl) => pl.floor ?? this.map.floor;
+    const done = new Set();
+
     for (let f = 0; f < this.map.floors.length; f++) {
-      if (f === pf) continue;
-      const hop = this.map.hopTowards(f, pf);
+      const lure = this.monkeys.find((m) => m.luring && (m.floor ?? f) === f);
+      if (lure) {
+        this.map.buildFlowOn(f, lure.pos.x, lure.pos.y);
+        done.add(f);
+        continue;
+      }
+      const on = live.filter((pl) => floorOf(pl) === f);
+      if (!on.length) continue;
+      done.add(f);
+      let best = on[0], bestN = -1;
+      for (const pl of on) {
+        let n = 0;
+        for (const z of this.zombies) {
+          if (z.dead || (z.floor ?? 0) !== f) continue;
+          if (this.pickTarget(z) === pl) n++;
+        }
+        if (n > bestN) { bestN = n; best = pl; }
+      }
+      this.map.buildFlowOn(f, best.pos.x, best.pos.y);
+    }
+
+    for (let f = 0; f < this.map.floors.length; f++) {
+      if (done.has(f)) continue;
+      let target = null, bd = Infinity;
+      for (const pl of live) {
+        const d = Math.abs(floorOf(pl) - f);
+        if (d < bd) { bd = d; target = pl; }
+      }
+      if (!target) continue;
+      const hop = this.map.hopTowards(f, floorOf(target));
       if (!hop) continue;
       const exit = this.map.linkPos(hop.link, f);
       this.map.buildFlowOn(f, exit.x, exit.y);
@@ -298,14 +346,90 @@ export class Game {
 
   bannerShow(title, sub, opts = {}) {
     this.banner = { title, sub, t: opts.dur ?? 2.2, max: opts.dur ?? 2.2, big: !!opts.big, colour: opts.colour };
+    // guests see the same banner: rounds, perks, the power coming on
+    this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
   }
 
-  addPoints(n, x, y, colour) {
-    this.points += n;
-    this.stats.points += Math.max(0, n);
+  /** Points belong to a body, not to the match -- four of you, four wallets. */
+  get points() { return this.player ? this.player.points : 0; }
+  set points(v) { if (this.player) this.player.points = v; }
+
+  addPoints(n, x, y, colour, who) {
+    const t = who ?? this.player;
+    if (t) t.points = (t.points ?? 0) + n;
+    if (t === this.player) {
+      this.stats.points += Math.max(0, n);
+      if (n > 0) this.hud.pointPulse = 1;
+    }
     if (x !== undefined) this.popups.add(x, y, (n > 0 ? '+' : '') + n, colour);
-    if (n > 0) this.hud.pointPulse = 1;
   }
+
+  // ------------------------------------------------------------------ co-op
+  /** Who a given walker is currently interested in. */
+  pickTarget(z) {
+    let best = null, bd = Infinity;
+    for (const p of this.players ?? [this.player]) {
+      if (!p || p.dead) continue;
+      let d = dist2(z.pos.x, z.pos.y, p.pos.x, p.pos.y);
+      if ((p.floor ?? this.map.floor) !== (z.floor ?? 0)) d *= 5;   // same storey first
+      if (p.downed) d *= 2.4;                                        // finish the standing first
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best ?? this.player;
+  }
+
+  checkLinksFor(p, rec) {
+    const on = this.map.linksOn(p.floor ?? this.map.floor).find((l) => {
+      const at = this.map.linkPos(l, p.floor ?? this.map.floor);
+      return Math.abs(p.pos.x - at.x) <= 14 && Math.abs(p.pos.y - at.y) <= 14;
+    });
+    const entered = on && !rec.linkOn;
+    rec.linkOn = on;
+    if (!entered || rec.linkCd > 0) return;
+    rec.linkCd = 0.6;
+    const other = on.a.floor === (p.floor ?? this.map.floor) ? on.b : on.a;
+    const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
+    const from = { x: p.pos.x, y: p.pos.y };
+    p.floor = other.floor;
+    p.pos.x = to.x; p.pos.y = to.y;
+    p.vel.x = 0; p.vel.y = 0;
+    this.particles.dust(to.x, to.y, randRange(0, TAU), 6);
+    this.onPlayerTeleport(from, to);
+  }
+
+  /** Stand some poor soul back up. Co-op only exists for this. */
+  revive(downed, by) {
+    if (!downed?.downed) return;
+    downed.downed = false;
+    downed._downTold = 0;
+    downed.hp = Math.round(downed.maxHp * 0.5);
+    downed.invuln = 1.6;
+    downed.bleedT = 0;
+    audio.chime();
+    this.popups.add(downed.pos.x, downed.pos.y - 30, 'REVIVED', '#7fd75a', 12);
+    if (by && by !== this.player) this.bannerShow(`${by.name} REVIVED ${downed.name}`, null, { dur: 2, colour: '#7fd75a' });
+    this.net?.emit('revive', { name: downed.name });
+  }
+
+  throwFor(p) {
+    if (!p || p.dead || p.downed) return;
+    if ((p.grenades ?? 0) <= 0) return;
+    p.grenades--;
+    throwGrenade(this, p.pos.x, p.pos.y, p.aim);
+    p.vel.x -= Math.cos(p.aim) * 30;
+    this.shake(2, 0.1);
+  }
+
+  medkitFor(p) {
+    if (!p || p.dead || p.downed) return;
+    if (p.useMedkit?.()) {
+      audio.chime();
+      this.popups.add(p.pos.x, p.pos.y - 26, '+55 HEALTH', '#63c74d', 12);
+    }
+  }
+
+  /** Host only: hand the guests a thing worth seeing. */
+  netEmit(kind, data) { this.net?.emit(kind, data); }
 
   revealAround(x, y, rTiles) {
     const m = this.map;
@@ -323,12 +447,15 @@ export class Game {
   // ------------------------------------------------------------------ waves
   roundPlan(round) {
     const dog = round > 0 && round % DOG_ROUND_EVERY === 0;
-    const total = dog
+    // more bodies in the room, more of them at the windows: not a straight
+    // multiplication, or a four-player round ten becomes a spreadsheet
+    const crowd = 1 + 0.32 * Math.max(0, (this.players?.length ?? 1) - 1);
+    const total = Math.round((dog
       ? Math.min(10 + Math.round(round * 1.6), 46)
-      : Math.round(6 + round * 3.5);
+      : Math.round(6 + round * 3.5)) * crowd);
     const maxAlive = dog
       ? Math.min(MAX_ALIVE_BASE + Math.floor(round / 3) * 3, 40)
-      : Math.min(MAX_ALIVE_BASE + Math.floor(round / 4) * 3, 34);
+      : Math.min(MAX_ALIVE_BASE + Math.floor(round / 4) * 3 + 6, 40);
     const hp = dog ? Math.min(80 + (round - 1) * 30, 1600) : Math.min(120 + (round - 1) * 46, 2600);
     const speed = Math.min(52 + (round - 1) * 1.6, 96);
     const interval = dog ? Math.max(0.22, 0.75 - round * 0.02) : Math.max(0.3, 1.35 - round * 0.05);
@@ -388,6 +515,29 @@ export class Game {
   startRound(n) {
     this.round = n;
     this.stats.round = n;
+    // Co-op: a body that went down comes back when the next round does. You
+    // keep what you bought and you come back where the others are.
+    for (const pl of this.players ?? []) {
+      if (!pl || !pl.dead) continue;
+      const spot = pl === this.player
+        ? this.map.playerStart
+        : (this.net?._spawnSpot?.() ?? this.map.playerStart);
+      pl.dead = false;
+      pl.downed = false;
+      pl._deathTold = 0;
+      pl._downTold = 0;
+      pl.hp = pl.maxHp;
+      pl.bleedT = 0;
+      pl.invuln = 2;
+      pl.pos.x = spot.x; pl.pos.y = spot.y;
+      pl.vel.x = 0; pl.vel.y = 0;
+      pl.points = Math.max(pl.points ?? 0, 500);
+      if (pl === this.player) {
+        if (this.map.floor !== 0) { this.map.setFloor(0); this.useFloor(0); }
+        pl.floor = 0;
+        this.bannerShow('BACK IN', 'you lose the round you died in, nothing else', { dur: 2.4, colour: '#9fd0e0' });
+      }
+    }
     const plan = this.roundPlan(n);
     this.dogRound = plan.dog;
     this.zombiesTotal = plan.total;
@@ -653,6 +803,7 @@ export class Game {
 
   onZombieKilled(z, head, ptsOverride = null, source = 'bullet') {
     this.zombiesKilled++;
+    const who = z._by ?? this.player;
     if (z.type === 'medic') this.say('medic');
     else if (z.type === 'fusion') this.say('amalgam');
     this.stats.kills++;
@@ -661,14 +812,15 @@ export class Game {
       ?? Math.round((POINTS_KILL + (head ? POINTS_HEAD : 0)) * z.pointsMul
         * (this.timers.doublepoints > 0 ? 2 : 1));
     this.addPoints(pts, z.pos.x, z.pos.y - 24,
-      ptsOverride ? '#a8d06a' : head ? '#f0d98a' : '#e6dcc2');
+      ptsOverride ? '#a8d06a' : head ? '#f0d98a' : '#e6dcc2', who);
+    this.netEmit('kill', { x: Math.round(z.pos.x), y: Math.round(z.pos.y), pts, head: !!head });
     this.splat(z.pos.x, z.pos.y, 9 + Math.random() * 7, 0.5);
 
     // salvage
     const dropChance = SALVAGE_DROP + (z.type === 'brute' ? 0.55 : 0);
     if (Math.random() < dropChance) {
       const n = z.type === 'brute' ? randInt(2, 4) : 1;
-      this.player.salvage += n;
+      who.salvage = (who.salvage ?? 0) + n;
       this.popups.add(z.pos.x + randRange(-6, 6), z.pos.y - 34, `+${n} SCRAP`, '#9fd0e0', 9);
     }
 
@@ -876,7 +1028,7 @@ export class Game {
   }
 
   // -------------------------------------------------------------- shooting
-  fireHitscan(ox, oy, angle, def, muzzle) {
+  fireHitscan(ox, oy, angle, def, muzzle, by = null) {
     this.stats.shots++;
     const dx = Math.cos(angle), dy = Math.sin(angle);
     const ex = ox + dx * def.range, ey = oy + dy * def.range;
@@ -919,7 +1071,7 @@ export class Game {
     for (const h of hits) {
       const wasAlive = !h.z.dead;
       const mul = (h.head ? def.headMul : 1) * insta;
-      const res = h.z.hurt(def.dmg * mul, h.head, this, angle);
+      const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
       if (!wasAlive) continue;
       anyHit = true;
       if (!firstHit) firstHit = h;
@@ -1010,8 +1162,9 @@ export class Game {
   }
 
   // ---------------------------------------------------------- interactions
-  updateInteraction() {
-    const p = this.player;
+  /** What a given body could reach right now: prices and reach are per
+   *  player, since four of you are carrying four wallets. */
+  interactionFor(p = this.player) {
     let best = null;
     const offer = (o) => { if (!best || o.d < best.d) best = o; };
 
@@ -1021,7 +1174,7 @@ export class Game {
       const def = WEAPONS[wb.weapon];
       const owned = p.loadout[wb.weapon].owned;
       const price = owned ? def.ammoPrice : def.price;
-      offer({ type: 'wallbuy', weapon: wb.weapon, price, affordable: this.points >= price, d, wb });
+      offer({ type: 'wallbuy', weapon: wb.weapon, price, affordable: p.points >= price, d, wb });
     }
 
     for (const g of this.map.grenadeCrates) {
@@ -1029,7 +1182,7 @@ export class Game {
       if (d < 30) {
         offer({
           type: 'grenade', price: GRENADE_PRICE, d,
-          affordable: this.points >= GRENADE_PRICE && p.grenades < 9,
+          affordable: p.points >= GRENADE_PRICE && p.grenades < 9,
         });
       }
     }
@@ -1037,7 +1190,7 @@ export class Game {
     for (const dr of this.map.doors) {
       if (dr.open) continue;
       const d = dist(p.pos.x, p.pos.y, dr.cx, dr.cy);
-      if (d < 34) offer({ type: 'door', door: dr, price: dr.price, affordable: this.points >= dr.price, d });
+      if (d < 34) offer({ type: 'door', door: dr, price: dr.price, affordable: p.points >= dr.price, d });
     }
 
     const nearB = this.map.nearestBarricade(p.pos.x, p.pos.y, 34, false);
@@ -1055,7 +1208,7 @@ export class Game {
       offer({
         type: 'perk', perk: ps, def, owned, d,
         price: owned ? 0 : def.price,
-        affordable: !owned && !full && this.points >= def.price && this.powerOn,
+        affordable: !owned && !full && p.points >= def.price && this.powerOn,
       });
     }
 
@@ -1065,7 +1218,7 @@ export class Game {
       const price = this.box.price();
       offer({
         type: 'box', d: db, price,
-        affordable: this.powerOn && this.points >= price
+        affordable: this.powerOn && p.points >= price
           && (this.box.state === 'closed' || this.box.state === 'offering'),
       });
     }
@@ -1091,7 +1244,7 @@ export class Game {
     if (nt) {
       offer({
         type: 'trap', i: nt.i, d: dist(p.pos.x, p.pos.y, nt.x, nt.y),
-        price: TRAP_PRICE, ready: nt.ready, affordable: this.points >= TRAP_PRICE && nt.ready,
+        price: TRAP_PRICE, ready: nt.ready, affordable: p.points >= TRAP_PRICE && nt.ready,
       });
     }
 
@@ -1101,7 +1254,7 @@ export class Game {
       const already = p.packed.has(id);
       offer({
         type: 'pap', d: dpp, price: PAP_PRICE, id,
-        affordable: this.powerOn && !already && this.points >= PAP_PRICE && !p.dead,
+        affordable: this.powerOn && !already && p.points >= PAP_PRICE && !p.dead,
         already,
       });
     }
@@ -1118,25 +1271,26 @@ export class Game {
       }
     }
 
-    this.interaction = best;
+    return best;
   }
 
-  doInteraction() {
-    const it = this.interaction;
-    if (!it) return;
-    const p = this.player;
+  updateInteraction() { this.interaction = this.interactionFor(this.player); }
+
+  doInteraction(p = this.player, it = null) {
+    it = it ?? this.interactionFor(p);
+    if (!it || !p || p.dead || p.downed) return;
 
     if (it.type === 'wallbuy') {
       const def = WEAPONS[it.weapon];
       const slot = p.loadout[it.weapon];
       const price = slot.owned ? def.ammoPrice : def.price;
-      if (this.points < price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      if (p.points < price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
       if (slot.owned && slot.reserve >= def.maxReserve && slot.mag >= def.mag) {
         audio.deny();
         this.popups.add(p.pos.x, p.pos.y - 26, 'FULL AMMO', '#9a917c');
         return;
       }
-      this.points -= price;
+      p.points -= price;
       const kind = p.giveWeapon(it.weapon);
       audio.buy();
       this.popups.add(p.pos.x, p.pos.y - 26, kind === 'ammo' ? 'AMMO' : def.name.toUpperCase(), '#f0d98a', 12);
@@ -1145,20 +1299,22 @@ export class Game {
     }
 
     if (it.type === 'door') {
-      if (this.points < it.price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
-      this.points -= it.price;
+      if (p.points < it.price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      p.points -= it.price;
       it.door.open = true;
       this.stats.doors++;
       audio.buy();
       audio.door();
       this.popups.add(p.pos.x, p.pos.y - 26, 'DOOR OPEN', '#f0d98a', 12);
-      this.map.buildFlow(p.pos.x, p.pos.y);
+      // not buildFlow: whoever opened it may not be on the storey the map is
+      // currently showing, and a co-op door opens the route for everybody
+      this.rebuildFlow();
       return;
     }
 
     if (it.type === 'grenade') {
-      if (this.points < it.price || p.grenades >= 9) { audio.deny(); return; }
-      this.points -= it.price;
+      if (p.points < it.price || p.grenades >= 9) { audio.deny(); return; }
+      p.points -= it.price;
       p.grenades += 2;
       audio.buy();
       this.popups.add(p.pos.x, p.pos.y - 26, 'FRAG GRENADES', '#f0d98a', 12);
@@ -1169,8 +1325,8 @@ export class Game {
       if (it.owned) { audio.deny(); return; }
       if (!this.powerOn) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POWER', '#c4463a'); return; }
       if (p.perks.size >= 6) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'PERK LIMIT', '#c4463a'); return; }
-      if (this.points < it.price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
-      this.points -= it.price;
+      if (p.points < it.price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      p.points -= it.price;
       p.addPerk(it.perk.id);
       audio.perk();
       this.bannerShow(it.def.name.toUpperCase(), it.def.desc, { dur: 2.4, colour: it.def.colour });
@@ -1192,8 +1348,8 @@ export class Game {
         return;
       }
       if (this.box.state !== 'closed') return;
-      if (this.points < price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
-      this.points -= price;
+      if (p.points < price) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      p.points -= price;
       const res = this.box.spin();
       audio.boxSpin();
       if (res === 'teddy') {
@@ -1214,6 +1370,7 @@ export class Game {
     }
 
     if (it.type === 'workbench') {
+      if (p !== this.player) { audio.deny(); return; }
       this.craftOpen = !this.craftOpen;
       audio.reload(2);
       return;
@@ -1222,8 +1379,8 @@ export class Game {
     if (it.type === 'trap') {
       const t = this.traps.list[it.i];
       if (!t.ready) { audio.deny(); return; }
-      if (this.points < TRAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
-      this.points -= TRAP_PRICE;
+      if (p.points < TRAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      p.points -= TRAP_PRICE;
       t.arm();
       audio.trap(t.kind.id);
       this.shake(4, 0.3);
@@ -1239,7 +1396,7 @@ export class Game {
       this._cacheOpened = (this._cacheOpened ?? 0) + 1;
       const salvage = randInt(3, 6);
       p.salvage += salvage;
-      this.addPoints(first ? 1200 : 350, c.x, c.y - 14, '#f0d98a');
+      this.addPoints(first ? 1200 : 350, c.x, c.y - 14, '#f0d98a', p);
       audio.chime();
       this.shake(3, 0.3);
       this.popups.add(c.x, c.y - 26, `+${salvage} SCRAP`, '#f0d98a', 12);
@@ -1256,9 +1413,9 @@ export class Game {
     if (it.type === 'pap') {
       if (it.already) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'ALREADY PUNCHED', '#9a917c', 11); return; }
       if (!this.powerOn) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POWER', '#c4463a'); return; }
-      if (this.points < PAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
+      if (p.points < PAP_PRICE) { audio.deny(); this.popups.add(p.pos.x, p.pos.y - 26, 'NO POINTS', '#c4463a'); return; }
       const oldName = p.def.name.toUpperCase();
-      this.points -= PAP_PRICE;
+      p.points -= PAP_PRICE;
       p.packCurrent();
       audio.packAPunch();
       this.shake(5, 0.6);
@@ -1286,11 +1443,11 @@ export class Game {
       if (it.loot.taken) return;
       it.loot.taken = true;
       audio.chime();
-      this.points += 3000;
-      this.player.salvage += 25;
+      p.points += 3000;
+      p.salvage += 25;
       const pool = ['raygun', 'wunderwaffe', 'thundergun', 'winterhowl', 'monkeybomb'];
       const id = pool[randInt(0, pool.length - 1)];
-      this.player.giveWeapon(id);
+      p.giveWeapon(id);
       this.bannerShow('CACHE FOUND', `${WEAPONS[id].name.toUpperCase()}  +3000 POINTS`, { dur: 3.4, colour: '#f2e26a' });
       this.achievements.unlock('egg_hunter');
       return;
@@ -1298,8 +1455,8 @@ export class Game {
   }
 
   /** Hold E next to a broken window to nail planks back on, one at a time. */
-  rebuildTick(dt) {
-    const it = this.interaction;
+  rebuildTick(dt, p = this.player, it = null) {
+    it = it ?? this.interactionFor(p);
     if (!it || it.type !== 'barricade') { this._rebuildT = 0; return; }
     const b = it.barricade;
     if (b.planks >= b.maxPlanks) { this._rebuildT = 0; return; }
@@ -1308,7 +1465,7 @@ export class Game {
       this._rebuildT = 0;
       b.planks++;
       this.stats.planks++;
-      this.addPoints(POINTS_PLANK, b.cx + randRange(-6, 6), b.cy - 6, '#f0d98a');
+      this.addPoints(POINTS_PLANK, b.cx + randRange(-6, 6), b.cy - 6, '#f0d98a', p);
       audio.wood(true);
       this.particles.dust(b.cx, b.cy, randRange(0, TAU), 3);
       if (this.stats.planks >= 50) this.achievements.unlock('handy');
@@ -1367,6 +1524,7 @@ export class Game {
   goToFloor(n, to, link) {
     const from = { x: this.player.pos.x, y: this.player.pos.y };
     this.map.setFloor(n);
+    this.player.floor = n;
     this.useFloor(n);
     // step off the staircase itself -- land on the tile beside it, so standing
     // still at the top never sends you straight back down
@@ -1418,7 +1576,7 @@ export class Game {
   }
 
   /** Thunder Gun: a cone of concussive force, no hitscan. */
-  fireShockwave(ox, oy, angle, def) {
+  fireShockwave(ox, oy, angle, def, by = null) {
     let hit = 0;
     for (const z of this.zombies) {
       if (z.dead) continue;
@@ -1431,10 +1589,10 @@ export class Game {
       if (Math.abs(da) > def.shockAngle) continue;
       if (this.map.lineBlocked(ox, oy, z.pos.x, z.pos.y)) continue;
       const falloff = 1 - (d / def.shockRange) * 0.45;
-      const res = z.hurt(def.shockDmg * falloff, false, this, Math.atan2(dy, dx));
+      const res = z.hurt(def.shockDmg * falloff, false, this, Math.atan2(dy, dx), by);
       z.vel.x += Math.cos(Math.atan2(dy, dx)) * def.shockPush * falloff;
       z.vel.y += Math.sin(Math.atan2(dy, dx)) * def.shockPush * falloff;
-      this.addPoints(POINTS_HIT, z.pos.x, z.pos.y - 8, 'rgba(245,180,92,0.9)');
+      this.addPoints(POINTS_HIT, z.pos.x, z.pos.y - 8, 'rgba(245,180,92,0.9)', by);
       hit++;
       if (res === 2) this.onZombieKilled(z, false);
     }
@@ -1530,10 +1688,10 @@ export class Game {
       return;
     }
 
-    if (!this.started) {
-      if (this.input.mouse.pressed || this.input.wasPressed('Space', 'Enter')) this.begin();
-      return;
-    }
+    // ---- a guest runs no simulation at all: it draws what the host says ---
+    if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
+
+    if (!this.started) { this._menuUpdate(dt); return; }
 
     if (this.input.wasPressed('KeyM')) audio.setMuted(!audio.muted);
 
@@ -1569,6 +1727,9 @@ export class Game {
     // ---- player ------------------------------------------------------------
     this.player.update(dt, this, this.input);
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
+
+    // ---- co-op: the host also drives every body that joined ---------------
+    if (this.net?.active) this.net.step(dt);
 
     // ---- workbench craft menu (swallows the number keys while open) --------
     if (this.craftOpen) {
@@ -1609,10 +1770,21 @@ export class Game {
     this.checkLevelLinks(dt);
     this.updateAimTarget();
     this.updateInteraction();
-    if (!this.craftOpen) {
-      if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
-      if (this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
-    } else this._rebuildT = 0;
+    // ---- co-op: pick somebody up, or get on with buying things ------------
+    const fallen = this.players.find((o) => o !== this.player && o.downed && !o.dead
+      && dist(this.player.pos.x, this.player.pos.y, o.pos.x, o.pos.y) < 40);
+    this.reviveTarget = fallen ?? null;
+    if (fallen && !this.player.downed && !this.player.dead && this.input.isDown('KeyF')) {
+      this._reviveT = (this._reviveT ?? 0) + dt;
+      this.player.vel.x *= 0.86; this.player.vel.y *= 0.86;
+      if (this._reviveT >= 1.3) { this._reviveT = 0; this.revive(fallen, this.player); }
+    } else {
+      this._reviveT = 0;
+      if (!this.craftOpen) {
+        if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
+        if (this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
+      } else this._rebuildT = 0;
+    }
 
     // ---- waves -------------------------------------------------------------
     if (this.roundActive) {
@@ -1831,9 +2003,30 @@ export class Game {
       if (this.muzzleFlash.t <= 0) this.muzzleFlash = null;
     }
 
+    // ---- death -------------------------------------------------------------
+    // In co-op you are only finished when the last body goes down: until then
+    // a corpse waits for the next round to be let back in.
+    const anyAlive = (this.players ?? [this.player]).some((pl) => pl && !pl.dead);
+    if (!anyAlive && !this.gameOver) {
+      this.gameOver = true;
+      this.overT = 0;
+      audio.roundSting(false);
+      const stamp = Date.now();
+      this.board = submitScore({
+        round: this.round, kills: this.stats.kills, headshots: this.stats.headshots,
+        points: this.stats.points, time: Math.round(this.time), date: stamp,
+      });
+      this.rank = this.board.findIndex((e) => e.date === stamp);
+    }
+
+    this._lateUpdate(dt);
+  }
+
+  /** Camera, lamps, HUD and banners: a guest needs all of it too. */
+  _lateUpdate(dt) {
     // ---- camera ------------------------------------------------------------
-    const lookX = (this.input.mouse.x - VW / 2) * 0.22;
-    const lookY = (this.input.mouse.y - VH / 2) * 0.22;
+    const lookX = ((this.input?.mouse?.x ?? VW / 2) - VW / 2) * 0.22;
+    const lookY = ((this.input?.mouse?.y ?? VH / 2) - VH / 2) * 0.22;
     const tx = clamp(this.player.pos.x + lookX - VW / 2, 0, this.map.w * T - VW);
     const ty = clamp(this.player.pos.y + lookY - VH / 2, 0, this.map.h * T - VH);
     this.cam.x = damp(this.cam.x, tx, 7, dt);
@@ -1853,7 +2046,7 @@ export class Game {
     }
 
     // ---- audio ambience ----------------------------------------------------
-    const hpK = 1 - this.player.hp / this.player.maxHp;
+    const hpK = this.player ? 1 - this.player.hp / (this.player.maxHp || 100) : 0;
     if (hpK > 0.55) {
       this.heartTimer -= dt;
       if (this.heartTimer <= 0) {
@@ -1861,19 +2054,6 @@ export class Game {
         audio.heartbeat(clamp((hpK - 0.55) / 0.45, 0.3, 1));
         if (hpK < 0.3) this.say('hurt');
       }
-    }
-
-    // ---- death -------------------------------------------------------------
-    if (this.player.dead && !this.gameOver) {
-      this.gameOver = true;
-      this.overT = 0;
-      audio.roundSting(false);
-      const stamp = Date.now();
-      this.board = submitScore({
-        round: this.round, kills: this.stats.kills, headshots: this.stats.headshots,
-        points: this.stats.points, time: Math.round(this.time), date: stamp,
-      });
-      this.rank = this.board.findIndex((e) => e.date === stamp);
     }
 
     this.hud.update(dt, this);
@@ -1932,10 +2112,155 @@ export class Game {
 
   begin() {
     this.started = true;
+    this.scene = null;
     this.applySettings();
     audio.init();
     audio.resume();
     this.startRound(1);
+  }
+
+  // ------------------------------------------------------------------ menus
+  /**
+   * The front door. Solo behaves exactly as it always did; multiplayer opens
+   * a room on the relay and then simply starts playing, because somebody
+   * walking in halfway through round nine is the whole point.
+   */
+  _menuUpdate(dt) {
+    const inp = this.input;
+    if (!inp) return;
+    if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
+    const rows = menuRows(this.scene, this);
+    const n = rows.length;
+    const up = inp.wasPressed('ArrowUp', 'KeyW');
+    const down = inp.wasPressed('ArrowDown', 'KeyS');
+    const click = inp.mouse.pressed;
+    const enter = inp.wasPressed('Enter', 'Space') || click;
+    const esc = inp.wasPressed('Escape', 'Backspace');
+
+    // the mouse picks an entry outright; the keyboard walks the list
+    const hit = menuHitTest(this.scene, inp.mouse.x, inp.mouse.y, this);
+    if (hit >= 0 && hit !== this.menuIndex) { this.menuIndex = hit; audio.dryFire(); }
+    if (up || down) {
+      this.menuIndex = (this.menuIndex + (down ? 1 : n - 1)) % Math.max(1, n);
+      audio.dryFire();
+    }
+    if (this.menuIndex >= n) this.menuIndex = 0;
+    if (!enter && !esc) return;
+    if (esc && this.scene === 'menu') return;
+
+    const row = rows[this.menuIndex];
+    if (row?.id === 'refresh') { this.net.askForRooms(); return; }
+    if (row?.id === 'none') return;
+    if (esc) { this.scene = this.scene === 'mp' || this.scene === 'rooms' ? 'menu' : 'menu'; audio.dryFire(); return; }
+    if (!row) return;
+    audio.reload(2);
+    switch (row.id) {
+      case 'solo': this.net.role = 'off'; this.begin(); break;
+      case 'mp': this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0; this.net.askForRooms(); break;
+      case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
+      case 'host': this._startHost(); break;
+      case 'join': this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0; this.net.askForRooms(); break;
+      case 'name': this._askName(); break;
+      case 'addr': this._askAddress(); break;
+      case 'back': this.scene = 'menu'; this.menuIndex = 1; break;
+      case 'waiting': break;
+      default:
+        if (row.room) this._joinRoom(row.room);
+        break;
+    }
+  }
+
+  _askName() {
+    const host = document.getElementById?.('stage') ?? document.body;
+    textEntry(host, {
+      value: this.net.name || 'PLAYER', placeholder: 'YOUR NAME',
+      onDone: (v) => { if (v) { this.net.name = v.slice(0, 10).toUpperCase(); this.player.name = this.net.name; } },
+    });
+  }
+
+  _askAddress() {
+    const host = document.getElementById?.('stage') ?? document.body;
+    textEntry(host, {
+      value: this.net.addr ?? defaultRelay(), placeholder: 'HOST:PORT  e.g.  192.168.1.5:8080',
+      onDone: (v) => {
+        if (!v) return;
+        this.net.addr = v;
+        this.net.url = relayURL(v);
+        this.net.state = 'idle';
+        this.net.open(this.net.url);
+      },
+    });
+  }
+
+  /** Open a room and start playing -- people can walk in at any time. */
+  _startHost() {
+    const net = this.net;
+    if (!net.active) {
+      const url = net.url || relayURL(net.addr ?? defaultRelay());
+      if (!url) { this.netMsg = 'Serve the game first:  node server.mjs'; return; }
+      net.url = url;
+      net.open(url);
+    }
+    net.hostGame('NACHT', net.name || 'PLAYER');
+    this.netMsg = null;
+    this.begin();
+  }
+
+  _joinRoom(room) {
+    const net = this.net;
+    if (!net.active) {
+      const url = net.url || relayURL(net.addr ?? defaultRelay());
+      if (!url) { this.netMsg = 'Serve the game first:  node server.mjs'; return; }
+      net.url = url;
+      net.open(url);
+    }
+    net.joinGame(room.id, net.name || 'PLAYER');
+    this.scene = 'waiting';
+    this.netMsg = null;
+    this._joinT = 0;
+  }
+
+  /** Waiting to be let in: the host answers with the world as it stands. */
+  _waitUpdate(dt) {
+    this._joinT = (this._joinT ?? 0) + dt;
+    if (this.net.state === 'closed' || this.net.error) {
+      this.scene = 'rooms';
+      this.netMsg = this.net.error ?? 'COULD NOT JOIN';
+      return;
+    }
+    if (this.input.wasPressed('Escape')) { this.net.close(); this.scene = 'rooms'; }
+  }
+
+  // ----------------------------------------------------------------- guest --
+  /** No simulation at all: interpolate what the host sent and draw it. */
+  _guestUpdate(dt) {
+    const net = this.net;
+    net.step(dt);
+    const pl = this.player;
+    if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
+      this.map.setFloor(pl.floor);
+      this.useFloor(pl.floor);
+    }
+    this.particles.update(dt, this.map);
+    this.popups.update(dt);
+    for (let i = this.tracers.length - 1; i >= 0; i--) {
+      this.tracers[i].life -= dt;
+      if (this.tracers[i].life <= 0) this.tracers.splice(i, 1);
+    }
+    for (let i = this.flashLights.length - 1; i >= 0; i--) {
+      this.flashLights[i].life -= dt;
+      if (this.flashLights[i].life <= 0) this.flashLights.splice(i, 1);
+    }
+    for (let i = this.explosionLights.length - 1; i >= 0; i--) {
+      this.explosionLights[i].life -= dt;
+      if (this.explosionLights[i].life <= 0) this.explosionLights.splice(i, 1);
+    }
+    if (this.shakeT > 0) {
+      this.shakeT -= dt;
+      if (this.shakeT <= 0) { this.shakeMag = 0; this.shakeT = 0; }
+    }
+    if (this.gameOver) this.overT += dt;
+    this._lateUpdate(dt);
   }
 
   // ------------------------------------------------------------------ draw
@@ -2018,7 +2343,10 @@ export class Game {
     // 3. actors, sorted by feet depth
     const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
     const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
-    list.push({ y: this.player.pos.y + 0.5, d: () => this.player.draw(ctx, this.art) });
+    for (const pl of (this.players ?? [this.player])) {
+      if (!pl || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
+      list.push({ y: pl.pos.y + 0.5, d: () => pl.draw(ctx, this.art) });
+    }
     list.sort((a, b) => a.y - b.y);
     for (const l of list) l.d();
 
@@ -2189,7 +2517,7 @@ export class Game {
     this.achievements.drawBanner?.(ctx, vw, vh);
 
     if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
-    else if (!this.started) drawTitle(ctx, this, vw, vh);
+    else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
   }

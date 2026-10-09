@@ -70,6 +70,16 @@ export const SETTING_DEFS = [
     hint: 'Steps per second — high only matters when frames are already slow',
   },
   {
+    id: 'touch', label: 'ON-SCREEN CONTROLS', type: 'range',
+    min: 0, max: 2, step: 1, def: 0,
+    fmt: (v) => ['AUTO', 'OFF', 'ON'][v] ?? 'AUTO',
+    hint: 'Show the touch stick and buttons — AUTO puts them on any touch screen',
+  },
+  {
+    id: 'touchAssist', label: 'AIM ASSIST', type: 'toggle', def: true,
+    hint: 'With a touch stick held empty, the barrel finds the nearest walker',
+  },
+  {
     id: 'reset', label: 'RESTORE DEFAULTS', type: 'action', def: false,
     hint: 'Put everything back the way it shipped',
   },

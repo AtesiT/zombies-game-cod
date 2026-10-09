@@ -7,6 +7,7 @@ import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
 import { T } from './art.js';
 import { settings, SETTING_DEFS } from './settings.js';
+import { MAX_PLAYERS } from './net.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
@@ -190,11 +191,93 @@ export class HUD {
     this._scrap(ctx, game, w, h);
     this._prompt(ctx, game, w, h);
     this._minimap(ctx, game, w, h);
+    this._net(ctx, game, w, h);
+    this._squad(ctx, game, w, h);
+    this._revive(ctx, game, w, h);
     this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
     this._toast(ctx, game, w, h);
+  }
+
+  // ------------------------------------------------------------------ net --
+  /** Who else is in the room, and how to get somebody into it. */
+  _net(ctx, game, w, h) {
+    const net = game.net;
+    if (!net || net.role === 'off') return;
+    const y = 30;
+    if (net.isHost) {
+      const n = 1 + net.peers.size;
+      const where = net.addr || (net.url ? 'THIS MACHINE' : '');
+      text(ctx, n > 1 ? `ROOM  ${n}/${MAX_PLAYERS}` : `ROOM OPEN  ${n}/${MAX_PLAYERS}   \u00b7   ${where}`,
+        w - 12, y, { font: 'bold 10px "Courier New", monospace', colour: '#9fd0e0', align: 'right' });
+    } else {
+      text(ctx, `HOST  ${net.nameOf?.(net.hostId) ?? ''}`.trim(), w - 12, y, {
+        font: 'bold 10px "Courier New", monospace', colour: '#9fd0e0', align: 'right',
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------- squad --
+  /** Co-op: the other bodies, across the top left under the round counter. */
+  _squad(ctx, game, w, h) {
+    const mates = (game.players ?? []).filter((pl) => pl && pl !== game.player);
+    if (!mates.length) return;
+    let y = 46;
+    for (const m of mates) {
+      const name = (m.name || 'PLAYER').slice(0, 10);
+      const downed = m.downed && !m.dead;
+      const colour = m.dead ? '#6b6b6b' : downed ? RED : '#cfe0ee';
+      text(ctx, name, 14, y, { font: 'bold 10px "Courier New", monospace', colour, shadow: true });
+      // a little health bar, or a bleeding-out one
+      const bw = 54, bh = 4, bx = 14 + 62, by = y - 7;
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+      const k = m.dead ? 0 : clamp((m.hp ?? 0) / (m.maxHp || 100), 0, 1);
+      if (downed) {
+        const bleed = clamp((m.bleedT ?? 0) / 32, 0, 1);
+        ctx.fillStyle = 'rgba(120,40,40,0.9)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = RED;
+        ctx.fillRect(bx, by, bw * bleed, bh);
+      } else {
+        ctx.fillStyle = k > 0.5 ? '#63c74d' : k > 0.25 ? GOLD : RED;
+        ctx.fillRect(bx, by, bw * k, bh);
+      }
+      ctx.restore();
+      if (m.dead) {
+        text(ctx, 'OUT', bx + bw + 6, y, { font: 'bold 9px "Courier New", monospace', colour: '#8a8371' });
+      } else if (downed) {
+        text(ctx, 'DOWN', bx + bw + 6, y, { font: 'bold 9px "Courier New", monospace', colour: RED });
+      }
+      y += 14;
+    }
+  }
+
+  /** "HOLD F" over the body at your feet. */
+  _revive(ctx, game, w, h) {
+    const p = game.player;
+    if (!p || p.dead) return;
+    const near = (game.players ?? []).find((o) => o !== p && o.downed && !o.dead
+      && Math.hypot(o.pos.x - p.pos.x, o.pos.y - p.pos.y) < 40);
+    if (near) {
+      const blink = 0.7 + Math.sin(game.time * 8) * 0.3;
+      text(ctx, `HOLD F  REVIVE ${(near.name || 'TEAM').slice(0, 10)}`, w / 2, h * 0.62, {
+        font: 'bold 13px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+      });
+      return;
+    }
+    if (p.downed && !p.dead) {
+      const left = Math.max(0, p.bleedT ?? 0);
+      text(ctx, `YOU ARE DOWN  ${left.toFixed(0)}s`, w / 2, h * 0.34, {
+        font: 'bold 18px "Courier New", monospace', colour: RED, align: 'center',
+      });
+      text(ctx, 'somebody has to reach you', w / 2, h * 0.34 + 18, {
+        font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      });
+    }
   }
 
   // ---------------------------------------------------------------- perks --
@@ -810,7 +893,8 @@ export class HUD {
 // ---------------------------------------------------------------------------
 //  Full-screen menus
 // ---------------------------------------------------------------------------
-export function drawTitle(ctx, game, w, h) {
+/** The title card alone: wash, wordmark, feature list, best round. */
+export function titleBackdrop(ctx, game, w, h) {
   ctx.save();
   // dusk-blue wash rather than a black slab -- moody, but you can still read it
   const g = ctx.createLinearGradient(0, 0, 0, h);
@@ -821,7 +905,7 @@ export function drawTitle(ctx, game, w, h) {
   ctx.fillRect(0, 0, w, h);
 
   const t = game.time;
-  const cy = h * 0.26;
+  const cy = h * 0.24;
 
   ctx.globalAlpha = 0.9 + Math.sin(t * 1.6) * 0.1;
   text(ctx, 'NACHT', w / 2, cy - 34, {
@@ -834,44 +918,157 @@ export function drawTitle(ctx, game, w, h) {
 
   ctx.fillStyle = 'rgba(200,60,45,0.7)';
   ctx.fillRect(w / 2 - 150, cy + 20, 300, 1);
+  ctx.restore();
+}
 
+export function drawTitle(ctx, game, w, h) {
+  titleBackdrop(ctx, game, w, h);
+  ctx.save();
+  const cy = h * 0.24;
   const lines = [
-    'WASD / ARROWS move   ·   MOUSE aim   ·   LEFT CLICK fire',
-    'R reload   ·   1-0 / WHEEL / [ ] swap   ·   SHIFT sprint   ·   V knife   ·   G frag',
-    'E buy weapon · open door · spin the box · hold to rebuild barricade',
-    'H use medkit   ·   M mute   ·   P / ESC pause',
+    'WASD / ARROWS move   \u00b7   MOUSE aim   \u00b7   LEFT CLICK fire',
+    'R reload   \u00b7   1-0 / WHEEL / [ ] swap   \u00b7   SHIFT sprint   \u00b7   V knife   \u00b7   G frag',
+    'E buy weapon \u00b7 open door \u00b7 spin the box \u00b7 hold to rebuild barricade',
+    'H use medkit   \u00b7   M mute   \u00b7   P / ESC pause',
   ];
   let y = cy + 50;
   for (const l of lines) {
     text(ctx, l, w / 2, y, { font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     y += 19;
   }
-
-  const feats = [
-    '15 weapons  ·  8 perks  ·  Mystery Box  ·  wonder weapons',
-    'power switch in the cellar  ·  workbench  ·  dog rounds',
-    'brutes and runners  ·  power-ups  ·  achievements  ·  an easter egg',
-  ];
-  y += 8;
-  for (const l of feats) {
-    text(ctx, l, w / 2, y, { font: 'bold 11px "Courier New", monospace', colour: 'rgba(150,160,180,0.8)', align: 'center' });
-    y += 16;
-  }
-
-  const board = loadBoard();
-  if (board.length) {
-    text(ctx, `BEST ROUND  ${board[0].round}   (${board[0].kills} kills)`, w / 2, y + 12, {
-      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
-    });
-  }
-  text(ctx, `${game.achievements.count}/${game.achievements.total} achievements`, w / 2, y + 30, {
-    font: 'bold 10px "Courier New", monospace', colour: 'rgba(150,140,120,0.7)', align: 'center',
-  });
-
-  const blink = 0.55 + Math.sin(t * 4) * 0.45;
+  const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
   text(ctx, 'CLICK TO BEGIN', w / 2, h - 46, {
     font: 'bold 20px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
   });
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+//  The front menu: SOLO / MULTIPLAYER / SETTINGS.
+//  Rows are data, so the keyboard and the mouse cannot disagree about what
+//  is selected -- both go through the same list.
+// ---------------------------------------------------------------------------
+const MENU_TOP = 0.46;          // where the first row sits, as a fraction of h
+const MENU_STEP = 27;
+const MENU_HALF_W = 150;
+
+export function menuRows(scene, game) {
+  if (scene === 'mp') {
+    const net = game.net;
+    return [
+      { id: 'host', label: 'HOST A GAME', hint: 'open a room, others drop in mid-round' },
+      { id: 'join', label: 'JOIN A GAME', hint: 'somebody else is already holding the line' },
+      { id: 'name', label: `YOUR NAME   ${net?.name || 'PLAYER'}` },
+      { id: 'addr', label: `RELAY   ${net?.addr || 'this machine'}` },
+      { id: 'back', label: 'BACK' },
+    ];
+  }
+  if (scene === 'rooms') {
+    const rooms = game.net?.roomList ?? [];
+    const rows = rooms.length
+      ? rooms.map((rm) => ({
+        id: `room:${rm.id}`, room: rm,
+        label: `${String(rm.name || rm.id).slice(0, 12).padEnd(12, ' ')}  ${rm.players} IN  ${rm.round ? `ROUND ${rm.round}` : 'LOBBY'}`,
+      }))
+      : [{ id: 'none', label: 'NO ROOMS ON THIS RELAY', hint: 'start one with HOST A GAME' }];
+    rows.push({ id: 'refresh', label: 'REFRESH' });
+    rows.push({ id: 'back', label: 'BACK' });
+    return rows;
+  }
+  if (scene === 'waiting') {
+    const dots = '.'.repeat(1 + (Math.floor(game.time * 2) % 3));
+    return [{ id: 'waiting', label: `JOINING${dots}`, hint: 'the host will let you in where they are' }];
+  }
+  return [
+    { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
+    { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
+    { id: 'settings', label: 'SETTINGS', hint: 'volume, lighting, on-screen controls' },
+  ];
+}
+
+/** Which row is under this point, or -1. */
+export function menuHitTest(scene, mx, my, game) {
+  const rows = menuRows(scene, game);
+  const top = (game.vh ?? 500) * MENU_TOP;
+  for (let i = 0; i < rows.length; i++) {
+    const y = top + i * MENU_STEP;
+    if (my >= y - MENU_STEP * 0.5 && my < y + MENU_STEP * 0.5
+      && mx > (game.vw ?? 800) / 2 - MENU_HALF_W && mx < (game.vw ?? 800) / 2 + MENU_HALF_W) return i;
+  }
+  return -1;
+}
+
+export function drawMenu(ctx, game, w, h) {
+  titleBackdrop(ctx, game, w, h);
+  ctx.save();
+
+  const rows = menuRows(game.scene, game);
+  const top = h * MENU_TOP;
+  const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const y = top + i * MENU_STEP;
+    const on = i === sel;
+    if (on) {
+      ctx.fillStyle = 'rgba(240,217,138,0.10)';
+      ctx.fillRect(w / 2 - MENU_HALF_W, y - 12, MENU_HALF_W * 2, 24);
+      ctx.fillStyle = 'rgba(240,217,138,0.55)';
+      ctx.fillRect(w / 2 - MENU_HALF_W, y - 12, 2, 24);
+      ctx.fillRect(w / 2 + MENU_HALF_W - 2, y - 12, 2, 24);
+    }
+    text(ctx, row.label, w / 2, y + 4, {
+      font: `bold ${row.id === 'none' ? 11 : 16}px "Courier New", monospace`,
+      colour: row.id === 'none' ? INK_DIM : on ? GOLD : '#cdbfa0', align: 'center',
+    });
+  }
+
+  const hint = rows[sel]?.hint;
+  let hy = top + rows.length * MENU_STEP + 6;
+  if (hint) {
+    text(ctx, hint, w / 2, hy, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+    hy += 16;
+  }
+
+  // network status, good or bad
+  const net = game.net;
+  if (game.scene === 'mp' || game.scene === 'rooms' || game.scene === 'waiting') {
+    const relay = net?.addr || (net?.url ? 'this machine' : 'not connected');
+    const st = net?.state === 'open' ? 'LINKED' : net?.state === 'connecting' ? 'CONNECTING' : net?.error || 'NO LINK';
+    const colour = net?.state === 'open' ? '#7fd75a' : net?.error ? RED : INK_DIM;
+    text(ctx, `RELAY ${relay}   \u00b7   ${st}`, w / 2, hy, {
+      font: 'bold 10px "Courier New", monospace', colour, align: 'center',
+    });
+    hy += 14;
+  }
+  if (game.netMsg) {
+    text(ctx, game.netMsg, w / 2, hy, { font: 'bold 11px "Courier New", monospace', colour: RED, align: 'center' });
+    hy += 14;
+  }
+
+  // controls, but only on the front page where there is room for them
+  if (game.scene === 'menu') {
+    const lines = [
+      'WASD / ARROWS move   \u00b7   MOUSE aim   \u00b7   LEFT CLICK fire',
+      'R reload  \u00b7  Q / WHEEL swap  \u00b7  SHIFT sprint  \u00b7  V knife  \u00b7  G frag  \u00b7  H medkit',
+      'E or F buy, open, spin, rebuild   \u00b7   O settings   \u00b7   P / ESC pause',
+    ];
+    let y = h - 74;
+    for (const l of lines) {
+      text(ctx, l, w / 2, y, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+      y += 15;
+    }
+    const board = loadBoard();
+    if (board.length) {
+      text(ctx, `BEST ROUND  ${board[0].round}   (${board[0].kills} kills)`, w / 2, y + 4, {
+        font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
+      });
+    }
+  } else {
+    text(ctx, 'ESC BACK   \u00b7   ENTER SELECT', w / 2, h - 22, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  }
   ctx.restore();
 }
 
