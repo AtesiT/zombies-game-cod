@@ -628,6 +628,7 @@ export class Player {
     const d = this.def, s = this.slot;
     if (d.special === 'lure') { game.throwMonkey(); return; }
 
+    const lastRound = this.dmTimer <= 0 && s.mag === 1;   // this shot empties it
     if (this.dmTimer <= 0) s.mag--;
     this.fireTimer = d.delay * this.perkFx.fireDelayMul * (this.dmTimer > 0 ? 0.62 : 1);
     this.recoil = d.recoil;
@@ -658,6 +659,7 @@ export class Player {
     game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: d.tint });
     game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
+    if (lastRound) audio.lastRound();
     this.vel.x -= Math.cos(this.aim) * d.kick * 6.5;
     this.vel.y -= Math.sin(this.aim) * d.kick * 6.5;
   }

@@ -74,6 +74,23 @@ let settingsHooked = false;
 // splatter (it only softens the edges) and a quarter of the pixels to move;
 // the dirty box means a clean stretch of floor costs nothing at all; and
 // the wash keeps a long session from flooding the map solid red.
+// --- the loudspeaker -------------------------------------------------------
+// Somebody else is in this building, and from round ten they say so. Short,
+// dry, and always about what just happened rather than about the plot.
+const VOICE_LINES = {
+  round: [
+    'You are still here. They have noticed.',
+    'They learn where you stand. Stop standing there.',
+    'The generator will not hold forever.',
+    'Something on the roof is walking about.',
+    'Do not let them pile up in a doorway.',
+  ],
+  medic: ['That one was putting them back together.', 'Leave it dead this time.'],
+  amalgam: ['Three of them went in. One came out. That is worse.'],
+  breach: ['They are inside. That window is gone.'],
+  hurt: ['Get up. Get up.'],
+};
+
 const DECAL_SCALE = 0.5;
 const DECAL_MAX = 260;
 const DECAL_WASH = 0.22;
@@ -377,6 +394,7 @@ export class Game {
     this.zombiesSpawned = 0;
     this.zombiesKilled = 0;
     this.roundDamageTaken = 0;
+    if (n >= 10) this.say('round');
     this.roundActive = true;
     this.intermission = 0;
     this.spawnTimer = 0.35;
@@ -464,6 +482,126 @@ export class Game {
     audio.zombieDie();
   }
 
+  // ------------------------------------------------- V. atmosphere & sound --
+  /**
+   * Three layers of music answer the fight, the room answers the shots, the
+   * house makes noises of its own, and from round ten somebody talks to you.
+   * All of it is cheap: nothing here runs more than three times a second.
+   */
+  _atmosphere(dt) {
+    // music -- four times a second is plenty for a 0.9 s cross-fade
+    this._musicT = (this._musicT ?? 0) - dt;
+    if (this._musicT <= 0) {
+      this._musicT = 0.25;
+      let alive = 0;
+      for (const z of this.zombies) if (!z.dead) alive++;
+      const fighting = alive > 0 && this.roundActive;
+      audio.setMusic({
+        calm: 0.45,
+        combat: fighting ? this._combatLevel() : 0,
+        // `tension` is the last-couple-of-zombies breath, not the fight; the
+        // high scrape belongs to it and nothing else
+        last: this.tension ?? 0,
+      });
+    }
+
+    // which room are we standing in
+    this._revT = (this._revT ?? 0) - dt;
+    if (this._revT <= 0) {
+      this._revT = 0.4;
+      const zone = this._reverbZone();
+      if (zone !== this._reverbNow) { this._reverbNow = zone; audio.setReverb(zone); }
+    }
+
+    // the house: boards settling and water finding its way down, on a
+    // schedule loose enough that you cannot learn it
+    this._houseT = (this._houseT ?? 4) - dt;
+    if (this._houseT <= 0) {
+      this._houseT = randRange(4, 13);
+      const z = this._reverbNow;
+      if (z === 'room' || z === 'corridor') {
+        if (Math.random() < 0.6) audio.creak(0.9); else audio.drip(0.8);
+      } else if (z === 'yard') audio.creak(0.3);
+    }
+
+    if (this.voice && this.voice.left > 0) this.voice.left -= dt;
+    if (this._voiceCd > 0) this._voiceCd -= dt;
+  }
+
+  /**
+   * How much of a fight is this? Not the round number and not how many are
+   * still to come -- just: how close are they, and how many of them are
+   * within reach. That is what the middle layer of the music follows.
+   */
+  _combatLevel() {
+    const p = this.player.pos;
+    let n = 0, closest = Infinity;
+    for (const z of this.zombies) {
+      if (z.dead || z.floor !== this.map.floor) continue;
+      const d = dist(z.pos.x, z.pos.y, p.x, p.y);
+      if (d < 420) n++;
+      if (d < closest) closest = d;
+    }
+    if (!n) return 0;
+    const byNumber = Math.min(1, n / 6);
+    const byRange = 1 - clamp((closest - 60) / 360, 0, 1);
+    return clamp(Math.max(byNumber, byRange), 0, 1);
+  }
+
+  /** room | corridor | yard | roof, from where the player is standing. */
+  _reverbZone() {
+    const f = this.map.floor;
+    if (f >= 2) return 'roof';
+    const tx = Math.floor(this.player.pos.x / T), ty = Math.floor(this.player.pos.y / T);
+    if (this.map.tileOn(f, tx, ty) === 0) return 'yard';   // EXTERIOR
+    // a corridor is a tile with walls on most sides; a room has air around it
+    let walls = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        if (this.map.solidTileOn(f, tx + dx, ty + dy)) walls++;
+      }
+    }
+    return walls >= 5 ? 'corridor' : 'room';
+  }
+
+  /**
+   * The loudspeaker. Not a narrator -- somebody who is also in this
+   * building, who has been watching you do this for a while.
+   */
+  say(key) {
+    if (this.round < 10 || !VOICE_LINES[key]) return;
+    if (this.voice && this.voice.left > 0) return;        // do not talk over it
+    if ((this._voiceCd ?? 0) > 0) return;
+    const pool = VOICE_LINES[key];
+    const line = pool[randInt(0, pool.length - 1)];
+    this._voiceCd = key === 'round' ? 8 : 22;
+    const hold = audio.voice(line);
+    this.voice = { text: line, left: hold };
+  }
+
+  _drawVoice(ctx, vw, vh) {
+    if (!this.voice || this.voice.left <= 0) return;
+    // fade the last half second out
+    const a = Math.min(1, this.voice.left / 0.5);
+    const y = vh - 74;
+    ctx.save();
+    ctx.globalAlpha = a * 0.55;
+    ctx.fillStyle = '#0a0c0e';
+    ctx.fillRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = 'rgba(150,190,220,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.restore();
+    text(ctx, 'LOUDSPEAKER', vw / 2 - 210, y - 6, {
+      font: 'bold 9px "Courier New", monospace', colour: '#7f9cb5', align: 'left', alpha: a,
+    });
+    text(ctx, this.voice.text, vw / 2, y + 6, {
+      font: 'bold 12px "Courier New", monospace', colour: '#cfe0ee', align: 'center', alpha: a,
+    });
+  }
+
   /** Pick a spawn point outside the building that can actually reach the player. */
   /**
    * Which storey should the next one come from? They climb the outside of
@@ -515,6 +653,8 @@ export class Game {
 
   onZombieKilled(z, head, ptsOverride = null, source = 'bullet') {
     this.zombiesKilled++;
+    if (z.type === 'medic') this.say('medic');
+    else if (z.type === 'fusion') this.say('amalgam');
     this.stats.kills++;
     if (head) this.stats.headshots++;
     const pts = ptsOverride
@@ -660,6 +800,7 @@ export class Game {
   }
 
   onBarricadeDown(b) {
+    this.say('breach');
     audio.wood(false);
     this.particles.dust(b.cx, b.cy, randRange(0, TAU), 10);
     this.map.buildFlow(this.player.pos.x, this.player.pos.y);
@@ -1634,6 +1775,7 @@ export class Game {
     const wantTension = (this.roundActive && allSpawned && aliveNow > 0 && aliveNow <= 2) ? 1 : 0;
     this.tension = damp(this.tension ?? 0, wantTension, wantTension ? 0.9 : 1.6, dt);
     audio.setTension(this.tension);
+    this._atmosphere(dt);
     if (this.tension > 0.35) {
       this._whimperT = (this._whimperT ?? 0) - dt;
       if (this._whimperT <= 0) {
@@ -1717,6 +1859,7 @@ export class Game {
       if (this.heartTimer <= 0) {
         this.heartTimer = lerp(1.15, 0.55, hpK);
         audio.heartbeat(clamp((hpK - 0.55) / 0.45, 0.3, 1));
+        if (hpK < 0.3) this.say('hurt');
       }
     }
 
@@ -1746,6 +1889,7 @@ export class Game {
       master: settings.get('master'),
       sfx: settings.get('sfx'),
       ambient: settings.get('ambient'),
+      music: settings.get('music'),
     });
     this.stepRate = settings.get('simRate') ? 120 : 60;
     // the player moved the slider themselves, so drop whatever auto had dialled in
@@ -2037,6 +2181,7 @@ export class Game {
       ctx.restore();
     }
     if (this.started) this.hud.draw(ctx, this, vw, vh);
+    this._drawVoice(ctx, vw, vh);
     if (this.teleportFx > 0) {
       ctx.fillStyle = `rgba(0,0,0,${this.teleportFx * 0.45})`;
       ctx.fillRect(0, 0, vw, vh);

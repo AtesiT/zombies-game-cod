@@ -39,6 +39,12 @@ export class AudioEngine {
     this.ambientBus.gain.value = 1;
     this.ambientBus.connect(bus);
 
+    // music has its own fader: it is the one thing you might want gone
+    // while keeping the wind and the shots
+    this.musicBus = this.ctx.createGain();
+    this.musicBus.gain.value = 1;
+    this.musicBus.connect(bus);
+
     // shared white-noise buffer
     const len = this.ctx.sampleRate * 2;
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -48,12 +54,15 @@ export class AudioEngine {
 
     this.ready = true;
     this._startAmbient();
+    this._startReverb();
+    this._startMusic();
     // volumes may have been set from storage before the context existed
     if (this._masterVol !== undefined || this._sfxVol !== undefined || this._ambVol !== undefined) {
       this.setVolumes({
         master: this._masterVol === undefined ? undefined : this._masterVol * 100,
         sfx: this._sfxVol === undefined ? undefined : this._sfxVol * 100,
         ambient: this._ambVol === undefined ? undefined : this._ambVol * 100,
+        music: this._musicVol === undefined ? undefined : this._musicVol * 100,
       });
       this.setMuted(this.muted);
     }
@@ -70,10 +79,11 @@ export class AudioEngine {
   }
 
   /** Volumes come in as 0..100 from the settings screen. */
-  setVolumes({ master, sfx, ambient } = {}) {
+  setVolumes({ master, sfx, ambient, music } = {}) {
     if (master !== undefined) this._masterVol = Math.max(0, Math.min(1, master / 100));
     if (sfx !== undefined) this._sfxVol = Math.max(0, Math.min(1, sfx / 100));
     if (ambient !== undefined) this._ambVol = Math.max(0, Math.min(1, ambient / 100));
+    if (music !== undefined) this._musicVol = Math.max(0, Math.min(1, music / 100));
     if (!this.ready) return;
     const t = this.t;
     if (this._masterVol !== undefined) {
@@ -81,9 +91,16 @@ export class AudioEngine {
     }
     if (this._sfxVol !== undefined) this.sfxBus.gain.linearRampToValueAtTime(this._sfxVol, t + 0.05);
     if (this._ambVol !== undefined) this.ambientBus.gain.linearRampToValueAtTime(this._ambVol, t + 0.05);
+    if (this._musicVol !== undefined && this.musicBus) this.musicBus.gain.linearRampToValueAtTime(this._musicVol, t + 0.05);
   }
 
   get t() { return this.ctx ? this.ctx.currentTime : 0; }
+
+  _gain(v = 0.0001) {
+    const g = this.ctx.createGain();
+    g.gain.value = v;
+    return g;
+  }
 
   _noiseSrc(dur, playbackRate = 1) {
     const s = this.ctx.createBufferSource();
@@ -197,6 +214,263 @@ export class AudioEngine {
       this._pulseGain.gain.setValueAtTime(this._pulseGain.gain.value, now);
       this._pulseGain.gain.linearRampToValueAtTime(0.030 * t, now + ramp);
     }
+  }
+
+  // ---------------------------------------------------------------- music --
+  /**
+   * Three layers, cross-faded: a low open fifth while you are safe, a pulse
+   * that comes up with the fight, and a thin high scrape for the last one
+   * standing. Nothing here is scheduled -- each layer is a drone with an LFO
+   * on its gain -- so it costs a handful of oscillators and never needs a
+   * clock of its own.
+   */
+  _startMusic() {
+    const ctx = this.ctx;
+    if (!this.musicBus) return;
+    const layer = () => {
+      const g = ctx.createGain();
+      g.gain.value = 0.0001;
+      g.connect(this.musicBus);
+      return g;
+    };
+
+    // calm: an open fifth with a slow sweep on the cutoff
+    const calm = layer();
+    for (const f of [55, 82.5]) {
+      const o = ctx.createOscillator();
+      o.type = 'sine'; o.frequency.value = f;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 320; lp.Q.value = 1;
+      const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.07;
+      const lg = ctx.createGain(); lg.gain.value = 90;
+      lfo.connect(lg).connect(lp.frequency);
+      lfo.start();
+      o.connect(lp).connect(calm);
+      o.start();
+    }
+
+    // combat: a bass drum of a heartbeat with a band of hiss breathing over it
+    const combat = layer();
+    const bass = ctx.createOscillator(); bass.type = 'triangle'; bass.frequency.value = 41;
+    const bg = ctx.createGain(); bg.gain.value = 0.55;
+    const thump = ctx.createOscillator(); thump.type = 'sine'; thump.frequency.value = 1.9;
+    const tg = ctx.createGain(); tg.gain.value = 0.45;
+    thump.connect(tg).connect(bg.gain);
+    thump.start();
+    bass.connect(bg).connect(combat);
+    bass.start();
+    const hiss = this._noiseSrc();
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1400; bp.Q.value = 0.8;
+    const hg = ctx.createGain(); hg.gain.value = 0.05;
+    const hlfo = ctx.createOscillator(); hlfo.type = 'sine'; hlfo.frequency.value = 0.95;
+    const hlg = ctx.createGain(); hlg.gain.value = 0.045;
+    hlfo.connect(hlg).connect(hg.gain);
+    hlfo.start();
+    hiss.connect(bp).connect(hg).connect(combat);
+    hiss.start();
+
+    // last: two saws a few hertz apart, beating against each other
+    const last = layer();
+    for (const f of [233, 246.9]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 1;
+      const g2 = ctx.createGain(); g2.gain.value = 0.14;
+      o.connect(lp).connect(g2).connect(last);
+      o.start();
+    }
+
+    this._music = { calm, combat, last };
+    this._musicMix = { calm: 0, combat: 0, last: 0 };
+  }
+
+  /** Where each layer sits, 0..1. They are allowed to overlap. */
+  setMusic({ calm, combat, last } = {}) {
+    if (!this.ready || !this._music) return;
+    const t = this.t, ramp = 0.9, top = 0.12;
+    const set = (node, v) => {
+      if (v === undefined) return;
+      v = Math.max(0, Math.min(1, v));
+      node.gain.cancelScheduledValues(t);
+      node.gain.setValueAtTime(Math.max(0.0001, node.gain.value), t);
+      node.gain.linearRampToValueAtTime(Math.max(0.0001, v * top), t + ramp);
+    };
+    set(this._music.calm, calm);
+    set(this._music.combat, combat);
+    set(this._music.last, last);
+    const m = this._musicMix;
+    this._musicMix = { calm: calm ?? m.calm, combat: combat ?? m.combat, last: last ?? m.last };
+  }
+
+  // --------------------------------------------------------------- reverb --
+  /** Send the effects through a convolution tail that matches the room. */
+  _startReverb() {
+    const ctx = this.ctx;
+    const conv = ctx.createConvolver();
+    const send = ctx.createGain();
+    send.gain.value = 0.45;
+    const ret = ctx.createGain();
+    ret.gain.value = 0.9;
+    this.sfxBus.connect(send);
+    send.connect(conv);
+    conv.connect(ret);
+    ret.connect(this.bus);
+    this._conv = conv;
+    this._revRet = ret;
+    this._revIR = {};
+    this.setReverb('room', true);
+  }
+
+  /** A cheap synthetic impulse: dulled noise, decaying. Four rooms is plenty. */
+  _ir(zone) {
+    if (this._revIR[zone]) return this._revIR[zone];
+    const [secs, decay, bright] = ({
+      room: [0.32, 3.0, 0.8],
+      corridor: [0.62, 2.1, 0.55],
+      yard: [0.12, 3.6, 1.0],
+      roof: [0.46, 2.6, 0.9],
+    })[zone] || [0.32, 3.0, 0.8];
+    const rate = this.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * secs));
+    const buf = this.ctx.createBuffer(2, len, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < len; i++) {
+        const k = i / len;
+        lp += ((Math.random() * 2 - 1) * (1 - k) - lp) * (0.4 * bright);
+        d[i] = lp * Math.pow(1 - k, decay);
+      }
+    }
+    this._revIR[zone] = buf;
+    return buf;
+  }
+
+  /** room | corridor | yard | roof. Swapping live clicks, so duck first. */
+  setReverb(zone, immediate = false) {
+    if (!this.ready || !this._conv) return;
+    if (zone === this._reverbZone && !immediate) return;
+    this._reverbZone = zone;
+    const ir = this._ir(zone);
+    if (immediate) { this._conv.buffer = ir; return; }
+    const t = this.t;
+    this._revRet.gain.cancelScheduledValues(t);
+    this._revRet.gain.setValueAtTime(this._revRet.gain.value, t);
+    this._revRet.gain.linearRampToValueAtTime(0.0001, t + 0.05);
+    setTimeout(() => {
+      if (!this._conv) return;
+      this._conv.buffer = ir;
+      const t2 = this.t;
+      this._revRet.gain.cancelScheduledValues(t2);
+      this._revRet.gain.setValueAtTime(0.0001, t2);
+      this._revRet.gain.linearRampToValueAtTime(0.9, t2 + 0.12);
+    }, 70);
+  }
+
+  // ------------------------------------------------------------ the house --
+  /** Floorboards, somewhere in the dark. */
+  creak(vol = 1) {
+    if (!this.ready) return;
+    const t = this.t;
+    const src = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.Q.value = 9;
+    bp.frequency.setValueAtTime(320, t);
+    bp.frequency.linearRampToValueAtTime(180 + Math.random() * 260, t + 0.5);
+    const g = this._gain(0.0001);
+    g.gain.linearRampToValueAtTime(0.09 * vol, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    src.connect(bp).connect(g).connect(this.ambientBus);
+    src.start(t); src.stop(t + 0.7);
+  }
+
+  /** Water, somewhere in the dark. */
+  drip(vol = 1) {
+    if (!this.ready) return;
+    const t = this.t;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(900 + Math.random() * 500, t);
+    o.frequency.exponentialRampToValueAtTime(220, t + 0.09);
+    const g = this._gain(0.0001);
+    g.gain.linearRampToValueAtTime(0.07 * vol, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+    o.connect(g).connect(this.ambientBus);
+    o.start(t); o.stop(t + 0.2);
+  }
+
+  /** Glass under a boot, or under a boot that used to be a window. */
+  glass(vol = 1) {
+    if (!this.ready) return;
+    const t = this.t;
+    for (let i = 0; i < 5; i++) {
+      const t0 = t + i * 0.018 + Math.random() * 0.02;
+      const o = this.ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(1800 + Math.random() * 2600, t0);
+      o.frequency.exponentialRampToValueAtTime(700, t0 + 0.09);
+      const g = this._gain(0.0001);
+      g.gain.linearRampToValueAtTime(0.05 * vol, t0 + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.1);
+      o.connect(g).connect(this.sfxBus);
+      o.start(t0); o.stop(t0 + 0.14);
+    }
+  }
+
+  /** The magazine's last round: a dry click you can hear through a fight. */
+  lastRound() {
+    if (!this.ready) return;
+    const t = this.t;
+    const src = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 3200; bp.Q.value = 3;
+    const g = this._gain(0.0001);
+    g.gain.linearRampToValueAtTime(0.16, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    src.connect(bp).connect(g).connect(this.sfxBus);
+    src.start(t); src.stop(t + 0.1);
+  }
+
+  /**
+   * The loudspeaker voice. Not speech -- the shape of it: a pulse train run
+   * through two formants per syllable, over a bed of static, so what you
+   * hear is a man talking through a wall. The actual words go on screen.
+   * Returns how long the subtitle should stay up.
+   */
+  voice(text, { pitch = 1 } = {}) {
+    if (!this.ready) return 0;
+    const words = String(text).trim().split(/\s+/).filter(Boolean).length;
+    const syl = Math.min(26, Math.max(2, Math.round(words * 1.7)));
+    const t = this.t;
+    const out = this._gain(0.85);
+    out.connect(this.sfxBus);
+    const hiss = this._noiseSrc();
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'bandpass'; hp.frequency.value = 1700; hp.Q.value = 0.7;
+    const hg = this._gain(0.05);
+    hiss.connect(hp).connect(hg).connect(out);
+    hiss.start(t);
+    hiss.stop(t + 0.5 + syl * 0.13);
+    for (let i = 0; i < syl; i++) {
+      const t0 = t + 0.05 + i * 0.13;
+      const dur = 0.07 + Math.random() * 0.05;
+      const vow = [520, 720, 300, 640, 430][i % 5];
+      const o = this.ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(78 * pitch * (0.9 + Math.random() * 0.25), t0);
+      const f1 = this.ctx.createBiquadFilter();
+      f1.type = 'bandpass'; f1.Q.value = 6; f1.frequency.value = vow;
+      const f2 = this.ctx.createBiquadFilter();
+      f2.type = 'bandpass'; f2.Q.value = 8; f2.frequency.value = vow * 2.1;
+      const g = this._gain(0.0001);
+      g.gain.linearRampToValueAtTime(0.16, t0 + 0.02);
+      g.gain.linearRampToValueAtTime(0.11, t0 + dur * 0.7);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(f1); o.connect(f2);
+      f1.connect(g); f2.connect(g);
+      g.connect(out);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    }
+    return 0.6 + syl * 0.13;
   }
 
   // --------------------------------------------------------------- shots ---

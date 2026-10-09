@@ -41,6 +41,12 @@ class Buffer {
   constructor(ch, len, sr) { this.numberOfChannels = ch; this.length = len; this.sampleRate = sr; this._d = []; for (let i = 0; i < ch; i++) this._d.push(new Float32Array(len)); }
   getChannelData(i) { if (i >= this.numberOfChannels) throw new Error('getChannelData out of range'); return this._d[i]; }
 }
+class Convolver extends Node {
+  constructor(ctx) { super(ctx, 'convolver'); this.buffer = null; this.normalize = true; }
+}
+class Panner extends Node {
+  constructor(ctx) { super(ctx, 'panner'); this.pan = new Param(0); }
+}
 export class AudioContext {
   constructor() { this.sampleRate = 48000; this.state = 'running'; this._t = 0; this.destination = new Node(this, 'destination'); }
   get currentTime() { return this._t; }
@@ -52,4 +58,6 @@ export class AudioContext {
   createBiquadFilter() { return new Filter(this); }
   createBufferSource() { return new Buf(this); }
   createBuffer(ch, len, sr) { if (!(len > 0)) throw new Error('createBuffer with length ' + len); return new Buffer(ch, len, sr); }
+  createConvolver() { return new Convolver(this); }
+  createStereoPanner() { return new Panner(this); }
 }

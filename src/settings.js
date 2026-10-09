@@ -24,6 +24,11 @@ export const SETTING_DEFS = [
     fmt: (v) => (v === 0 ? 'OFF' : `${v}%`),
   },
   {
+    id: 'music', label: 'MUSIC VOLUME', type: 'range',
+    min: 0, max: 100, step: 5, def: 70,
+    fmt: (v) => (v === 0 ? 'OFF' : `${v}%`),
+  },
+  {
     id: 'shake', label: 'SCREEN SHAKE', type: 'range',
     min: 0, max: 150, step: 10, def: 100,
     fmt: (v) => (v === 0 ? 'OFF' : `${v}%`),
