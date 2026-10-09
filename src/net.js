@@ -163,8 +163,12 @@ export class Net {
       try { m = JSON.parse(typeof e.data === 'string' ? e.data : ''); } catch { return; }
       if (m) this._onMessage(m);
     };
-    ws.onclose = () => this._closed('DISCONNECTED');
+    ws.onclose = () => this._closed(this.state === 'open' ? 'DISCONNECTED' : 'CANNOT REACH');
     ws.onerror = () => { this.state = 'error'; this.error = 'CANNOT REACH'; this._status(); };
+    clearTimeout(this._openT);
+    this._openT = setTimeout(() => {
+      if (this.state === 'connecting') { this.state = 'error'; this.error = 'CANNOT REACH'; this._status(); }
+    }, 4000);
     // keep the tab's own timeout from dropping an idle lobby
     this._ping = setInterval(() => { if (this.active) t.send({ t: 'ping' }); }, 15000);
     return true;
@@ -204,6 +208,7 @@ export class Net {
     if (this.transport) { try { this.transport.send({ t: 'b', m: 'bye' }); } catch { /* gone */ } this.transport.close(); }
     this.transport = null;
     clearInterval(this._ping);
+    clearTimeout(this._openT);
     this._closed('CLOSED');
   }
 
@@ -267,6 +272,7 @@ export class Net {
       return;
     }
     if (m.t === 'rooms') { this.roomList = m.rooms ?? []; this._status(); return; }
+    if (m.t === 'ping') return;
     if (m.t === 'pong') return;
 
     // ---- client to client --------------------------------------------------

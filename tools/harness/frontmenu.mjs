@@ -77,6 +77,27 @@ g.player.hurt = () => false;
 for (let i = 0; i < 240; i++) { g.update(H); g.input.endFrame(); }
 ok(g.zombies.length > 0, 'four seconds in, nothing has spawned');
 
+// ---- with no relay there is at least an explanation, not an empty room ----
+// A page served by `python3 -m http.server` has no WebSocket endpoint, and the
+// player deserves to be told that instead of staring at an empty room list.
+const g2 = new M.Game(new M.Input(nc(M.VW, M.VH)));
+const press2 = (code) => { g2.input.pressed.add(code); g2.update(H); g2.input.endFrame(); };
+const click2 = (i) => {
+  g2.input.mouse.x = M.VW / 2;
+  g2.input.mouse.y = M.VH * 0.46 + i * 27;
+  g2.input.mouse.pressed = true;
+  g2.update(H);
+  g2.input.endFrame();
+};
+press2('ArrowDown'); press2('Enter');
+ok(g2.scene === 'mp', 'MULTIPLAYER did not open on the second game');
+ok(typeof g2.netMsg === 'string' && g2.netMsg.includes('node server.mjs'),
+  `no relay here, but the screen said: ${JSON.stringify(g2.netMsg)}`);
+click2(0);                                   // HOST A GAME, with nowhere to host
+ok(g2.started === true, 'hosting with no relay should still start a game');
+ok(g2.players.length === 1, 'hosting with no relay invented a second player');
+ok(g2.net.role === 'host', 'hosting with no relay did not even open a room locally');
+
 if (fails.length) {
   console.log('FRONTMENU FAIL:');
   for (const f of fails) console.log('  -', f);

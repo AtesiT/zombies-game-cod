@@ -114,6 +114,10 @@ export class Game {
     this.hud = new HUD();
     this.achievements = new Achievements();
     this.net = new Net(this);
+    this.net.onStatus = (n) => this._onNetStatus(n);
+    // anything holding a Game should be able to read the player's settings
+    // without importing the singleton itself (src/main.js and src/touch.js do)
+    this.settings = settings;
     // the front door: SOLO / MULTIPLAYER / SETTINGS before anything else runs
     this.scene = 'menu';
     this.menuIndex = 0;
@@ -2156,10 +2160,16 @@ export class Game {
     audio.reload(2);
     switch (row.id) {
       case 'solo': this.net.role = 'off'; this.begin(); break;
-      case 'mp': this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0; this.net.askForRooms(); break;
+      case 'mp':
+        this.scene = 'mp'; this.menuIndex = 0;
+        if (this._ensureRelay()) this.net.askForRooms();
+        break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'host': this._startHost(); break;
-      case 'join': this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0; this.net.askForRooms(); break;
+      case 'join':
+        this.scene = 'rooms'; this.menuIndex = 0;
+        if (this._ensureRelay()) this.net.askForRooms();
+        break;
       case 'name': this._askName(); break;
       case 'addr': this._askAddress(); break;
       case 'back': this.scene = 'menu'; this.menuIndex = 1; break;
@@ -2167,6 +2177,40 @@ export class Game {
       default:
         if (row.room) this._joinRoom(row.room);
         break;
+    }
+  }
+
+  /**
+   * Talk to the relay, so the multiplayer screen has a room list before
+   * anybody has to press anything. Returns false when there is nothing to
+   * talk to -- which, for a page served by `python3 -m http.server`, is
+   * always, and the player deserves to be told why rather than left staring
+   * at an empty list.
+   */
+  _ensureRelay() {
+    const net = this.net;
+    if (net.active || net.state === 'connecting') return true;
+    const addr = net.addr ?? defaultRelay();
+    const url = net.url || relayURL(addr);
+    if (!url) {
+      this.netMsg = 'NO RELAY — RUN THE GAME WITH:  node server.mjs';
+      return false;
+    }
+    net.url = url;
+    net.open(url);
+    return true;
+  }
+
+  _onNetStatus(net) {
+    if (net.state === 'error') {
+      this.netMsg = net.error === 'CANNOT REACH'
+        ? 'CANNOT REACH THE RELAY — RUN IT WITH:  node server.mjs'
+        : (net.error ?? null);
+    } else if (net.state === 'open') {
+      this.netMsg = null;
+      if (this.scene === 'rooms' || this.scene === 'mp') net.askForRooms();
+    } else if (net.state === 'closed') {
+      this.netMsg = null;
     }
   }
 
@@ -2195,25 +2239,18 @@ export class Game {
   /** Open a room and start playing -- people can walk in at any time. */
   _startHost() {
     const net = this.net;
-    if (!net.active) {
-      const url = net.url || relayURL(net.addr ?? defaultRelay());
-      if (!url) { this.netMsg = 'Serve the game first:  node server.mjs'; return; }
-      net.url = url;
-      net.open(url);
-    }
+    const linked = this._ensureRelay();
     net.hostGame('NACHT', net.name || 'PLAYER');
-    this.netMsg = null;
+    // hosting without a relay is not fatal: you just play by yourself, and
+    // the HUD says so rather than pretending a room is open
+    if (!linked) this.bannerShow('NO RELAY', 'run with node server.mjs to let people join',
+      { dur: 4, colour: '#c4463a' });
     this.begin();
   }
 
   _joinRoom(room) {
     const net = this.net;
-    if (!net.active) {
-      const url = net.url || relayURL(net.addr ?? defaultRelay());
-      if (!url) { this.netMsg = 'Serve the game first:  node server.mjs'; return; }
-      net.url = url;
-      net.open(url);
-    }
+    if (!this._ensureRelay()) return;
     net.joinGame(room.id, net.name || 'PLAYER');
     this.scene = 'waiting';
     this.netMsg = null;

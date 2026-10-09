@@ -3,6 +3,7 @@ import { Input } from './input.js';
 import { Game, VW, VH } from './game.js';
 import { audio } from './audio.js';
 import { TouchControls, isTouchDevice } from './touch.js';
+import { settings } from './settings.js';
 
 const canvas = document.getElementById('game');
 canvas.width = VW;
@@ -40,10 +41,10 @@ resize();
 // ---------------------------------------------------------------------------
 const touch = new TouchControls(input, { mount: wrap });
 function syncTouch() {
-  const mode = game.settings.get('touch');
+  const mode = settings.get('touch');
   touch.show(mode === 2 || (mode === 0 && isTouchDevice()));
 }
-game.settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist') syncTouch(); });
+settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist') syncTouch(); });
 syncTouch();
 
 // first gesture unlocks WebAudio
