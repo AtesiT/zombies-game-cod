@@ -1,0 +1,93 @@
+// Keyboard + mouse state. Coordinates are reported in *internal canvas*
+// pixels (the game renders at a fixed low resolution and is CSS-upscaled).
+
+export class Input {
+  /** The resolution the game thinks in, whatever size the canvas really is. */
+  setLogicalSize(w, h) { this.vw = w; this.vh = h; }
+
+  constructor(canvas) {
+    this.canvas = canvas;
+    // Pointer coordinates are reported in the game's own 800x500 space, which
+    // is *not* necessarily the size of the backing store: DLSS5 renders the
+    // canvas larger than that and scales it down, and the mouse must not know.
+    this.vw = canvas.width;
+    this.vh = canvas.height;
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.released = new Set();
+    this.mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false, pressed: false, released: false, rdown: false };
+    this.wheel = 0;
+    this.anyInput = false;
+    // filled in by the on-screen stick (see src/touch.js); null on desktop
+    this.stick = { x: 0, y: 0 };
+
+    const onKey = (e, down) => {
+      if (e.repeat) return;
+      const c = e.code;
+      if (down) {
+        if (!this.keys.has(c)) this.pressed.add(c);
+        this.keys.add(c);
+      } else {
+        this.keys.delete(c);
+        this.released.add(c);
+      }
+      this.anyInput = true;
+      if (['Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1'].includes(c)) e.preventDefault();
+    };
+    window.addEventListener('keydown', (e) => onKey(e, true));
+    window.addEventListener('keyup', (e) => onKey(e, false));
+    window.addEventListener('blur', () => { this.keys.clear(); this.mouse.down = false; });
+
+    const toLocal = (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.mouse.cx = e.clientX - r.left;
+      this.mouse.cy = e.clientY - r.top;
+      this.mouse.x = (this.mouse.cx / r.width) * this.vw;
+      this.mouse.y = (this.mouse.cy / r.height) * this.vh;
+    };
+    window.addEventListener('mousemove', toLocal);
+    window.addEventListener('mousedown', (e) => {
+      toLocal(e);
+      this.anyInput = true;
+      if (e.button === 0) { this.mouse.down = true; this.mouse.pressed = true; }
+      if (e.button === 2) this.mouse.rdown = true;
+      e.preventDefault();
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) { this.mouse.down = false; this.mouse.released = true; }
+      if (e.button === 2) this.mouse.rdown = false;
+    });
+    window.addEventListener('contextmenu', (e) => e.preventDefault());
+    window.addEventListener('wheel', (e) => { this.wheel += Math.sign(e.deltaY); }, { passive: true });
+  }
+
+  isDown(...codes) { return codes.some((c) => this.keys.has(c)); }
+  wasPressed(...codes) { return codes.some((c) => this.pressed.has(c)); }
+  wasReleased(...codes) { return codes.some((c) => this.released.has(c)); }
+
+  /** Movement vector from WASD / arrows and the on-screen stick, normalised. */
+  moveVector() {
+    let x = 0, y = 0;
+    if (this.isDown('KeyA', 'ArrowLeft')) x -= 1;
+    if (this.isDown('KeyD', 'ArrowRight')) x += 1;
+    if (this.isDown('KeyW', 'ArrowUp')) y -= 1;
+    if (this.isDown('KeyS', 'ArrowDown')) y += 1;
+    if (x && y) { const k = Math.SQRT1_2; x *= k; y *= k; }
+    const st = this.stick;
+    if (st && (st.x || st.y)) {
+      x += st.x; y += st.y;
+      const len = Math.hypot(x, y);
+      if (len > 1) { x /= len; y /= len; }
+    }
+    return { x, y };
+  }
+
+  endFrame() {
+    this.pressed.clear();
+    this.released.clear();
+    this.mouse.pressed = false;
+    this.mouse.released = false;
+    this.wheel = 0;
+    this.anyInput = false;
+  }
+}

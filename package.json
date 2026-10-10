@@ -1,0 +1,14 @@
+{
+  "name": "zombies-game-cod",
+  "version": "1.0.0",
+  "description": "Top-down 2D wave shooter in the style of Call of Duty: World at War Zombies (Nacht der Untoten). Vanilla JS + HTML5 Canvas, no dependencies.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs 8080",
+    "map": "python3 tools/genmap.py",
+    "sprites": "node tools/preview.mjs tools/sprites_preview.png"
+  },
+  "keywords": ["game", "zombies", "canvas", "pixel-art", "top-down", "call-of-duty"],
+  "license": "MIT"
+}
