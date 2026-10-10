@@ -698,8 +698,18 @@ export class Player {
     game.particles.casing(ox, oy, this.aim);
     // a punched gun flashes in the same colour it fires
     const tint = d.packed ? packedTracer(game.time + game.stats.shots * 0.013) : d.tint;
-    game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: tint };
-    game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: tint });
+    // a punched gun is the loudest thing on the map: a wider flash and a
+    // bigger, longer-lived pool of light in the colour it fires
+    const flash = d.packed ? 1.5 : 1;
+    game.muzzleFlash = {
+      x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055,
+      size: (pellets > 1 ? 15 : 11) * flash, colour: tint, packed: d.packed ? 1 : 0,
+    };
+    game.flashLights.push({
+      x: muzzle.x, y: muzzle.y, r: (pellets > 1 ? 150 : 110) * flash,
+      life: d.packed ? 0.12 : 0.075, max: d.packed ? 0.12 : 0.075,
+      colour: tint, packed: d.packed ? 1 : 0,
+    });
     game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
     if (lastRound) audio.lastRound();
@@ -886,6 +896,9 @@ export class Zombie {
     this.burnDmg = 0;
     this._jamT = 0;         // "am I actually going anywhere?" sampler
     this._jamX = x; this._jamY = y;
+    this._jamD = Infinity;  // how far from the target we were last time we looked
+    this._slide = 0;        // which way round the thing in front of us
+    this._slideT = 0;
     this.portalCd = 0;
     this.state = ZSTATE.CLIMB;
     this.climbT = 0.55;
@@ -1063,7 +1076,9 @@ export class Zombie {
       if (this.state === ZSTATE.BURIED) {
         this.vel.x = 0; this.vel.y = 0;
         this.stuck = 0;
-        if (pd < 58) {
+        // near enough to feel your steps -- or the round is nearly over and
+        // the last of the horde is not allowed to sulk underground
+        if (pd < 58 || game.lastCall) {
           this.state = ZSTATE.EMERGE;
           this.emergeT = 0.5;
           game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 10);
@@ -1100,7 +1115,9 @@ export class Zombie {
       this.vel.x *= 0.8; this.vel.y *= 0.8;
       this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
       this.stuck = 0;
-      if (sameFloor && pd < 72) {
+      // ditto for the one playing dead: it gets up when you are close, and
+      // it gets up anyway once the round is down to its last few
+      if (game.lastCall || (sameFloor && pd < 72)) {
         this.hidden = false;
         this.state = ZSTATE.HUNT;
         this.lunge = 1;
@@ -1321,10 +1338,38 @@ export class Zombie {
       }
     }
 
+    // Sliding round furniture. The flow field is built from tiles and knows
+    // nothing about the crate or the machine standing in the room, so a route
+    // can point straight through one. Without this a walker leans on it and
+    // shuffles up and down its side for the rest of the round.
+    let fx = wx, fy = wy;
+    if (this._slideT > 0) {
+      // swing the heading across the obstacle instead of into it
+      fx = wx * 0.3 - wy * this._slide;
+      fy = wy * 0.3 + wx * this._slide;
+    }
+
     const lungeBoost = 1 + this.lunge * 0.9;
-    this.vel.x = approach(this.vel.x, (wx + sx * 1.5) * speed * lungeBoost, 900 * dt);
-    this.vel.y = approach(this.vel.y, (wy + sy * 1.5) * speed * lungeBoost, 900 * dt);
+    this.vel.x = approach(this.vel.x, (fx + sx * 1.5) * speed * lungeBoost, 900 * dt);
+    this.vel.y = approach(this.vel.y, (fy + sy * 1.5) * speed * lungeBoost, 900 * dt);
+
+    const wasX = this.pos.x, wasY = this.pos.y;
     this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
+
+    // Did we get where we were trying to go? If not, pick a side and go round.
+    const wantD = Math.hypot(this.vel.x * dt, this.vel.y * dt);
+    const gotD = dist(this.pos.x, this.pos.y, wasX, wasY);
+    if (this._slideT > 0) this._slideT -= dt;
+    if (wantD > 0.35 && gotD < wantD * 0.6) {
+      if (this._slideT <= 0) {
+        const probe = (s) => !this.map.blockedAt(
+          this.pos.x - (wy) * s * 26, this.pos.y + (wx) * s * 26, this.r, this.floor);
+        if (probe(1)) this._slide = 1;
+        else if (probe(-1)) this._slide = -1;
+        else this._slide = (ZOMBIE_ID & 1) ? 1 : -1;
+        this._slideT = 1.1;
+      }
+    }
 
     const sp = Math.hypot(this.vel.x, this.vel.y);
     if (sp > 4) {
@@ -1340,10 +1385,14 @@ export class Zombie {
     if (this._jamT >= 1) {
       this._jamT = 0;
       const moved = dist(this.pos.x, this.pos.y, this._jamX, this._jamY);
+      // Moving is not the same as getting closer: a walker leaning on a crate
+      // shuffles up and down its side all day and never arrives.
+      const closed = (this._jamD - pd) > 8;
       this._jamX = this.pos.x; this._jamY = this.pos.y;
+      this._jamD = pd;
       // a zombie that is already chewing on you has not jammed -- it is busy
       const busy = this.state === ZSTATE.ATTACK && pd < 46;
-      if (moved < 10 && !busy) this.stuck += 1;
+      if ((moved < 10 || !closed) && !busy) this.stuck += 1;
       else this.stuck = Math.max(0, this.stuck - 1);
     }
     if (this.stuck > 7) this.despawn(game);

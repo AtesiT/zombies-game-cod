@@ -283,6 +283,11 @@ export const FLOORS = [
       { x: 36, y: 29, wx: 36, wy: 30, weapon: 'mg42' },
       { x: 42, y: 29, wx: 42, wy: 30, weapon: 'ptrs41' }
     ],
+    traps: [
+      { kind: 'flame', tx: 26, ty: 30, face: 'up', zone: { x: 14, y: 28, w: 14, h: 2 } },
+      { kind: 'electric', tx: 26, ty: 8, face: 'down', zone: { x: 14, y: 9, w: 14, h: 2 } },
+      { kind: 'steam', tx: 33, ty: 19, face: 'down', zone: { x: 29, y: 20, w: 12, h: 4 } },
+    ],
     box: [
       { x: 30, y: 4 },
       { x: 6, y: 20 },
@@ -375,6 +380,12 @@ export const FLOORS = [
       { x: 16, y: 22, wx: 15, wy: 22, weapon: 'mp40' },
       { x: 42, y: 16, wx: 43, wy: 16, weapon: 'kar98k' }
     ],
+    traps: [
+      // the north windows, where everything climbs in from the yard
+      { kind: 'flame', tx: 26, ty: 9, face: 'down', zone: { x: 18, y: 10, w: 22, h: 2 } },
+      // the south windows, over the stair they funnel down
+      { kind: 'electric', tx: 22, ty: 29, face: 'up', zone: { x: 17, y: 27, w: 13, h: 2 } },
+    ],
     box: [
       { x: 25, y: 26 }
     ],
@@ -461,6 +472,7 @@ export const FLOORS = [
       { x: 29, y: 28 }
     ],
     wallbuys: [],
+    traps: [],
     box: [
       { x: 25, y: 26 }
     ],

@@ -45,6 +45,22 @@ export class MysteryBox {
 
   price() { return this.firesale ? 10 : BOX_PRICE; }
 
+  /**
+   * Move to another storey's set of spots, keeping the same one where we can.
+   * The box used to keep the ground floor's list forever, which put it inside
+   * a wall the moment you climbed the stairs.
+   */
+  useSpots(spots) {
+    if (!spots?.length) return;
+    if (this.spots.length === spots.length
+      && this.spots.every((s, i) => s.x === spots[i].x && s.y === spots[i].y)) return;
+    const keep = this.spots[this.current];
+    this.spots = spots.map((s, i) => ({ ...s, id: i }));
+    // stay put if this spot exists upstairs too, otherwise pick a fresh one
+    const same = this.spots.findIndex((s) => s.x === keep?.x && s.y === keep?.y);
+    this.current = same >= 0 ? same : Math.min(this.current, this.spots.length - 1);
+  }
+
   /** Send the box somewhere else and reset the pull counter. */
   relocate() {
     let n = this.current;

@@ -957,7 +957,7 @@ const CONTROLS_STEP = 21;
 const CONTROLS_HALF_W = 250;
 
 /** What every key and on-screen button actually does. */
-const CONTROL_ROWS = [
+export const CONTROL_ROWS = [
   ['MOVE', 'W A S D   ARROWS   LEFT STICK'],
   ['AIM', 'MOUSE   RIGHT STICK'],
   ['FIRE', 'LEFT MOUSE   FIRE'],
@@ -973,13 +973,62 @@ const CONTROL_ROWS = [
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
+  ['CONTROLS LIST', 'C   CONTROLS ON THE MENU'],
   ['MUTE', 'M'],
   ['PICK A MENU ROW', 'CLICK   TAP   HOLD AND SLIDE'],
 ];
 
-/** A list scrolls tighter than a menu of three big doors. */
-export function menuStep(scene) {
-  return scene === 'controls' ? CONTROLS_STEP : MENU_STEP;
+/**
+ * The controls, as a panel over the top of things rather than another screen:
+ * you open it to look something up and close it again, not to navigate.
+ */
+export function drawControls(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.88)';
+  ctx.fillRect(0, 0, w, h);
+
+  const rows = CONTROL_ROWS;
+  const step = CONTROLS_STEP;
+  const cw = Math.min(w - 30, 470);
+  const ch = Math.min(h - 24, 62 + rows.length * step + 40);
+  const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
+
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  text(ctx, 'CONTROLS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  });
+
+  let y = cy + 34 + step * 0.7;
+  for (const [what, keys] of rows) {
+    text(ctx, what, cx + 16, y, {
+      font: 'bold 11px "Courier New", monospace', colour: '#cdbfa0',
+    });
+    text(ctx, keys, cx + cw - 16, y, {
+      font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+    });
+    // a dotted leader, so the eye can run from the verb to its key
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = '#6f6a5c';
+    const lw = cx + 16 + what.length * 6.6 + 4;
+    const rw = cx + cw - 16 - keys.length * 6.6 - 4;
+    for (let x = lw; x < rw; x += 4) ctx.fillRect(x, y - 3, 1, 1);
+    ctx.restore();
+    y += step;
+  }
+
+  text(ctx, 'ON A PHONE: HOLD AND SLIDE TO A ROW, THEN LET GO', w / 2, cy + ch - 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  });
+  ctx.restore();
 }
 
 export function menuRows(scene, game) {
@@ -1005,14 +1054,6 @@ export function menuRows(scene, game) {
     rows.push({ id: 'back', label: 'BACK' });
     return rows;
   }
-  if (scene === 'controls') {
-    const rows = CONTROL_ROWS.map(([what, keys]) => ({
-      id: 'none', small: true,
-      label: `${what.padEnd(20, ' ')} ${keys}`,
-    }));
-    rows.push({ id: 'back', label: 'BACK', hint: 'W A S D picks a row, ENTER takes it' });
-    return rows;
-  }
   if (scene === 'waiting') {
     const dots = '.'.repeat(1 + (Math.floor(game.time * 2) % 3));
     return [{ id: 'waiting', label: `JOINING${dots}`, hint: 'the host will let you in where they are' }];
@@ -1028,9 +1069,9 @@ export function menuRows(scene, game) {
 /** Which row is under this point, or -1. */
 export function menuHitTest(scene, mx, my, game) {
   const rows = menuRows(scene, game);
-  const top = (game.vh ?? 500) * (scene === 'controls' ? CONTROLS_TOP : MENU_TOP);
-  const step = menuStep(scene);
-  const half = scene === 'controls' ? CONTROLS_HALF_W : MENU_HALF_W;
+  const top = (game.vh ?? 500) * MENU_TOP;
+  const step = MENU_STEP;
+  const half = MENU_HALF_W;
   for (let i = 0; i < rows.length; i++) {
     const y = top + i * step;
     if (my >= y - step * 0.5 && my < y + step * 0.5
@@ -1044,19 +1085,10 @@ export function drawMenu(ctx, game, w, h) {
   ctx.save();
 
   const rows = menuRows(game.scene, game);
-  const step = menuStep(game.scene);
-  const half = game.scene === 'controls' ? CONTROLS_HALF_W : MENU_HALF_W;
-  const top = h * (game.scene === 'controls' ? CONTROLS_TOP : MENU_TOP);
+  const step = MENU_STEP;
+  const half = MENU_HALF_W;
+  const top = h * MENU_TOP;
   const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
-
-  if (game.scene === 'controls') {
-    text(ctx, 'CONTROLS', w / 2, h * 0.08, {
-      font: 'bold 18px "Courier New", monospace', colour: GOLD, align: 'center',
-    });
-    text(ctx, 'ON A PHONE: HOLD ANYWHERE AND SLIDE TO A ROW, THEN LET GO', w / 2, h * 0.08 + 18, {
-      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
-    });
-  }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -1070,10 +1102,10 @@ export function drawMenu(ctx, game, w, h) {
       ctx.fillRect(w / 2 - half, y - band / 2, 2, band);
       ctx.fillRect(w / 2 + half - 2, y - band / 2, 2, band);
     }
-    const size = row.small ? 11 : row.id === 'none' ? 11 : 16;
-    text(ctx, row.label, w / 2, y + (row.small ? 3 : 4), {
+    const size = row.id === 'none' ? 11 : 16;
+    text(ctx, row.label, w / 2, y + 4, {
       font: `bold ${size}px "Courier New", monospace`,
-      colour: row.id === 'none' ? (on ? '#b9ae90' : INK_DIM) : on ? GOLD : '#cdbfa0',
+      colour: row.id === 'none' ? INK_DIM : on ? GOLD : '#cdbfa0',
       align: 'center',
     });
   }
@@ -1164,7 +1196,7 @@ export function drawPause(ctx, game, w, h) {
   text(ctx, 'PAUSED', w / 2, h * 0.42, {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
-  text(ctx, 'P / ESC — resume      O — settings      R — restart run', w / 2, h * 0.42 + 28, {
+  text(ctx, 'P / ESC — resume      O — settings      C — controls      R — restart run', w / 2, h * 0.42 + 28, {
     font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
   ctx.restore();

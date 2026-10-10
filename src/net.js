@@ -807,6 +807,7 @@ export class Net {
         g.tracers?.push?.({
           x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1,
           life: 0.075, max: 0.075, colour: m.c ?? '#d9c27a',
+          packed: m.p ? 1 : (String(m.c ?? '').startsWith('hsl') ? 1 : 0),
         });
         if (m.w !== 'knife') audio.shot?.(m.w ?? 'm1911', 1);
         break;

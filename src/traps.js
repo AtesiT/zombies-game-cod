@@ -5,6 +5,7 @@
 // again. Damage only ever lands on zombies -- the player is safe.
 
 import { T } from './art.js';
+import { FLOORS } from './mapData.js';
 
 export const TRAP_PRICE = 500;
 
@@ -85,6 +86,8 @@ export class Trap {
     const k = this.kind;
     for (const z of game.zombies) {
       if (z.dead) continue;
+      // a trap reaches the storey it is bolted to, and no other
+      if ((z.floor ?? 0) !== (this.floor ?? 0)) continue;
       if (!this.inZone(z.pos.x, z.pos.y)) continue;
       const dmg = k.dps * step;
       const res = z.hurt(dmg, false, game, Math.atan2(z.pos.y - this.y, z.pos.x - this.x));
@@ -201,11 +204,14 @@ export class Trap {
  * Each device sits on a stretch of wall with nothing else on it, so the
  * "hold E" prompt is never fighting a wall buy or a door for the same tile.
  */
-export const TRAP_DEFS = [
-  { kind: 'flame', tx: 26, ty: 30, face: 'up', zone: { x: 14, y: 28, w: 14, h: 2 } },
-  { kind: 'electric', tx: 26, ty: 8, face: 'down', zone: { x: 14, y: 9, w: 14, h: 2 } },
-  { kind: 'steam', tx: 33, ty: 19, face: 'down', zone: { x: 29, y: 20, w: 12, h: 4 } },
-];
+/**
+ * Traps belong to a storey. They used to be a flat list, so the second floor
+ * showed the ground floor's traps hanging in its own walls, offered to arm
+ * them from a staircase away, and -- the giveaway -- cooked zombies on every
+ * floor at once when one of them went off.
+ */
+export const TRAP_DEFS = FLOORS.flatMap((F, floor) =>
+  (F.objects?.traps ?? []).map((d) => ({ ...d, floor })));
 
 export class Traps {
   constructor(defs = TRAP_DEFS) {
@@ -213,12 +219,18 @@ export class Traps {
     this.kills = 0;
   }
 
-  update(dt, game) { for (const t of this.list) t.update(dt, game); }
-  draw(ctx, time) { for (const t of this.list) t.draw(ctx, time); }
+  /** Only the traps bolted to this storey. */
+  on(floor) {
+    return this.list.filter((t) => (t.floor ?? 0) === floor);
+  }
 
-  nearest(x, y, maxDist = 46) {
+  update(dt, game) { for (const t of this.list) t.update(dt, game); }
+
+  draw(ctx, time, floor = 0) { for (const t of this.on(floor)) t.draw(ctx, time); }
+
+  nearest(x, y, maxDist = 46, floor = 0) {
     let best = null, bd = maxDist;
-    for (const t of this.list) {
+    for (const t of this.on(floor)) {
       const d = Math.hypot(t.x - x, t.y - y);
       if (d < bd) { bd = d; best = t; }
     }

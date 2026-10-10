@@ -2,7 +2,7 @@
 import { T, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
-  Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES,
+  Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
@@ -14,7 +14,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -32,11 +32,44 @@ const SALVAGE_DROP = 0.16;      // chance a kill drops salvage
 const MAX_ALIVE_BASE = 24;
 const DOG_ROUND_EVERY = 5;      // every 5th round is a hellhound round
 
-/** '#rrggbb' -> 'rgba(r,g,b,a)' */
-function hexA(hex, a) {
-  const h = hex.replace('#', '');
-  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+function hslToRgb(h, s, l) {
+  if (s <= 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = (t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
+}
+
+/**
+ * '#rrggbb' -> 'rgba(r,g,b,a)'. Also takes 'hsl(...)' and 'rgb(...)', which
+ * matters more than it sounds: a punched gun's tracer is an hsl rainbow, and
+ * this used to run it through parseInt(base 16) and hand the renderer
+ * rgba(NaN,NaN,NaN) -- which is to say, no muzzle light at all, on exactly
+ * the shots that are supposed to be the loudest in the game.
+ */
+export function hexA(hex, a) {
+  const c = String(hex).trim();
+  if (c[0] === '#') {
+    const h = c.slice(1);
+    const n = parseInt(h.length === 3 ? h.split('').map((x) => x + x).join('') : h, 16);
+    if (!Number.isFinite(n)) return `rgba(255,255,255,${a})`;
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  const hsl = c.match(/^hsla?\(\s*(-?[\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%/i);
+  if (hsl) {
+    const [r, g, b] = hslToRgb(((+hsl[1] % 360) + 360) % 360 / 360, +hsl[2] / 100, +hsl[3] / 100);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  const rgb = c.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  if (rgb) return `rgba(${+rgb[1]},${+rgb[2]},${+rgb[3]},${a})`;
+  return `rgba(255,255,255,${a})`;
 }
 
 /**
@@ -322,6 +355,9 @@ export class Game {
   useFloor(floor) {
     this.decals = this._decalFor(floor);
     this.decalCtx = this._decalCtx[floor];
+    // the mystery box has a spot on every storey: follow the one we are on,
+    // or it keeps the ground floor's and stands inside a wall upstairs
+    this._boxOnFloor();
   }
 
   /** Is any decal inside this world-space box? Used to skip the blit. */
@@ -649,7 +685,8 @@ export class Game {
       for (const z of this.zombies) if (!z.dead) alive++;
       const fighting = alive > 0 && this.roundActive;
       audio.setMusic({
-        calm: 0.45,
+        // the drone ducks out of the way while the fight layer comes up
+        calm: fighting ? 0.4 : 0.7,
         combat: fighting ? this._combatLevel() : 0,
         // `tension` is the last-couple-of-zombies breath, not the fight; the
         // high scrape belongs to it and nothing else
@@ -1109,13 +1146,17 @@ export class Game {
     const hx = ox + dx * endT, hy = oy + dy * endT;
     // a punched gun fires a rainbow; everything else keeps its own tracer
     const tc = def.packed ? packedTracer(this.time + this.stats.shots * 0.013) : def.tracer;
-    this.tracers.push({ x0: muzzle.x, y0: muzzle.y, x1: hx, y1: hy, life: 0.055, max: 0.055, colour: tc });
+    this.tracers.push({
+      x0: muzzle.x, y0: muzzle.y, x1: hx, y1: hy,
+      life: def.packed ? 0.085 : 0.055, max: def.packed ? 0.085 : 0.055,
+      colour: tc, packed: !!def.packed,
+    });
     // Nobody but the host simulates this shot, so nobody but the host can tell
     // anybody about it: a guest's bullets were invisible to everybody.
     this.net?.emit('shot', {
       x0: Math.round(muzzle.x), y0: Math.round(muzzle.y),
       x1: Math.round(hx), y1: Math.round(hy),
-      c: tc, w: def.id, by: by?.netId ?? 0,
+      c: tc, w: def.id, p: def.packed ? 1 : 0, by: by?.netId ?? 0,
     });
   }
 
@@ -1258,7 +1299,7 @@ export class Game {
       if (d < 34) offer({ type: 'cache', cache: c, d, price: 0, affordable: true });
     }
 
-    const nt = this.traps.nearest(p.pos.x, p.pos.y, 46);
+    const nt = this.traps.nearest(p.pos.x, p.pos.y, 46, this.map.floor);
     if (nt) {
       offer({
         type: 'trap', i: nt.i, d: dist(p.pos.x, p.pos.y, nt.x, nt.y),
@@ -1682,6 +1723,16 @@ export class Game {
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
     }
+    if (this.controlsOpen) {
+      if (this.input.wasPressed('Escape', 'KeyP', 'KeyO', 'Enter', 'Space')
+        || this.input.mouse.pressed) {
+        this.controlsOpen = false;
+        audio.dryFire();
+      }
+      this.hud.update(dt, this);
+      return;
+    }
+
     if (this.settingsOpen) {
       const S = settings;
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
@@ -1728,6 +1779,9 @@ export class Game {
     if (this.input.wasPressed('KeyP', 'Escape')) this.paused = !this.paused;
     if (this.paused) {
       if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
+      // the controls are worth looking up in the middle of a round too, not
+      // only from the front page
+      if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
       return;
     }
 
@@ -1741,6 +1795,9 @@ export class Game {
       this.flowTimer = 0.22;
       this.rebuildFlow();
     }
+
+    // ---- furniture you cannot walk through ---------------------------------
+    this._refreshProps();
 
     // ---- player ------------------------------------------------------------
     this.player.update(dt, this, this.input);
@@ -1825,6 +1882,23 @@ export class Game {
     this._updateFusion(dt);
 
     // ---- entities ----------------------------------------------------------
+    // Once a round is down to its last few, nothing is allowed to wait under
+    // the soil or lie down among the dead any more -- a miner that only digs
+    // out when you walk over it can stall a round forever.
+    const standing = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
+    this.lastCall = this.roundActive && this.zombiesTotal > 0
+      && standing <= Math.max(1, Math.ceil(this.zombiesTotal * 0.10));
+    if (this.lastCall && !this._lastCallPing) {
+      const hiding = this.zombies.some((z) => !z.dead
+        && (z.state === ZSTATE.BURIED || z.state === ZSTATE.HIDDEN || z.hidden));
+      if (hiding) {
+        this._lastCallPing = true;
+        audio.growl(0.6, 0.85);
+        this.popups.add(this.player.pos.x, this.player.pos.y - 44, 'THE GROUND MOVES', '#c8a86b', 12);
+      }
+    }
+    if (!this.lastCall) this._lastCallPing = false;
+
     for (const z of this.zombies) z.update(dt, this);
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       if (this.zombies[i].remove) {
@@ -2185,7 +2259,7 @@ export class Game {
         this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0;
         this._ensureRelay();
         break;
-      case 'controls': this.scene = 'controls'; this.menuIndex = 0; break;
+      case 'controls': this.controlsOpen = true; this._wasPaused = false; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'host': this._startHost(); break;
       case 'join':
@@ -2280,6 +2354,12 @@ export class Game {
     this.begin();
   }
 
+  /** The box has spots on every storey; follow the one you are standing on. */
+  _boxOnFloor() {
+    const spots = this.map.boxSpots;
+    if (spots?.length) this.box.useSpots(spots);
+  }
+
   _joinRoom(room) {
     const net = this.net;
     if (!this._ensureRelay()) { this._pendingRoom = room; return; }
@@ -2342,7 +2422,10 @@ export class Game {
   // ------------------------------------------------------------------ draw
   draw(ctx) {
     const { vw, vh } = this;
-    ctx.imageSmoothingEnabled = false;
+    // `smooth` is DLSS5's doing (see src/main.js): when the frame is being
+    // supersampled the sprites want filtering, and when it is not they want
+    // to stay as hard little pixels as they were drawn.
+    ctx.imageSmoothingEnabled = !!this.smooth;
 
     let camX = Math.round(this.cam.x);
     let camY = Math.round(this.cam.y);
@@ -2404,7 +2487,7 @@ export class Game {
       ctx.beginPath(); ctx.ellipse(f.x, f.y, Math.max(2, f.r * 0.8), Math.max(2, f.r * 0.64), 0, 0, TAU); ctx.stroke();
       ctx.restore();
     }
-    this.traps.draw(ctx, this.time);
+    this.traps.draw(ctx, this.time, this.map.floor);
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
@@ -2426,43 +2509,66 @@ export class Game {
     list.sort((a, b) => a.y - b.y);
     for (const l of list) l.d();
 
-    // 4. tracers
+    // 4. tracers -- a punched gun's round is a ribbon of light, not a hairline
     for (const t of this.tracers) {
       const k = t.life / t.max;
       ctx.save();
-      ctx.globalAlpha = k * 0.85;
-      ctx.strokeStyle = t.colour;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(t.x0, t.y0);
-      ctx.lineTo(t.x1, t.y1);
-      ctx.stroke();
+      ctx.lineCap = 'round';
+      if (t.packed) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = t.colour;
+        ctx.globalAlpha = k * 0.20;
+        ctx.lineWidth = 7;
+        ctx.beginPath();
+        ctx.moveTo(t.x0, t.y0);
+        ctx.lineTo(t.x1, t.y1);
+        ctx.stroke();
+        ctx.globalAlpha = k * 0.55;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.globalAlpha = k;
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(t.x0, t.y0);
+        ctx.lineTo(t.x1, t.y1);
+        ctx.stroke();
+      } else {
+        ctx.globalAlpha = k * 0.85;
+        ctx.strokeStyle = t.colour;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(t.x0, t.y0);
+        ctx.lineTo(t.x1, t.y1);
+        ctx.stroke();
+      }
       ctx.restore();
     }
 
-    // 5. muzzle flash
+    // 5. muzzle flash -- punched guns burn wider and hotter
     if (this.muzzleFlash) {
       const m = this.muzzleFlash;
       const k = m.t / 0.055;
+      const size = m.size * (m.packed ? 1.5 : 1);
       ctx.save();
       ctx.translate(m.x, m.y);
       ctx.rotate(m.a);
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = clamp(k, 0, 1);
-      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, m.size);
-      g.addColorStop(0, 'rgba(255,240,200,0.95)');
-      g.addColorStop(0.4, 'rgba(255,170,60,0.55)');
+      ctx.globalAlpha = clamp(k, 0, 1) * (m.packed ? 1 : 0.9);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
+      g.addColorStop(0, m.packed ? 'rgba(255,255,255,1)' : 'rgba(255,240,200,0.95)');
+      g.addColorStop(0.4, m.packed ? m.colour : 'rgba(255,170,60,0.55)');
       g.addColorStop(1, 'rgba(255,120,20,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(0, 0, m.size, 0, TAU);
+      ctx.arc(0, 0, size, 0, TAU);
       ctx.fill();
-      ctx.fillStyle = 'rgba(255,235,190,0.9)';
+      ctx.fillStyle = m.packed ? 'rgba(255,255,255,0.95)' : 'rgba(255,235,190,0.9)';
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.lineTo(m.size * 1.5, -3);
-      ctx.lineTo(m.size * 1.9, 0);
-      ctx.lineTo(m.size * 1.5, 3);
+      ctx.lineTo(size * 1.5, -3);
+      ctx.lineTo(size * 1.9, 0);
+      ctx.lineTo(size * 1.5, 3);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
@@ -2592,7 +2698,8 @@ export class Game {
     }
     this.achievements.drawBanner?.(ctx, vw, vh);
 
-    if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
+    if (this.controlsOpen) drawControls(ctx, this, vw, vh);
+    else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
@@ -2600,9 +2707,47 @@ export class Game {
     // A menu you cannot see your own pointer in is a menu you cannot use, and
     // a phone has never had one: draw it over everything, wherever the mouse
     // or the last finger is. In the game itself the crosshair does this job.
-    if (this.settingsOpen || this.craftOpen || this.paused || !this.started) {
+    if (this.controlsOpen || this.settingsOpen || this.craftOpen || this.paused || !this.started) {
       drawCursor(ctx, this);
     }
+  }
+
+  /**
+   * The furniture that has a body: the mystery box, the perk machines, the
+   * Pack-a-Punch and the workbench. None of it is a tile, so without this
+   * list you can walk straight through all of it -- the box especially,
+   * which is a crate sitting in the middle of a room.
+   */
+  _refreshProps() {
+    const out = this.map.solidProps ?? (this.map.solidProps = []);
+    out.length = 0;
+    const f = this.map.floor;
+    // A machine standing in a one-tile doorway would seal the route: the horde
+    // is not smart enough to route round a thing the tile map has never heard
+    // of, so those particular ones stay walk-through-able. Everything pressed
+    // against a wall, which is most of them, gets a proper body.
+    const add = (x, y, hw, hh, hb) => {
+      if (this.map.propsWouldSeal(x - hw, y - hh, x + hw, y + hb, f)) return;
+      out.push({ x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hb, floor: f });
+    };
+    const bs = this.box.spot;
+    if (bs && this.box.state !== 'gone') add(bs.x, bs.y, 13, 8, 8);
+    for (const ps of this.map.perkSpots ?? []) add(ps.x, ps.y, 10, 13, 13);
+    if (this.map.papSpot) add(this.map.papSpot.x, this.map.papSpot.y, 13, 16, 16);
+    if (this.map.workbench) add(this.map.workbench.x, this.map.workbench.y, 12, 7, 9);
+
+    // and tell the flow field about them, so the horde walks round the box
+    // instead of pressing its face into it for the rest of the round
+    const blocked = this.map._flowBlocked ?? (this.map._flowBlocked = new Map());
+    const set = new Set();
+    for (const p of out) {
+      for (let ty = Math.floor(p.y0 / T); ty <= Math.floor(p.y1 / T); ty++) {
+        for (let tx = Math.floor(p.x0 / T); tx <= Math.floor(p.x1 / T); tx++) {
+          set.add(ty * this.map.w + tx);
+        }
+      }
+    }
+    blocked.set(f, set);
   }
 
   /** All light positions are world-space; the layer itself is screen-space. */
@@ -2654,8 +2799,8 @@ export class Game {
       L.point(sx(f.x), sy(f.y), f.r * 2.6, 0.85 * k * flick, hexA('#f0913a', 0.5), 0.55 * k);
     }
 
-    // armed traps light their own corner of the map
-    for (const t of this.traps.list) {
+    // armed traps light their own corner of their own storey
+    for (const t of this.traps.on(this.map.floor)) {
       if (!t.running) continue;
       const c = t.centre();
       const k = 0.7 + Math.sin(this.time * 11) * 0.3;
@@ -2670,7 +2815,10 @@ export class Game {
     L.point(sx(p.pos.x), sy(p.pos.y - 4), 76, 0.74, 'rgba(255,210,150,0.15)', 0.32);
 
     for (const f of this.flashLights) {
-      L.point(sx(f.x), sy(f.y), f.r, 1, f.colour ? hexA(f.colour, 0.5) : 'rgba(255,190,110,0.55)', 0.9);
+      // a punched gun lights the room up: bigger, brighter, and it lingers
+      const boost = f.packed ? 1.75 : 1;
+      L.point(sx(f.x), sy(f.y), f.r * boost, 1,
+        f.colour ? hexA(f.colour, f.packed ? 0.85 : 0.5) : 'rgba(255,190,110,0.55)', 0.9 * boost);
     }
     for (const f of this.explosionLights) {
       const k = f.life / f.max;
@@ -2827,14 +2975,25 @@ export class Game {
       if (!this._vis(wb.wallCX, wb.wallCY, 60)) continue;
       const def = WEAPONS[wb.weapon];
       const gun = this.art.guns[wb.weapon];
-      const cx = wb.wallCX, cy = wb.wallCY + (wb.facing === 'up' ? 7 : -7);
+      const side = wb.facing === 'left' || wb.facing === 'right';
+      const cx = wb.wallCX;
+      const cy = wb.wallCY + (wb.facing === 'up' ? 7 : wb.facing === 'down' ? -7 : 0);
       ctx.save();
       // wall shadow behind the gun
       ctx.globalAlpha = 0.45;
       ctx.fillStyle = '#000';
-      ctx.fillRect(cx - 17, cy - 5, 34, 10);
+      if (side) ctx.fillRect(cx - 5, cy - 17, 10, 34);
+      else ctx.fillRect(cx - 17, cy - 5, 34, 10);
       ctx.globalAlpha = 1;
-      ctx.drawImage(gun.img, Math.round(cx - 10), Math.round(cy - 4));
+      if (side) {
+        // hung along the wall it is bolted to, muzzle down, the way a gun
+        // actually hangs
+        ctx.translate(cx, cy);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(gun.img, -10, -4);
+      } else {
+        ctx.drawImage(gun.img, Math.round(cx - 10), Math.round(cy - 4));
+      }
       ctx.restore();
 
       const slot = this.player.loadout[wb.weapon];
@@ -2843,11 +3002,13 @@ export class Game {
       ctx.save();
       ctx.font = 'bold 10px "Courier New", monospace';
       ctx.textAlign = 'center';
-      const ly = cy + (wb.facing === 'up' ? 18 : -10);
+      // the price sits where the player is standing, not inside the wall
+      const lx = side ? cx + (wb.facing === 'right' ? -16 : 16) : cx;
+      const ly = cy + (wb.facing === 'up' ? 18 : wb.facing === 'down' ? -10 : 3);
       ctx.fillStyle = 'rgba(0,0,0,0.8)';
-      ctx.fillText(`${price}`, cx + 1, ly + 1);
+      ctx.fillText(`${price}`, lx + 1, ly + 1);
       ctx.fillStyle = afford ? '#f0d98a' : '#6f6a5c';
-      ctx.fillText(`${price}`, cx, ly);
+      ctx.fillText(`${price}`, lx, ly);
       ctx.restore();
     }
   }

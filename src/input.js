@@ -2,8 +2,16 @@
 // pixels (the game renders at a fixed low resolution and is CSS-upscaled).
 
 export class Input {
+  /** The resolution the game thinks in, whatever size the canvas really is. */
+  setLogicalSize(w, h) { this.vw = w; this.vh = h; }
+
   constructor(canvas) {
     this.canvas = canvas;
+    // Pointer coordinates are reported in the game's own 800x500 space, which
+    // is *not* necessarily the size of the backing store: DLSS5 renders the
+    // canvas larger than that and scales it down, and the mouse must not know.
+    this.vw = canvas.width;
+    this.vh = canvas.height;
     this.keys = new Set();
     this.pressed = new Set();
     this.released = new Set();
@@ -34,8 +42,8 @@ export class Input {
       const r = canvas.getBoundingClientRect();
       this.mouse.cx = e.clientX - r.left;
       this.mouse.cy = e.clientY - r.top;
-      this.mouse.x = (this.mouse.cx / r.width) * canvas.width;
-      this.mouse.y = (this.mouse.cy / r.height) * canvas.height;
+      this.mouse.x = (this.mouse.cx / r.width) * this.vw;
+      this.mouse.y = (this.mouse.cy / r.height) * this.vh;
     };
     window.addEventListener('mousemove', toLocal);
     window.addEventListener('mousedown', (e) => {

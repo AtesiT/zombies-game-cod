@@ -222,7 +222,7 @@ for (const w of Object.values(WEAPONS)) {
  */
 export function packedTracer(time = 0) {
   const hue = Math.round(((time * 210) % 360 + 360) % 360);
-  return `hsl(${hue}, 88%, 62%)`;
+  return `hsl(${hue}, 95%, 70%)`;
 }
 
 /** Weapon stats for `id`, upgraded if it has been through the machine. */

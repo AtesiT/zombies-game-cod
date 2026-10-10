@@ -357,8 +357,8 @@ export class TouchControls {
     if (box && box.width && box.height && inp.canvas.width && Number.isFinite(t?.clientX)) {
       inp.mouse.cx = t.clientX - box.left;
       inp.mouse.cy = t.clientY - box.top;
-      inp.mouse.x = (inp.mouse.cx / box.width) * inp.canvas.width;
-      inp.mouse.y = (inp.mouse.cy / box.height) * inp.canvas.height;
+      inp.mouse.x = (inp.mouse.cx / box.width) * (inp.vw ?? inp.canvas.width);
+      inp.mouse.y = (inp.mouse.cy / box.height) * (inp.vh ?? inp.canvas.height);
     }
     if (mode === 'up') {
       inp.mouse.down = false;

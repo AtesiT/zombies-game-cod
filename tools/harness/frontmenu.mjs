@@ -26,7 +26,7 @@ const click = (i, scene = 'menu') => {
 const press = (code) => { g.input.pressed.add(code); g.update(H); g.input.endFrame(); };
 
 // ---- the drawing and the hit test are the same list -----------------------
-for (const scene of ['menu', 'mp', 'rooms', 'waiting', 'controls']) {
+for (const scene of ['menu', 'mp', 'rooms', 'waiting']) {
   g.scene = scene;
   const rows = M.menuRows(scene, g);
   ok(rows.length > 0, `the "${scene}" screen has no rows`);
@@ -61,23 +61,24 @@ ok(g.scene === 'mp', `MULTIPLAYER went to "${g.scene}"`);
 click(rowId('mp', 'back'));
 ok(g.scene === 'menu', `BACK from multiplayer went to "${g.scene}"`);
 
-// ---- CONTROLS: what every letter on the panel stands for ------------------
+// ---- CONTROLS: an overlay, not another screen -----------------------------
 click(rowId('menu', 'controls'));
-ok(g.scene === 'controls', `CONTROLS went to "${g.scene}"`);
-const crows = M.menuRows('controls', g);
-const binds = crows.filter((r) => r.id === 'none');
-ok(binds.length >= 12, `the controls screen explains ${binds.length} things, not enough`);
-ok(crows[crows.length - 1].id === 'back', 'the controls screen has no way out');
-ok(binds.every((r) => /[A-Z]/.test(r.label)), 'a row on the controls screen names no key');
-ok(binds.every((r) => r.label.length >= 22), 'a row on the controls screen is truncated');
-// the whole list has to fit between the title and the bottom edge
-const lastY = M.VH * 0.16 + (crows.length - 1) * 21;
-ok(lastY < M.VH - 12, `the controls list runs off the bottom: last row at ${lastY}`);
-// and a binding is not a button: pressing it must do nothing
-click(0, 'controls');
-ok(g.scene === 'controls', 'picking a line of the controls list left the screen');
-click(rowId('controls', 'back'), 'controls');
-ok(g.scene === 'menu', `BACK from controls went to "${g.scene}"`);
+ok(g.controlsOpen === true, 'CONTROLS did not open');
+ok(g.scene === 'menu', 'CONTROLS left the menu instead of opening over it');
+ok((M.CONTROL_ROWS ?? []).length >= 12, 'the controls list explains almost nothing');
+ok(M.CONTROL_ROWS.every(([what, keys]) => what && keys), 'a row on the controls list is half empty');
+let ctrlThrew = null;
+try { g.draw(nc(M.VW, M.VH).getContext('2d')); } catch (e) { ctrlThrew = e.message; }
+ok(ctrlThrew === null, `drawing the controls panel threw: ${ctrlThrew}`);
+press('Escape');
+ok(g.controlsOpen === false, 'the controls panel would not close');
+// a click closes it too -- on a phone there is no escape key
+click(rowId('menu', 'controls'));
+ok(g.controlsOpen === true, 'CONTROLS did not open a second time');
+g.input.mouse.pressed = true;
+g.update(H);
+g.input.endFrame();
+ok(g.controlsOpen === false, 'a click did not close the controls panel');
 
 // ---- SETTINGS -------------------------------------------------------------
 click(rowId('menu', 'settings'));

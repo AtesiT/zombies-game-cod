@@ -234,17 +234,23 @@ export class AudioEngine {
       return g;
     };
 
-    // calm: an open fifth with a slow sweep on the cutoff
+    // calm: an open fifth with a slow sweep on the cutoff.
+    //
+    // The two low sines on their own are inaudible on a laptop or a phone --
+    // small speakers simply cannot move 55 Hz -- which is why this used to be
+    // a drone nobody could hear. The pair an octave (and a twelfth) up carries
+    // the same chord into a register any speaker can actually reproduce.
     const calm = layer();
-    for (const f of [55, 82.5]) {
+    for (const [f, amp] of [[55, 0.5], [82.5, 0.45], [110, 0.3], [165, 0.22]]) {
       const o = ctx.createOscillator();
       o.type = 'sine'; o.frequency.value = f;
-      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 320; lp.Q.value = 1;
+      const og = ctx.createGain(); og.gain.value = amp;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 460; lp.Q.value = 1;
       const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.07;
-      const lg = ctx.createGain(); lg.gain.value = 90;
+      const lg = ctx.createGain(); lg.gain.value = 130;
       lfo.connect(lg).connect(lp.frequency);
       lfo.start();
-      o.connect(lp).connect(calm);
+      o.connect(og).connect(lp).connect(calm);
       o.start();
     }
 
@@ -252,6 +258,14 @@ export class AudioEngine {
     const combat = layer();
     const bass = ctx.createOscillator(); bass.type = 'triangle'; bass.frequency.value = 41;
     const bg = ctx.createGain(); bg.gain.value = 0.55;
+    // same problem, same fix: 41 Hz is felt, not heard, so the heartbeat gets
+    // harmonics you can actually make out on a phone speaker
+    for (const [f, amp] of [[82, 0.26], [123, 0.13]]) {
+      const h = ctx.createOscillator(); h.type = 'sine'; h.frequency.value = f;
+      const hg2 = ctx.createGain(); hg2.gain.value = amp;
+      h.connect(hg2).connect(bg);
+      h.start();
+    }
     const thump = ctx.createOscillator(); thump.type = 'sine'; thump.frequency.value = 1.9;
     const tg = ctx.createGain(); tg.gain.value = 0.45;
     thump.connect(tg).connect(bg.gain);
@@ -286,7 +300,11 @@ export class AudioEngine {
   /** Where each layer sits, 0..1. They are allowed to overlap. */
   setMusic({ calm, combat, last } = {}) {
     if (!this.ready || !this._music) return;
-    const t = this.t, ramp = 0.9, top = 0.12;
+    // `top` is the ceiling each layer is scaled by. It was 0.12, which -- with
+    // the game asking for 0.45 of calm -- put the whole soundtrack at about
+    // a twentieth of the volume of a gunshot. Music you cannot hear over the
+    // wind is not atmosphere, it is a rumour.
+    const t = this.t, ramp = 0.9, top = 0.32;
     const set = (node, v) => {
       if (v === undefined) return;
       v = Math.max(0, Math.min(1, v));

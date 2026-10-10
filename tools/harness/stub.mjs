@@ -35,6 +35,6 @@ export async function load() {
     PERKS: perks.PERKS, RECIPE_ORDER: craft.RECIPE_ORDER, ENEMY_TYPES: ent.ENEMY_TYPES,
     Zombie: ent.Zombie, Grenade: ent.Grenade, settings: set.settings, SETTING_DEFS: set.SETTING_DEFS,
     TRAP_PRICE: tr.TRAP_PRICE, POWERUPS: pu.POWERUPS ?? {},
-    menuRows: hud.menuRows, menuHitTest: hud.menuHitTest,
+    menuRows: hud.menuRows, menuHitTest: hud.menuHitTest, CONTROL_ROWS: hud.CONTROL_ROWS,
   };
 }

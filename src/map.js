@@ -13,6 +13,7 @@ const INF = 0x3fffffff;
 const COST_FLOOR = 100;
 const COST_DIAG = 141;
 const COST_WINDOW = 4000;   // zombies would rather walk round than chew boards
+const COST_PROP = 3000;     // ...and rather walk round a crate than lean on one
 const COST_STAIR = 300;     // stairwells are a shortcut, not an obstacle
 
 const MAX_PLANKS = 6;
@@ -39,6 +40,18 @@ const CHAR_TO_TILE = {
   R: TILE.ROOF, '~': TILE.VOID,
   b: TILE.BUNK, k: TILE.LOCKER, t: TILE.TABLE,
 };
+
+/**
+ * Which way the gun's wall runs, seen from the tile you stand on to buy it --
+ * the same convention the old two-way version used, where 'up' meant the wall
+ * was above you. A weapon bought off a side wall was drawn lying flat across
+ * it, which looks like it is floating: it has to hang along the wall instead.
+ */
+function wallFacing(b) {
+  const dx = (b.wx ?? 0) - (b.x ?? 0), dy = (b.wy ?? 0) - (b.y ?? 0);
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+  return dy > 0 ? 'down' : 'up';
+}
 
 export class GameMap {
   constructor() {
@@ -174,6 +187,7 @@ export class GameMap {
       seen: new Uint8Array(this.n),
       barricades: [], doors: [], stairs: [], spawnPoints: [], wallBuys: [],
       grenadeCrates: [], boxSpots: [], cacheSpots: [], lamps: [],
+      solidProps: [],
       secretDoorIdx: -1, secretDoorOpen: false,
       dist: new Int32Array(this.n),
       next: new Int32Array(this.n),
@@ -281,7 +295,7 @@ export class GameMap {
         x: (b.x + 0.5) * T, y: (b.y + 0.5) * T,
         wx: b.wx, wy: b.wy, weapon: b.weapon,
         wallCX: (b.wx + 0.5) * T, wallCY: (b.wy + 0.5) * T,
-        facing: b.wy < b.y ? 'up' : 'down',
+        facing: wallFacing(b),
       }));
       F.grenadeCrates = GRENADE_CRATES.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T }));
       F.boxSpots = BOX_SPOTS.map((b) => ({ x: (b.x + 0.5) * T, y: (b.y + 0.5) * T, tx: b.x, ty: b.y }));
@@ -292,7 +306,7 @@ export class GameMap {
         x: (b.x + 0.5) * T, y: (b.y + 0.5) * T,
         wx: b.wx, wy: b.wy, weapon: b.weapon,
         wallCX: (b.wx + 0.5) * T, wallCY: (b.wy + 0.5) * T,
-        facing: b.wy < b.y ? 'up' : 'down',
+        facing: wallFacing(b),
       }));
       F.grenadeCrates = objs.crates.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T }));
       F.boxSpots = objs.box.map((b) => ({ x: (b.x + 0.5) * T, y: (b.y + 0.5) * T, tx: b.x, ty: b.y }));
@@ -354,8 +368,94 @@ export class GameMap {
   moveCircle(pos, dx, dy, r, floor = this.floor) {
     pos.x += dx;
     this._resolveAxis(pos, r, true, floor);
+    this._resolveProps(pos, r, floor);
     pos.y += dy;
     this._resolveAxis(pos, r, false, floor);
+    this._resolveProps(pos, r, floor);
+  }
+
+  /**
+   * Furniture. The tiles know nothing about the mystery box standing in the
+   * middle of the room, so you could walk straight through it; the game
+   * pushes the list in every frame and this shoves circles back out of them.
+   */
+  _resolveProps(pos, r, floor) {
+    for (const p of this.solidProps) {
+      if ((p.floor ?? 0) !== floor) continue;
+      const nx = pos.x < p.x0 ? p.x0 : pos.x > p.x1 ? p.x1 : pos.x;
+      const ny = pos.y < p.y0 ? p.y0 : pos.y > p.y1 ? p.y1 : pos.y;
+      const dx = pos.x - nx, dy = pos.y - ny;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= r * r) continue;
+      const ox = pos.x, oy = pos.y;
+      if (d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        pos.x += (dx / d) * (r - d);
+        pos.y += (dy / d) * (r - d);
+      } else {
+        // swallowed whole: leave by the nearest face
+        const l = pos.x - p.x0, rr = p.x1 - pos.x, u = pos.y - p.y0, dn = p.y1 - pos.y;
+        const m = Math.min(l, rr, u, dn);
+        if (m === l) pos.x = p.x0 - r;
+        else if (m === rr) pos.x = p.x1 + r;
+        else if (m === u) pos.y = p.y0 - r;
+        else pos.y = p.y1 + r;
+      }
+      // A crate in a tight spot can shove you somewhere the tiles do not
+      // allow. Being inside a wall is worse than being inside a crate, so
+      // when that happens the push is undone and you simply stop.
+      if (this._inSolid(pos, r, floor)) { pos.x = ox; pos.y = oy; }
+    }
+  }
+
+  /**
+   * Is this tile the only way through? Two open sides facing each other and
+   * two walls facing each other: a corridor one tile wide.
+   *
+   * Furniture is not a tile, so the flow field has no idea it is there. A
+   * crate in the middle of a room is fine -- there is all round it -- but a
+   * machine standing in a one-tile gap seals the passage and the horde piles
+   * up against it forever. Those ones do not get a body.
+   */
+  pinchTile(tx, ty, floor = this.floor) {
+    const open = (x, y) => !this.solidTileOn(floor, x, y);
+    const n = open(tx, ty - 1), s = open(tx, ty + 1);
+    const w = open(tx - 1, ty), e = open(tx + 1, ty);
+    return (n && s && !w && !e) || (w && e && !n && !s);
+  }
+
+  /** Does this box sit on any tile that is the only way through? */
+  propsWouldSeal(x0, y0, x1, y1, floor = this.floor) {
+    for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++) {
+      for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) {
+        if (this.pinchTile(tx, ty, floor)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Solid for a circle of radius r sitting at (x,y): the tiles and the
+   * furniture both. The flow field only knows about tiles, so this is how
+   * anybody steering round a crate asks whether the way is clear.
+   */
+  blockedAt(x, y, r = 0, floor = this.floor) {
+    if (this.solidTileOn(floor, Math.floor(x / T), Math.floor(y / T))) return true;
+    for (const p of this.solidProps) {
+      if ((p.floor ?? 0) !== floor) continue;
+      if (x > p.x0 - r && x < p.x1 + r && y > p.y0 - r && y < p.y1 + r) return true;
+    }
+    return false;
+  }
+
+  /** Is any of this circle's four corners inside a solid tile? */
+  _inSolid(pos, r, floor) {
+    for (const dx of [-r, r]) {
+      for (const dy of [-r, r]) {
+        if (this.solidTileOn(floor, Math.floor((pos.x + dx) / T), Math.floor((pos.y + dy) / T))) return true;
+      }
+    }
+    return false;
   }
 
   _resolveAxis(pos, r, horizontal, floor = this.floor) {
@@ -434,6 +534,9 @@ export class GameMap {
 
   buildFlow(targetX, targetY) {
     const { w, h, tiles, dist, next } = this;
+    // tiles the flow field has to steer around even though they are not walls:
+    // the mystery box and the machines, which the horde cannot walk through
+    const blocked = this._flowBlocked?.get(this.floor);
     dist.fill(INF);
     next.fill(-1);
     const heap = this._heap;
@@ -468,6 +571,11 @@ export class GameMap {
         if (dist[ni] <= cd) continue;
         const t = tiles[ni];
         if (BLOCKS_FLOW.has(t)) continue;
+        // Not a wall, just furniture: a route through it is allowed but costs
+        // the earth, so the horde walks round the box whenever it can. Making
+        // it impassable instead strands anybody standing on that tile.
+        let propCost = 0;
+        if (blocked && blocked.has(ni)) propCost = COST_PROP;
         if (dx && dy && (this.solidAt(cx + dx, cy) || this.solidAt(cx, cy + dy))) continue;
         let extra = 0;
         if (t === TILE.WINDOW) extra = COST_WINDOW;
@@ -479,7 +587,7 @@ export class GameMap {
           const d = this.doors[this.doorOf[ni]];
           if (!d || !d.open) continue;
         }
-        const nd = cd + base + extra;
+        const nd = cd + base + extra + propCost;
         if (nd < dist[ni]) { dist[ni] = nd; next[ni] = cur; heap.push(nd, ni); }
       }
 

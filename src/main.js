@@ -12,6 +12,9 @@ const ctx = canvas.getContext('2d', { alpha: false });
 ctx.imageSmoothingEnabled = false;
 
 const input = new Input(canvas);
+// the game thinks in 800x500 whatever size the canvas ends up being, and the
+// mouse has to be told so before DLSS5 changes the backing store underneath it
+input.setLogicalSize(VW, VH);
 const game = new Game(input);
 
 // ---------------------------------------------------------------------------
@@ -23,6 +26,55 @@ const frameEl = document.getElementById('frame');
 const touch = new TouchControls(input, { mount: wrap });
 
 const SIZE_MULTS = [0.82, 1, 1.18];
+// how wide the game is on screen, in CSS pixels -- DLSS5 sizes its backing
+// store from it, so it has to be kept up to date by resize()
+let displayW = VW;
+
+// ---------------------------------------------------------------------------
+//  DLSS5.
+//
+//  The game draws in a fixed 800x500 space, so on a big screen every rotated
+//  sprite, every light cone and every letter of the HUD arrives as a flight of
+//  stairs. With this on, the backing store is rendered *larger* than the
+//  picture you see and the browser scales it back down, which is the cheapest
+//  way there is of getting rid of them. Sprites get filtered on the way up
+//  (see `game.smooth`) so the pixel art goes soft rather than blocky.
+//
+//  It costs fill rate -- 2x means four times the pixels -- so it watches the
+//  frame time and eases itself down the list rather than letting the game
+//  crawl. The setting stays on; the engine just stops being able to afford it.
+// ---------------------------------------------------------------------------
+// How far to supersample: enough to be worth it on the screen you actually
+// have, never more than 2x. A phone showing the game 320 px wide does not need
+// a 1600 px backing store, and it certainly cannot afford one.
+function dlssTarget() {
+  const px = (displayW || VW) * (window.devicePixelRatio || 1);
+  return Math.max(1.25, Math.min(2, (px / VW) * 1.6));
+}
+
+// and how far the perf watch is allowed to walk that back: 1 = all of it,
+// 0 = none, i.e. the frame is drawn at 800x500 again
+const SS_STEPS = [1, 0.75, 0.5, 0];
+let ssLevel = 0;
+let ssSlow = 0;
+let ssFast = 0;
+
+function dlssScale() {
+  if (!settings.get('dlss')) return 1;
+  const base = dlssTarget();
+  return 1 + (base - 1) * SS_STEPS[ssLevel];
+}
+
+function applyBacking() {
+  const ss = dlssScale();
+  const w = Math.round(VW * ss);
+  const h = Math.round(VH * ss);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  // let the browser filter it back down -- that is the whole trick. Empty
+  // string hands it back to the stylesheet, which asks for hard pixels.
+  canvas.style.imageRendering = ss > 1 ? 'auto' : '';
+  return ss;
+}
 
 function resize() {
   // measured off the padded frame, so the safe areas are already excluded
@@ -39,6 +91,7 @@ function resize() {
   const snap = scale >= 2 ? Math.floor(scale * 2) / 2 : scale;   // half steps above 2x
   const w = Math.round(VW * snap);
   const h = Math.round(VH * snap);
+  displayW = w;
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
   wrap.style.width = `${w}px`;
@@ -46,8 +99,9 @@ function resize() {
   // the buttons live in the same 800x500 space the game draws in
   touch.layout(w, h);
 }
-window.addEventListener('resize', resize);
+window.addEventListener('resize', () => { resize(); applyBacking(); });
 resize();
+applyBacking();
 
 // ---------------------------------------------------------------------------
 //  On-screen controls: shown when the setting says so (AUTO = any touch
@@ -61,6 +115,7 @@ function syncTouch() {
 settings.onChange((id) => {
   if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch();
   if (id === 'screen') resize();
+  if (id === 'dlss') { ssLevel = 0; ssSlow = 0; ssFast = 0; applyBacking(); }
 });
 syncTouch();
 
@@ -99,9 +154,24 @@ function frame(now) {
   }
   if (steps === MAX_STEPS) acc = 0;      // too far behind to catch up: drop time
 
+  // everything the game draws is in 800x500; this is what makes it land on a
+  // bigger canvas than that when DLSS5 is on
+  const ss = dlssScale();
+  ctx.setTransform(ss, 0, 0, ss, 0, 0);
+  ctx.imageSmoothingQuality = 'high';
+  game.smooth = ss > 1;
   game.draw(ctx);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  game.tickPerf(performance.now() - t0);
+  const workMs = performance.now() - t0;
+  game.tickPerf(workMs);
+
+  // the supersample watch: too slow for long enough and it steps down, fast
+  // for long enough and it climbs back up
+  if (settings.get('dlss')) {
+    if (workMs > 20) { ssSlow++; ssFast = 0; } else if (workMs < 11) { ssFast++; ssSlow = 0; } else { ssSlow = 0; ssFast = 0; }
+    if (ssSlow >= 90 && ssLevel < SS_STEPS.length - 1) { ssLevel++; ssSlow = 0; applyBacking(); } else if (ssFast >= 600 && ssLevel > 0) { ssLevel--; ssFast = 0; applyBacking(); }
+  }
 
   requestAnimationFrame(frame);
 }
