@@ -461,7 +461,9 @@ export class Net {
       }
       peer.input.placeAim(g, p);
       p.update(dt, g, peer.input);
-      g.checkLinksFor?.(p, peer);
+      // the stair cooldown must actually cool, or a guest gets exactly one
+      // hatch ride per game and then walks on the stairs forever
+      g.checkLinksFor?.(p, peer, dt);
       this._remoteInteract(peer, dt);
       peer.input.endFrame();
       if (p.dead && !p._deathTold) {

@@ -58,6 +58,15 @@ const before = p.current;
 p.swapActive();
 ok(p.current !== before, 'swap between the two guns is dead');
 
+// the mouse wheel must never duplicate a gun into both slots -- that is the
+// bug that used to orphan a third weapon outside the slots and let the kit
+// grow past two
+for (let i = 0; i < 7; i++) p.cycle(i % 2 ? 1 : -1);
+ok(p.ownedWeapons().length === 2, 'wheel cycling grew the kit');
+ok(new Set(p.slots.filter(Boolean)).size === 2, 'the same gun ended up in both slots');
+ok(p.slots.filter(Boolean).every((id) => p.loadout[id].owned), 'a slot holds a gun the kit does not own');
+ok(p.ownedWeapons().every((id) => p.slots.includes(id)), 'an owned gun lives outside the two slots');
+
 // and the HUD-facing weapon count never exceeds two for long
 for (const w of ['garand', 'stg44', 'sawedoff', 'python']) p.giveWeapon(w);
 ok(p.ownedWeapons().length === 2, 'rapid pickups grew the kit');

@@ -346,6 +346,19 @@ export class Player {
   equip(id, instant = false) {
     if (!this.loadout[id] || !this.loadout[id].owned) return false;
     if (this.slots[this.active] === id) return false;
+    const other = this.active === 0 ? 1 : 0;
+    if (this.slots[other] === id) {
+      // it is in your other hand: change hands, never stamp it into both
+      // slots at once (that orphaned the third gun and grew the kit)
+      this.active = other;
+      this.reloading = false;
+      this.reloadTimer = 0;
+      this.swapTimer = instant ? 0 : 0.35;
+      this.swapTotal = this.swapTimer;
+      this.fireTimer = Math.max(this.fireTimer, this.swapTimer);
+      audio.reload(2);
+      return true;
+    }
     this.slots[this.active] = id;
     this.reloading = false;
     this.reloadTimer = 0;

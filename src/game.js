@@ -485,7 +485,8 @@ export class Game {
     return best ?? this.player;
   }
 
-  checkLinksFor(p, rec) {
+  checkLinksFor(p, rec, dt = 0) {
+    rec.linkCd = Math.max(0, (rec.linkCd ?? 0) - dt);
     const on = this.map.linksOn(p.floor ?? this.map.floor).find((l) => {
       const at = this.map.linkPos(l, p.floor ?? this.map.floor);
       return Math.abs(p.pos.x - at.x) <= 14 && Math.abs(p.pos.y - at.y) <= 14;

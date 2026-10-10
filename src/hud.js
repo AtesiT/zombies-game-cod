@@ -629,7 +629,11 @@ export class HUD {
       colour: p.reloading ? INK_DIM : lowMag ? `rgba(196,70,58,${0.65 + this.ammoWarn * 0.35})` : INK,
       align: 'right',
     });
-    text(ctx, ` / ${s.reserve}`, x, yAmmo - 3, {
+    // the reserve hangs to the LEFT of the big magazine number: right-aligning
+    // both at the same x made them print on top of each other
+    ctx.font = 'bold 24px "Courier New", monospace';
+    const magW = ctx.measureText(magStr).width;
+    text(ctx, `/ ${s.reserve}`, x - magW - 6, yAmmo - 3, {
       font: 'bold 13px "Courier New", monospace', colour: INK_DIM, align: 'right',
     });
     text(ctx, d.name.toUpperCase(), x, yAmmo - 20, {
@@ -644,7 +648,9 @@ export class HUD {
     // the second carried gun, dimmed, above the active one
     const other = p.active === 0 ? 1 : 0;
     const otherId = p.slots[other];
-    const yOther = packed ? yAmmo - 44 : yAmmo - 34;
+    // stacked clear of the active gun's name (and of the PACK-A-PUNCHED line
+    // when punched): these rows used to print into each other
+    const yOther = packed ? yAmmo - 56 : yAmmo - 42;
     if (otherId) {
       const od = game.packedDef(otherId);
       const os = p.loadout[otherId];

@@ -406,6 +406,11 @@ export class TouchControls {
   update(game) {
     this.game = game;          // the panel has to know when a list is open
     if (!this.enabled) return;
+    // buttons appear when they mean something: a phone screen is too small
+    // for a permanent row of maybe-useful circles. Knife, fire and sprint are
+    // always live; the rest surface exactly when there is a job for them.
+    this._visT = (this._visT ?? 0) - 1;
+    if (this._visT <= 0) { this._visT = 9; this._syncVisibility(game); }
     const inp = this.input;
     // walking: the stick is a vector, the keyboard still works alongside it
     inp.stick = this.move;
@@ -440,6 +445,39 @@ export class TouchControls {
       if (d < bestD) { bestD = d; best = z; }
     }
     return best;
+  }
+
+  /**
+   * Contextual buttons. The knife is always within thumb's reach -- it is the
+   * one tool that never stops being useful -- and so are fire and sprint.
+   * Everything else shows up only when there is a job for it: the F button
+   * when something nearby can actually be used, R when the magazine is dry
+   * enough to matter, G/H only while you carry the thing, Q only once you
+   * carry two guns.
+   */
+  _syncVisibility(game) {
+    if (!this._built) return;
+    const p = game?.player;
+    if (!p) return;
+    let offer = null;
+    try { offer = game.interactionFor ? game.interactionFor(p) : null; } catch { offer = null; }
+    const d = p.def, s = p.slot, slots = p.slots ?? [];
+    const vis = {
+      fire: true,
+      knife: true,
+      sprint: true,
+      interact: !!offer,
+      reload: !!p.reloading || !!(s && d && s.mag < d.mag && s.reserve > 0),
+      swap: !!slots[0] && !!slots[1],
+      grenade: (p.grenades ?? 0) > 0,
+      medkit: (p.medkits ?? 0) > 0 && p.hp < (p.maxHp ?? 100),
+    };
+    for (const [id, on] of Object.entries(vis)) {
+      const el = this.buttons[id];
+      if (!el) continue;
+      const want = on ? 'flex' : 'none';
+      if (el.style.display !== want) el.style.display = want;
+    }
   }
 
   show(on) {
