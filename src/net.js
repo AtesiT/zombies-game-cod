@@ -134,7 +134,17 @@ export class Net {
     this._buffer = null;           // guest: newest snapshot waiting to be applied
     this._targets = new Map();     // guest: entity id -> interpolation target
     this.onStatus = opts.onStatus ?? (() => {});
+    // a few lines of what the net is doing: a lobby that will not let you in
+    // is unbearable without them
+    this.logLines = [];
     this._status();
+  }
+
+  /** One line of on-screen breadcrumb, newest last, eight lines deep. */
+  log(line) {
+    const t = new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+    this.logLines.push(`${t}  ${line}`);
+    if (this.logLines.length > 8) this.logLines.shift();
   }
 
   get active() { return this.state === 'open'; }
@@ -157,7 +167,13 @@ export class Net {
       send: (o) => { try { ws.send(JSON.stringify(o)); } catch { /* closed */ } },
       close: () => { try { ws.close(); } catch { /* closed */ } },
     };
-    ws.onopen = () => { this._attach(t); this._hello(); };
+    ws.onopen = () => {
+      this._attach(t);
+      // nothing is said until the player picks HOST or JOIN: connecting only
+      // to read the room list must never make you the host of a room
+      if (this._pending) { const w = this._pending; this._pending = null; this._sayHello(w); }
+      this.log('linked');
+    };
     ws.onmessage = (e) => {
       let m = null;
       try { m = JSON.parse(typeof e.data === 'string' ? e.data : ''); } catch { return; }
@@ -179,8 +195,15 @@ export class Net {
   /** Used by the harness: two Nets wired straight to each other. */
   attach(fake) { this._attach(fake); return this; }
 
-  _hello() {
-    this.transport?.send({ t: 'hello', room: this.room, name: this.name });
+  /**
+   * Announce yourself, and say which side of the table you sat down on. The
+   * relay used to decide who the host was by who connected first, which meant
+   * a phone that only opened the room list ended up running the room.
+   */
+  _sayHello(want) {
+    if (!this.transport) { this._pending = want; return; }
+    this.transport.send({ t: 'hello', room: this.room, name: this.name, want });
+    this.log(want === 'host' ? 'hosting...' : 'joining...');
   }
 
   hostGame(room, name) {
@@ -188,8 +211,7 @@ export class Net {
     this.name = name || this.name;
     this.role = 'host';
     this.isHost = true;
-    if (this.active) this._hello();
-    else if (!this.url) { /* offline: hosting for nobody is still fine */ }
+    this._sayHello('host');
     this._status();
   }
 
@@ -198,7 +220,7 @@ export class Net {
     this.name = name || this.name;
     this.role = 'guest';
     this.isHost = false;
-    if (this.active) this._hello();
+    this._sayHello('join');
     this._status();
   }
 
@@ -236,12 +258,17 @@ export class Net {
       this.hostId = m.host ? m.you : (m.peers?.find((p) => p.host)?.id ?? 0);
       this.roster = [{ id: m.you, name: m.name, host: !!m.host, you: true }, ...(m.peers ?? [])];
       this.state = 'open';
+      this.log(m.host ? 'you are the host' : m.busy ? 'room already hosted' : `joined, host is ${m.peers?.[0]?.name ?? '?'}`);
+      if (m.busy) { this.error = 'SOMEBODY ELSE IS HOSTING'; this.role = 'guest'; this.isHost = false; }
       // the local body takes the id the relay just handed us, so it never
       // collides with the id a guest arrives under
       if (this.game?.player) { this.game.player.netId = m.you; this.game.player.name = m.name; }
       // a guest announces himself to the host; the host lets him straight in,
       // whatever the round counter says
-      if (!this.isHost && this.role === 'guest') this.send(this.hostId, { m: 'hi', name: this.name });
+      if (!this.isHost && this.role === 'guest') {
+        this.log('asking the host in');
+        this.send(this.hostId, { m: 'hi', name: this.name });
+      }
       this._status();
       return;
     }
@@ -284,7 +311,7 @@ export class Net {
   _hostMsg(m) {
     const from = m.from;
     if (!from) return;
-    if (m.m === 'hi') return this._admit(from, m.name);
+    if (m.m === 'hi') { this.log(`${m.name ?? 'somebody'} is joining`); return this._admit(from, m.name); }
     if (m.m === 'who') { this.send(from, { m: 'hostis', host: this.you }); return; }
     const peer = this.peers.get(from);
     if (!peer) return;
@@ -382,6 +409,7 @@ export class Net {
     if (m.m === 'welcome') {
       this.you = m.you;
       this.hostId = m.host ?? this.hostId;
+      this.log('you are in');
       this._names = m.names ?? [];
       this._apply(m.snap, true);
       g.started = true;
@@ -493,6 +521,9 @@ export class Net {
         // Aim is the one thing you must not wait for: it is read straight off
         // the local cursor (or the local aim stick) rather than out of the
         // snapshot, or every shot would land a round trip late.
+        // the whole move vector, not just the stick: a guest on a keyboard
+        // presses WASD, and those keys used to stop at the edge of the wire
+        const walk = inp.moveVector?.() ?? { x: 0, y: 0 };
         const mw = inp.mouse ? g.screenToWorld(inp.mouse.x, inp.mouse.y) : null;
         const aim = (p && mw)
           ? Math.atan2(mw.y - p.pos.y, mw.x - p.pos.x)
@@ -500,7 +531,7 @@ export class Net {
         this._localAim = aim;
         this.send(this.hostId, {
           m: 'in',
-          mx: r2(inp.stick?.x ?? 0), my: r2(inp.stick?.y ?? 0),
+          mx: r2(walk.x ?? 0), my: r2(walk.y ?? 0),
           a: r2(aim),
           f: inp.mouse?.down ? 1 : 0,
           fp: this._fireEdge ? 1 : 0,

@@ -2133,6 +2133,13 @@ export class Game {
     const inp = this.input;
     if (!inp) return;
     if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
+    // keep the room list alive while it is on screen, and re-ask whenever the
+    // link comes up -- the first request is usually sent before the socket is
+    this._roomT = (this._roomT ?? 0) - dt;
+    if ((this.scene === 'rooms' || this.scene === 'mp') && this._roomT <= 0 && this.net.active) {
+      this._roomT = 1.5;
+      this.net.askForRooms();
+    }
     const rows = menuRows(this.scene, this);
     const n = rows.length;
     const up = inp.wasPressed('ArrowUp', 'KeyW');
@@ -2161,14 +2168,14 @@ export class Game {
     switch (row.id) {
       case 'solo': this.net.role = 'off'; this.begin(); break;
       case 'mp':
-        this.scene = 'mp'; this.menuIndex = 0;
-        if (this._ensureRelay()) this.net.askForRooms();
+        this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0;
+        this._ensureRelay();
         break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'host': this._startHost(); break;
       case 'join':
-        this.scene = 'rooms'; this.menuIndex = 0;
-        if (this._ensureRelay()) this.net.askForRooms();
+        this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0;
+        this._ensureRelay();
         break;
       case 'name': this._askName(); break;
       case 'addr': this._askAddress(); break;
@@ -2202,12 +2209,22 @@ export class Game {
   }
 
   _onNetStatus(net) {
+    if (net.error === 'SOMEBODY ELSE IS HOSTING' && this.scene !== 'waiting') {
+      this.netMsg = net.error;
+      return;
+    }
     if (net.state === 'error') {
       this.netMsg = net.error === 'CANNOT REACH'
         ? 'CANNOT REACH THE RELAY — RUN IT WITH:  node server.mjs'
         : (net.error ?? null);
     } else if (net.state === 'open') {
       this.netMsg = null;
+      if (this._pendingRoom) {
+        const room = this._pendingRoom;
+        this._pendingRoom = null;
+        this._joinRoom(room);
+        return;
+      }
       if (this.scene === 'rooms' || this.scene === 'mp') net.askForRooms();
     } else if (net.state === 'closed') {
       this.netMsg = null;
@@ -2250,11 +2267,12 @@ export class Game {
 
   _joinRoom(room) {
     const net = this.net;
-    if (!this._ensureRelay()) return;
+    if (!this._ensureRelay()) { this._pendingRoom = room; return; }
     net.joinGame(room.id, net.name || 'PLAYER');
     this.scene = 'waiting';
     this.netMsg = null;
     this._joinT = 0;
+    this._pendingRoom = null;
   }
 
   /** Waiting to be let in: the host answers with the world as it stands. */
@@ -2263,6 +2281,12 @@ export class Game {
     if (this.net.state === 'closed' || this.net.error) {
       this.scene = 'rooms';
       this.netMsg = this.net.error ?? 'COULD NOT JOIN';
+      return;
+    }
+    // eight seconds of nothing is not a slow host, it is a broken one
+    if (this._joinT > 8) {
+      this.scene = 'rooms';
+      this.netMsg = 'NO ANSWER FROM THE HOST — TRY AGAIN';
       return;
     }
     if (this.input.wasPressed('Escape')) { this.net.close(); this.scene = 'rooms'; }

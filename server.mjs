@@ -137,6 +137,12 @@ class Sock {
   }
 }
 
+/**
+ * Join a room. `want` is what the player actually pressed: whoever says
+ * "host" is the host, whoever says "join" is not -- no matter who connected
+ * first. Getting this wrong used to mean the phone that only wanted to *look*
+ * at the room list became the host, and then nobody could join anybody.
+ */
 function joinRoom(s, id, info = {}) {
   leaveRoom(s);
   if (!ROOMS.has(id)) {
@@ -148,12 +154,14 @@ function joinRoom(s, id, info = {}) {
   s.room = id;
   s.name = String(info.name || '').slice(0, 12) || `PLAYER ${s.id % 100}`;
   const m = META.get(id);
-  // the longest-standing socket in the room is the host; if he leaves, the
-  // next one takes over so a round does not evaporate under the survivors
-  if (![...set].some((o) => o.id === m.host)) m.host = Math.min(...[...set].map((o) => o.id));
+  const hostAlive = [...set].some((o) => o.id === m.host);
+  const wants = info.want === 'host';
+  // somebody else is already running this room: you can watch, you cannot run
+  const busy = wants && hostAlive && m.host !== s.id;
+  if (!busy && (!hostAlive || wants)) m.host = s.id;
   m.players = set.size;
   const youHost = m.host === s.id;
-  s.send({ t: 'joined', you: s.id, host: youHost, room: id, name: s.name, peers: peerList(id, s) });
+  s.send({ t: 'joined', you: s.id, host: youHost, busy, room: id, name: s.name, peers: peerList(id, s) });
   broadcast(id, { t: 'peer', peer: { id: s.id, name: s.name, host: youHost } }, s);
 }
 
@@ -203,12 +211,17 @@ server.on('upgrade', (req, socket) => {
 
   const s = new Sock(socket);
   s.onMessage = (msg) => {
+    // looking at the list of rooms must not put you in one -- a browser that
+    // only wanted to browse used to end up as the host of an empty room
+    if (msg.t === 'rooms') { s.send({ t: 'rooms', rooms: listRooms() }); return; }
     if (msg.t === 'hello') {
-      joinRoom(s, String(msg.room || 'NACHT').slice(0, 24), { name: String(msg.name || '').slice(0, 12) });
+      joinRoom(s, String(msg.room || 'NACHT').slice(0, 24), {
+        name: String(msg.name || '').slice(0, 12),
+        want: msg.want === 'host' ? 'host' : 'join',
+      });
       return;
     }
     if (!s.room) return;
-    if (msg.t === 'rooms') { s.send({ t: 'rooms', rooms: listRooms() }); return; }
     if (msg.t === 'state') {                    // the host advertises its room
       const m = META.get(s.room);
       if (m && m.host === s.id) { m.round = msg.round ?? m.round; m.name = msg.name ?? m.name; }

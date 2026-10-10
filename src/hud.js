@@ -8,6 +8,7 @@ import { loadBoard } from './achievements.js';
 import { T } from './art.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { MAX_PLAYERS } from './net.js';
+import { isPortrait, isTouchDevice } from './touch.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
@@ -1046,6 +1047,28 @@ export function drawMenu(ctx, game, w, h) {
     hy += 14;
   }
 
+  // what the net is actually doing: a lobby that will not let you in is
+  // unbearable when it will not say why
+  const trail = net?.logLines ?? [];
+  if (trail.length && (game.scene === 'mp' || game.scene === 'rooms' || game.scene === 'waiting')) {
+    const n = Math.min(6, trail.length);
+    let ly = h - 16;
+    for (let i = n - 1; i >= 0; i--) {
+      text(ctx, trail[trail.length - n + i], 12, ly, {
+        font: 'bold 9px "Courier New", monospace', colour: 'rgba(150,160,180,0.7)',
+      });
+      ly -= 11;
+    }
+  }
+
+  // held upright on a phone: the game wants to be the other way round
+  if (isTouchDevice() && isPortrait()) {
+    const blink = 0.6 + Math.sin(game.time * 3) * 0.4;
+    text(ctx, 'TURN THE PHONE SIDEWAYS', w / 2, 34, {
+      font: 'bold 13px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+    });
+  }
+
   // controls, but only on the front page where there is room for them
   if (game.scene === 'menu') {
     const lines = [
@@ -1090,7 +1113,17 @@ export function drawSettings(ctx, game, w, h) {
   ctx.fillStyle = 'rgba(6,7,10,0.86)';
   ctx.fillRect(0, 0, w, h);
 
-  const cw = 420, ch = 40 + SETTING_DEFS.length * 24 + 54;   // 24 keeps every row on screen
+  // the list scrolls now: there are more knobs than there is screen, and a
+  // panel that runs off the top is a setting you cannot reach
+  const ROW = 24, HEAD = 52, FOOT = 46;
+  const rows = SETTING_DEFS.length;
+  const maxRows = Math.max(5, Math.floor((h - 40 - HEAD - FOOT) / ROW));
+  const shown = Math.min(rows, maxRows);
+  const over = rows - shown;
+  const top = over > 0
+    ? Math.max(0, Math.min(over, game.settingsIndex - Math.floor(shown / 2)))
+    : 0;
+  const cw = 420, ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
 
   ctx.fillStyle = '#14171d';
@@ -1108,8 +1141,13 @@ export function drawSettings(ctx, game, w, h) {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
   });
 
-  let y = cy + 52;
-  for (let i = 0; i < SETTING_DEFS.length; i++) {
+  // the rows are clipped to the panel, so a half-scrolled one cannot spill
+  ctx.beginPath();
+  ctx.rect(cx + 2, cy + HEAD - 16, cw - 4, shown * ROW + 12);
+  ctx.clip();
+
+  let y = cy + HEAD;
+  for (let i = top; i < top + shown; i++) {
     const d = SETTING_DEFS[i];
     const sel = i === game.settingsIndex;
     if (sel) {
@@ -1152,7 +1190,19 @@ export function drawSettings(ctx, game, w, h) {
         colour: sel ? GOLD : INK_DIM, align: 'right',
       });
     }
-    y += 24;
+    y += ROW;
+  }
+  ctx.restore();      // drop the clip
+  ctx.save();
+
+  if (over > 0) {     // a thin marker, so you can tell there is more below
+    const tx = cx + cw - 8, th = shown * ROW;
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    ctx.fillRect(tx, cy + HEAD - 14, 3, th + 6);
+    const kh = Math.max(10, Math.round((th + 6) * (shown / rows)));
+    const ky = cy + HEAD - 14 + Math.round((th + 6 - kh) * (top / over));
+    ctx.fillStyle = 'rgba(240,217,138,0.45)';
+    ctx.fillRect(tx, ky, 3, kh);
   }
 
   // hint line for whatever is selected

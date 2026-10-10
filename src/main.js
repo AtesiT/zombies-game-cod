@@ -20,6 +20,8 @@ const game = new Game(input);
 // ---------------------------------------------------------------------------
 const wrap = document.getElementById('stage');
 
+const SIZE_MULTS = [0.82, 1, 1.18];
+
 function resize() {
   const availW = window.innerWidth;
   const availH = window.innerHeight;
@@ -31,6 +33,8 @@ function resize() {
   canvas.style.height = `${h}px`;
   wrap.style.width = `${w}px`;
   wrap.style.height = `${h}px`;
+  // the buttons live in the same 800x500 space the game draws in
+  touch.layout(w, h);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -42,9 +46,10 @@ resize();
 const touch = new TouchControls(input, { mount: wrap });
 function syncTouch() {
   const mode = settings.get('touch');
+  touch.setSize(SIZE_MULTS[settings.get('touchSize') ?? 1]);
   touch.show(mode === 2 || (mode === 0 && isTouchDevice()));
 }
-settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist') syncTouch(); });
+settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch(); });
 syncTouch();
 
 // first gesture unlocks WebAudio

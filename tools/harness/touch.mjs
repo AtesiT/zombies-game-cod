@@ -175,6 +175,67 @@ end(50);
 ok(input.mouse.down === false && input.mouse.released === true, 'a tap never lifted');
 input.endFrame();
 
+// --------------------------------------------------------------- 7. layout --
+// The panel is laid out in the same 800x500 space the game draws in, so a
+// four-inch screen gets a proportionally smaller panel -- and on a short one
+// nothing may land on top of the walking stick.
+const boxOf = (el) => {
+  const st = el.style;
+  const w = parseFloat(st.width), h = parseFloat(st.height);
+  const right = st.right !== undefined && st.right !== 'auto' ? parseFloat(st.right) : null;
+  const left = st.left !== undefined && st.left !== 'auto' ? parseFloat(st.left) : null;
+  const bottom = st.bottom !== undefined && st.bottom !== 'auto' ? parseFloat(st.bottom) : null;
+  const top = st.top !== undefined && st.top !== 'auto' ? parseFloat(st.top) : null;
+  const x0 = left !== null ? left : 800 - right - w;
+  const y0 = top !== null ? top : 500 - bottom - h;
+  return { x0, y0, x1: x0 + w, y1: y0 + h };
+};
+const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+
+for (const [sw, sh, wantCompact] of [[800, 500, false], [480, 300, true], [1600, 1000, false]]) {
+  touch.layout(sw, sh);
+  const boxes = { move: boxOf(touch.left.base), aim: boxOf(touch.right.base) };
+  for (const [id, el] of Object.entries(touch.buttons)) boxes[id] = boxOf(el);
+  const compact = touch._geo.S < 132 * (touch._size ?? 1);
+  ok(compact === wantCompact, `a ${sw}x${sh} stage picked the ${compact ? 'compact' : 'full'} layout`);
+  for (const [id, b] of Object.entries(boxes)) {
+    ok(b.x0 >= -1 && b.y0 >= -1 && b.x1 <= 801 && b.y1 <= 501,
+      `${id} hangs off a ${sw}x${sh} stage: ${JSON.stringify(b)}`);
+  }
+  for (const [id, b] of Object.entries(boxes)) {
+    if (id === 'move' || id === 'aim') continue;
+    ok(!overlaps(boxes.move, b), `${id} sits on top of the walking stick at ${sw}x${sh}`);
+    ok(!overlaps(boxes.aim, b), `${id} sits on top of the aiming stick at ${sw}x${sh}`);
+  }
+  for (const [id, b] of Object.entries(boxes)) {
+    if (id === 'move' || id === 'aim' || id === 'fire' || id === 'pause') continue;
+    for (const [id2, b2] of Object.entries(boxes)) {
+      if (id2 <= id || id2 === 'move' || id2 === 'aim' || id2 === 'fire' || id2 === 'pause') continue;
+      ok(!overlaps(b, b2), `${id} and ${id2} overlap at ${sw}x${sh}`);
+    }
+  }
+}
+
+// the player's own size choice
+touch.layout(800, 500);
+const full = touch._geo.F;
+touch.setSize(0.82);
+ok(touch._geo.F < full, 'SMALL did not shrink the buttons');
+touch.setSize(1.18);
+ok(touch._geo.F > full, 'LARGE did not grow the buttons');
+touch.setSize(1);
+
+// and the stick reads its radius off the real box, so scaling cannot lie
+touch.layout(400, 250);
+touch.left.base._rect = { left: 0, top: 0, width: 50, height: 50 };   // 50 px on screen
+input.endFrame();
+start(touch.left.base, 25 + 50, 25, 60);      // right to the very edge
+ok(Math.abs(touch.move.x - 1) < 0.001, `a thumb at the rim of a scaled stick gave ${touch.move.x}`);
+end(60);
+touch.layout(800, 500);
+touch.left.base._rect = { left: 10, top: 250, width: 132, height: 132 };
+input.endFrame();
+
 // --------------------------------------------------------------- 5. hiding --
 start(touch.buttons.fire, 0, 0, 40);
 start(touch.left.base, 76 + 60, 316, 41);
@@ -190,6 +251,10 @@ const def = SETTING_DEFS.find((d) => d.id === 'touch');
 ok(def && def.min === 0 && def.max === 2 && def.def === 0, 'ON-SCREEN CONTROLS setting is missing');
 ok(def && def.fmt(0) === 'AUTO' && def.fmt(2) === 'ON', 'touch setting labels are wrong');
 ok(SETTING_DEFS.some((d) => d.id === 'touchAssist'), 'AIM ASSIST setting is missing');
+const szDef = SETTING_DEFS.find((d) => d.id === 'touchSize');
+ok(szDef && szDef.min === 0 && szDef.max === 2, 'CONTROL SIZE setting is missing');
+ok(szDef && szDef.fmt(0) === 'SMALL' && szDef.fmt(1) === 'NORMAL' && szDef.fmt(2) === 'LARGE',
+  'CONTROL SIZE labels are wrong');
 ok(isTouchDevice() === true, 'the harness phone was not detected as a touch device');
 
 // ------------------------------------------------------------------- report --

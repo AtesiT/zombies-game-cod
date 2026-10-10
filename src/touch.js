@@ -3,15 +3,19 @@
 // Input object the keyboard and the mouse feed, so nothing else in the game
 // has to know a phone is involved -- and the same panel works whether the
 // phone is playing on its own or joined to somebody's game over the network.
+//
+// The panel is laid out in *virtual* 800x500 units -- the same space the game
+// draws in -- and the whole layer is then scaled to whatever size the stage
+// ended up. A four-inch screen therefore gets a proportionally smaller panel
+// instead of a full-size one hanging off the edges, and on short screens the
+// layout switches to a compact grid so the buttons cannot collide with the
+// walking stick.
 
-const SIZE = {
-  stick: 132,        // outer diameter of a stick, in CSS pixels
-  knob: 54,
-  fire: 92,
-  small: 56,
+const GEO = {
+  pad: 14,
+  normal: { stick: 132, knob: 54, fire: 92, small: 56, gap: 8 },
+  compact: { stick: 100, knob: 42, fire: 74, small: 46, gap: 6 },
 };
-
-const DEAD = 0.14;   // ignore a thumb just resting on the stick
 
 const hex = (n) => `#${n.toString(16).padStart(6, '0')}`;
 
@@ -27,6 +31,12 @@ const BUTTONS = [
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
 ];
 
+// the small ones, laid out in a grid to the left of FIRE: [column, row]
+const GRID = {
+  interact: [0, 0], reload: [1, 0], knife: [2, 0],
+  swap: [0, 1], sprint: [1, 1], grenade: [2, 1], medkit: [0, 2],
+};
+
 export class TouchControls {
   /**
    * @param {object} input  the game's Input instance
@@ -38,8 +48,11 @@ export class TouchControls {
     this.aim = { x: 0, y: 0 };       // -1..1, from the right stick
     this.held = new Set();           // buttons currently down
     this.enabled = false;
-    this._touches = new Map();       // touch id -> 'move' | 'aim' | button id
+    this._touches = new Map();       // touch id -> 'move' | 'aim' | 'tap' | button id
     this._built = false;
+    this._stageW = 800;
+    this._stageH = 500;
+    this._size = 1;                  // the player's own multiplier
 
     this.root = opts.mount ?? (typeof document !== 'undefined' ? document.body : null);
     if (!this.root) return;
@@ -59,87 +72,58 @@ export class TouchControls {
     this._built = true;
 
     const panel = this._el('div', {
-      position: 'absolute', left: '0', top: '0', width: '100%', height: '100%',
+      position: 'absolute', left: '0', top: '0',
+      width: '800px', height: '500px',        // virtual units, scaled by layout()
+      transformOrigin: '0 0', transform: `scale(${this._stageW / 800})`,
       touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none',
       WebkitTapHighlightColor: 'transparent', zIndex: '40', display: 'none',
     });
     this.panel = panel;
 
-    // ---- the walking stick -------------------------------------------------
     const mk = (label) => {
       const base = this._el('div', {
-        position: 'absolute', width: `${SIZE.stick}px`, height: `${SIZE.stick}px`,
-        borderRadius: '50%', background: 'rgba(18,20,24,0.34)',
-        border: '2px solid rgba(210,220,235,0.22)', boxSizing: 'border-box',
+        position: 'absolute', borderRadius: '50%', boxSizing: 'border-box',
+        background: 'rgba(18,20,24,0.34)',
+        border: '2px solid rgba(210,220,235,0.22)',
       });
       const knob = this._el('div', {
-        position: 'absolute', width: `${SIZE.knob}px`, height: `${SIZE.knob}px`,
-        borderRadius: '50%', background: 'rgba(226,234,244,0.30)',
-        border: '2px solid rgba(226,234,244,0.45)', boxSizing: 'border-box',
-        left: `${(SIZE.stick - SIZE.knob) / 2}px`, top: `${(SIZE.stick - SIZE.knob) / 2}px`,
+        position: 'absolute', borderRadius: '50%', boxSizing: 'border-box',
+        background: 'rgba(226,234,244,0.30)',
+        border: '2px solid rgba(226,234,244,0.45)',
         pointerEvents: 'none',
       });
       base.appendChild(knob);
-      if (label) {
-        base.appendChild(this._el('div', {
-          position: 'absolute', width: '100%', textAlign: 'center', bottom: '-18px',
-          color: 'rgba(210,220,235,0.4)', font: 'bold 10px "Courier New", monospace',
-          pointerEvents: 'none',
-        }, label));
-      }
-      return { base, knob };
+      const tag = this._el('div', {
+        position: 'absolute', width: '100%', textAlign: 'center',
+        color: 'rgba(210,220,235,0.4)', font: 'bold 10px "Courier New", monospace',
+        pointerEvents: 'none',
+      }, label);
+      base.appendChild(tag);
+      return { base, knob, tag };
     };
 
-    const left = mk('MOVE');
-    left.base.style.left = '18px';
-    left.base.style.bottom = '18px';
-    panel.appendChild(left.base);
-
-    const right = mk('AIM');
-    right.base.style.right = `${SIZE.fire + 40}px`;
-    right.base.style.bottom = '18px';
-    panel.appendChild(right.base);
-
-    this.left = left;
-    this.right = right;
+    this.left = mk('MOVE');
+    this.right = mk('AIM');
+    panel.appendChild(this.left.base);
+    panel.appendChild(this.right.base);
 
     // ---- the buttons -------------------------------------------------------
-    const byId = {};
+    this.buttons = {};
     for (const b of BUTTONS) {
       const d = this._el('div', {
-        position: 'absolute',
-        width: `${b.big ? SIZE.fire : SIZE.small}px`,
-        height: `${b.big ? SIZE.fire : SIZE.small}px`,
-        borderRadius: '50%', boxSizing: 'border-box',
-        background: `rgba(${[(b.colour >> 16) & 255, (b.colour >> 8) & 255, b.colour & 255].join(',')},${b.big ? 0.42 : 0.32})`,
+        position: 'absolute', borderRadius: '50%', boxSizing: 'border-box',
+        background: `rgba(${(b.colour >> 16) & 255},${(b.colour >> 8) & 255},${b.colour & 255},${b.big ? 0.42 : 0.32})`,
         border: `2px solid ${hex(b.colour)}`,
         color: '#e8eef6', font: `bold ${b.big ? 13 : 15}px "Courier New", monospace`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }, b.label);
       panel.appendChild(d);
-      byId[b.id] = d;
+      this.buttons[b.id] = d;
     }
-    // fan the small ones around the fire button
-    const place = (id, dx, dy) => {
-      const d = byId[id];
-      d.style.right = `${dx}px`;
-      d.style.bottom = `${dy}px`;
-    };
-    byId.fire.style.right = '18px';
-    byId.fire.style.bottom = '18px';
-    place('interact', 18 + SIZE.fire + 12, 18 + 6);
-    place('reload', 18 + SIZE.fire + 74, 18 + 4);
-    place('swap', 18 + SIZE.fire + 12, 18 + SIZE.small + 18);
-    place('sprint', 18 + SIZE.fire + 74, 18 + SIZE.small + 14);
-    place('grenade', 18 + SIZE.fire + 132, 18 + 6);
-    place('medkit', 18 + SIZE.fire + 132, 18 + SIZE.small + 14);
-    place('knife', 18 + SIZE.fire + 190, 18 + 6);
-    this.buttons = byId;
 
     // ---- the pause / menu corner ------------------------------------------
     const pause = this._el('div', {
-      position: 'absolute', right: '14px', top: '14px',
-      width: '44px', height: '30px', borderRadius: '6px',
+      position: 'absolute', borderRadius: '6px',
       background: 'rgba(18,20,24,0.45)', border: '1px solid rgba(210,220,235,0.25)',
       color: '#cfe0ee', font: 'bold 13px "Courier New", monospace',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -148,7 +132,77 @@ export class TouchControls {
     this.buttons.pause = pause;
 
     this.root.appendChild(panel);
+    this._measure();
     this._wire();
+  }
+
+  /** Sizes and positions everything, in virtual 800x500 units. */
+  _measure() {
+    const k = this._size;
+    const small = this._compact();
+    const g = small ? GEO.compact : GEO.normal;
+    const S = g.stick * k, K = g.knob * k, F = g.fire * k, B = g.small * k;
+    const gap = g.gap * k, pad = GEO.pad;
+    this._geo = { S, K, F, B, gap, pad };
+
+    const place = (el, w, h, right, bottom) => {
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+      if (right !== undefined) { el.style.right = `${right}px`; el.style.left = 'auto'; }
+      if (bottom !== undefined) { el.style.bottom = `${bottom}px`; el.style.top = 'auto'; }
+    };
+
+    // the walking stick, bottom left
+    place(this.left.base, S, S, undefined, pad);
+    this.left.base.style.left = `${pad}px`;
+    this.left.knob.style.width = `${K}px`;
+    this.left.knob.style.height = `${K}px`;
+    this.left.tag.style.bottom = '-15px';
+    this._resetKnob(this.left);
+
+    // the aiming stick, above the button grid on the right
+    place(this.right.base, S, S, pad + F + gap, pad + 3 * (B + gap));
+    this.right.knob.style.width = `${K}px`;
+    this.right.knob.style.height = `${K}px`;
+    this.right.tag.style.bottom = '-15px';
+    this._resetKnob(this.right);
+
+    // FIRE, bottom right
+    place(this.buttons.fire, F, F, pad, pad);
+    // the rest, in a grid beside it
+    for (const [id, [col, row]] of Object.entries(GRID)) {
+      place(this.buttons[id], B, B, pad + F + gap + col * (B + gap), pad + row * (B + gap));
+    }
+    place(this.buttons.pause, 44 * k, 30 * k, pad, undefined);
+    this.buttons.pause.style.top = `${pad}px`;
+    for (const b of BUTTONS) {
+      this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * k}px`;
+    }
+  }
+
+  /** Screens this small get the compact layout -- no button lands on a stick. */
+  _compact() {
+    return this._stageH < 430 || this._stageW < 620;
+  }
+
+  /** The player's own size multiplier (SETTINGS -> CONTROL SIZE). */
+  setSize(mult) {
+    this._size = mult || 1;
+    if (this._built) this._measure();
+  }
+
+  /**
+   * Called whenever the stage is resized: the panel lives in the same 800x500
+   * space the game draws in, so it scales by exactly the same amount.
+   */
+  layout(stageW, stageH) {
+    this._stageW = stageW || 800;
+    this._stageH = stageH || 500;
+    if (!this.panel) return;
+    const k = this._stageW / 800;
+    this.panel.style.transform = `scale(${k})`;
+    const wasCompact = this._geo && this._geo.S === GEO.compact.stick * this._size;
+    if (this._compact() !== !!wasCompact) this._measure();
   }
 
   // ------------------------------------------------------------------ input --
@@ -157,21 +211,25 @@ export class TouchControls {
     if (!panel || !panel.addEventListener) return;
 
     const stickAt = (which, touch) => {
-      const box = which.base.getBoundingClientRect?.() ?? { left: 0, top: 0, width: SIZE.stick, height: SIZE.stick };
-      const r = SIZE.stick / 2;
-      let dx = touch.clientX - (box.left + box.width / 2);
-      let dy = touch.clientY - (box.top + box.height / 2);
+      const box = which.base.getBoundingClientRect?.();
+      const rw = (box?.width ?? this._geo?.S ?? 132) / 2;
+      const r = rw || 66;
+      const cx = (box?.left ?? 0) + rw;
+      const cy = (box?.top ?? 0) + rw;
+      let dx = touch.clientX - cx;
+      let dy = touch.clientY - cy;
       const len = Math.hypot(dx, dy) || 1;
-      const mag = Math.min(1, len / r);
       // a thumb resting on the stick should not walk the player into a wall
+      const mag = Math.min(1, len / r);
       const scaled = mag < DEAD ? 0 : (mag - DEAD) / (1 - DEAD);
       dx = (dx / len) * scaled;
       dy = (dy / len) * scaled;
       const out = which === this.left ? this.move : this.aim;
       out.x = dx; out.y = dy;
-      const off = (SIZE.stick - SIZE.knob) / 2;
-      which.knob.style.left = `${off + dx * r}px`;
-      which.knob.style.top = `${off + dy * r}px`;
+      const off = ((this._geo?.S ?? 132) - (this._geo?.K ?? 54)) / 2;
+      which.knob.style.left = `${off + dx * off}px`;
+      which.knob.style.top = `${off + dy * off}px`;
+      return out;
     };
 
     const findButton = (target) => {
@@ -186,12 +244,10 @@ export class TouchControls {
         if (id) {
           this._touches.set(t.identifier, { kind: 'button', id });
           this._press(id, true);
-        } else if (target === this.left.base || target === this.left.knob
-          || this._inBox(target, this.left.base)) {
+        } else if (this._inBox(target, this.left.base)) {
           this._touches.set(t.identifier, { kind: 'move' });
           stickAt(this.left, t);
-        } else if (target === this.right.base || target === this.right.knob
-          || this._inBox(target, this.right.base)) {
+        } else if (this._inBox(target, this.right.base)) {
           this._touches.set(t.identifier, { kind: 'aim' });
           stickAt(this.right, t);
         } else {
@@ -245,6 +301,20 @@ export class TouchControls {
     });
   }
 
+  _inBox(target, box) {
+    // a child of the stick counts as the stick (the knob, the label)
+    let n = target;
+    while (n && n !== this.panel) { if (n === box) return true; n = n.parentNode; }
+    return false;
+  }
+
+  _resetKnob(which) {
+    if (!which?.knob || !this._geo) return;
+    const off = (this._geo.S - this._geo.K) / 2;
+    which.knob.style.left = `${off}px`;
+    which.knob.style.top = `${off}px`;
+  }
+
   /**
    * A bare tap on the game surface. Without this the panel would swallow
    * every menu press on a phone, which makes the front door unusable on the
@@ -267,19 +337,6 @@ export class TouchControls {
       inp.mouse.down = true;
     }
     inp.anyInput = true;
-  }
-
-  _inBox(target, box) {
-    // a child of the stick counts as the stick (the knob, the label)
-    let n = target;
-    while (n && n !== this.panel) { if (n === box) return true; n = n.parentNode; }
-    return false;
-  }
-
-  _resetKnob(which) {
-    const off = (SIZE.stick - SIZE.knob) / 2;
-    which.knob.style.left = `${off}px`;
-    which.knob.style.top = `${off}px`;
   }
 
   _press(id, down) {
@@ -367,10 +424,18 @@ export class TouchControls {
   }
 }
 
+const DEAD = 0.14;   // ignore a thumb just resting on the stick
+
 /** Phones and tablets, and laptops that think they are both. */
 export function isTouchDevice() {
   if (typeof window === 'undefined') return false;
   const has = ('ontouchstart' in window) || (navigator?.maxTouchPoints ?? 0) > 0;
   const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   return has || coarse;
+}
+
+/** Held upright? The game is wider than it is tall, and it shows. */
+export function isPortrait() {
+  if (typeof window === 'undefined') return false;
+  return (window.innerHeight ?? 0) > (window.innerWidth ?? 0) * 1.05;
 }

@@ -80,6 +80,12 @@ export const SETTING_DEFS = [
     hint: 'With a touch stick held empty, the barrel finds the nearest walker',
   },
   {
+    id: 'touchSize', label: 'CONTROL SIZE', type: 'range',
+    min: 0, max: 2, step: 1, def: 1,
+    fmt: (v) => ['SMALL', 'NORMAL', 'LARGE'][v] ?? 'NORMAL',
+    hint: 'How big the on-screen stick and buttons are drawn',
+  },
+  {
     id: 'reset', label: 'RESTORE DEFAULTS', type: 'action', def: false,
     hint: 'Put everything back the way it shipped',
   },

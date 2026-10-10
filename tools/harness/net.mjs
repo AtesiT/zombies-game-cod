@@ -43,7 +43,7 @@ const DT = 1 / 60;
 
 // ------------------------------------------------------------- a fake relay --
 class Wire {
-  constructor() { this.nets = new Map(); this.names = new Map(); this.next = 1; this.order = []; }
+  constructor() { this.nets = new Map(); this.names = new Map(); this.next = 1; this.order = []; this.host = null; }
 
   attach(net, name) {
     const id = this.next++;
@@ -54,19 +54,30 @@ class Wire {
   }
 
   deliver(fromId, o) {
+    if (o.t === 'rooms') return;            // browsing the list joins nothing
     if (o.t === 'hello') {
-      // the relay hands the room to whoever got there first
+      // the relay hands the room to whoever asked to run it, not to whoever
+      // happened to connect first
       if (!this.order.includes(fromId)) this.order.push(fromId);
-      const host = this.order[0];
-      const others = this.order.filter((k) => k !== fromId);
       this.names.set(fromId, o.name);
+      const wants = o.want === 'host';
+      const busy = wants && this.host != null && this.host !== fromId;
+      if (!busy && (this.host == null || wants)) this.host = fromId;
+      const others = this.order.filter((k) => k !== fromId);
       this.nets.get(fromId)._onMessage({
-        t: 'joined', you: fromId, host: host === fromId, room: o.room, name: o.name,
-        peers: others.map((k) => ({ id: k, name: this.names.get(k), host: k === host })),
+        t: 'joined', you: fromId, host: this.host === fromId, busy, room: o.room, name: o.name,
+        peers: others.map((k) => ({ id: k, name: this.names.get(k), host: this.host === k })),
       });
       return;
     }
     if (o.t === 'ping') return;
+    if (o.t === 'gone') {
+      this.order = this.order.filter((k) => k !== fromId);
+      if (this.host === fromId) {
+        this.host = this.order[0] ?? null;
+        if (this.host != null) this.nets.get(this.host)?._onMessage({ t: 'host', id: this.host });
+      }
+    }
     const { t, to, ...rest } = o;
     for (const [id, net] of this.nets) {
       if (id === fromId) continue;
@@ -83,9 +94,23 @@ function fakeInput() {
     mouse: { x: VW / 2, y: VH / 2, cx: 0, cy: 0, down: false, pressed: false, released: false, rdown: false },
     wheel: 0, anyInput: false, stick: { x: 0, y: 0 },
     isDown(...c) { return c.some((k) => this.keys.has(k)); },
+    moveVector() {                       // mirrors the real Input: keys AND stick
+      let x = 0, y = 0;
+      if (this.isDown('KeyA', 'ArrowLeft')) x -= 1;
+      if (this.isDown('KeyD', 'ArrowRight')) x += 1;
+      if (this.isDown('KeyW', 'ArrowUp')) y -= 1;
+      if (this.isDown('KeyS', 'ArrowDown')) y -= 1;
+      if (x && y) { const k = Math.SQRT1_2; x *= k; y *= k; }
+      const st = this.stick;
+      if (st && (st.x || st.y)) {
+        x += st.x; y += st.y;
+        const len = Math.hypot(x, y);
+        if (len > 1) { x /= len; y /= len; }
+      }
+      return { x, y };
+    },
     wasPressed(...c) { return c.some((k) => this.pressed.has(k)); },
     wasReleased(...c) { return c.some((k) => this.released.has(k)); },
-    moveVector() { return this.stick; },
     endFrame() { this.pressed.clear(); this.released.clear(); this.mouse.pressed = false; this.mouse.released = false; this.wheel = 0; },
   };
 }
@@ -280,7 +305,9 @@ if (typeof WebSocket !== 'undefined') {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/net`);
     const got = [];
     ws.onmessage = (e) => { got.push(JSON.parse(e.data)); };
-    ws.onopen = () => { ws.send(JSON.stringify({ t: 'hello', room: 'RELAY', name: 'A' })); };
+    // the phone's side: it pressed HOST, and it says so
+    ws.onopen = () => { ws.send(JSON.stringify({ t: 'rooms' })); };   // browses first
+    setTimeout(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'hello', room: 'RELAY', name: 'A', want: 'host' })); }, 120);
     ws.onerror = (e) => { fails.push(`relay socket A: ${e.message}`); res(null); };
     setTimeout(() => res({ ws, got }), 700);
   });
@@ -294,7 +321,7 @@ if (typeof WebSocket !== 'undefined') {
       const ws = new WebSocket(`ws://127.0.0.1:${PORT}/net`);
       const got = [];
       ws.onmessage = (e) => { got.push(JSON.parse(e.data)); };
-      ws.onopen = () => { ws.send(JSON.stringify({ t: 'hello', room: 'RELAY', name: 'B' })); };
+      ws.onopen = () => { ws.send(JSON.stringify({ t: 'hello', room: 'RELAY', name: 'B', want: 'join' })); };
       ws.onerror = (e) => { fails.push(`relay socket B: ${e.message}`); res(null); };
       setTimeout(() => res({ ws, got }), 700);
     });
@@ -304,6 +331,23 @@ if (typeof WebSocket !== 'undefined') {
       const joinB = gotB.find((m) => m.t === 'joined');
       ok(joinB && joinB.host === false, 'the second one in was told it was host');
       ok(joinB && (joinB.peers ?? []).some((p) => p.id === joinA.you), 'B did not see A in the room');
+
+      // a room list that has not been asked for must not swallow the asker
+      const roomsNow = await fetch(`http://127.0.0.1:${PORT}/net/rooms`).then((r) => r.json()).catch(() => null);
+      ok(Array.isArray(roomsNow) && roomsNow.some((r) => r.id === 'RELAY'),
+        'the room vanished from the list');
+
+      // a third player presses HOST on a room that already has one
+      const wsC = new WebSocket(`ws://127.0.0.1:${PORT}/net`);
+      const gotC = [];
+      wsC.onmessage = (e) => { try { gotC.push(JSON.parse(String(e.data))); } catch { /* skip */ } };
+      wsC.onopen = () => { wsC.send(JSON.stringify({ t: 'hello', room: 'RELAY', name: 'C', want: 'host' })); };
+      await sleep(300);
+      const joinC = gotC.find((m) => m.t === 'joined');
+      ok(joinC && joinC.host === false && joinC.busy === true,
+        `a second host was not refused: ${JSON.stringify(joinC)}`);
+      wsC.close();
+      await sleep(150);
 
       // a directed message, A -> B
       wsB.send(JSON.stringify({ t: 'to', to: joinA.you, m: 'hi', name: 'B' }));
@@ -331,6 +375,98 @@ if (typeof WebSocket !== 'undefined') {
       await sleep(200);
     }
   }
+}
+
+// ------------------------------------------------------------------ part C --
+// The report, word for word: the phone hosts, the PC joins, and on the PC
+// nothing moves. Two causes, both fixed here -- connection order was being
+// read as intent, and a keyboard guest was sending a touch stick that is
+// always empty.
+{
+  const mk = () => { const g = new Game(fakeInput()); g.applySettings(); return g; };
+
+  // ---- 1. the phone runs the room, the PC walks into it --------------------
+  const w2 = new Wire();
+  const phone = mk();
+  const pc = mk();
+  phone.begin();
+  phone.startRound(3);
+  step(phone, 30);
+  w2.attach(phone.net, 'PHONE');
+  w2.attach(pc.net, 'PC');
+
+  // the PC opens the room list first -- looking is not hosting
+  pc.net.askForRooms();
+  ok(w2.host === null, 'somebody became the host just by opening the room list');
+  ok(pc.net.role === 'off', 'browsing the list put the PC into a room');
+
+  phone.net.hostGame('PHONEROOM', 'PHONE');
+  step(phone, 2);
+  ok(phone.net.role === 'host' && phone.net.isHost === true, 'the phone did not become the host');
+  ok(w2.host === 1, 'the relay gave the room to the wrong end of the wire');
+
+  pc.net.joinGame('PHONEROOM', 'PC');
+  step(phone, 4); step(pc, 4);
+  ok(pc.net.role === 'guest', `the PC came in as ${pc.net.role}, not as a guest`);
+  ok(w2.host === 1, 'the guest stole the room');
+  ok(phone.players.length === 2, `the host is running ${phone.players.length} bodies, expected 2`);
+  ok(pc.started === true, 'the PC never got let into the phone game');
+  ok(pc.round === 3, `the PC joined round ${pc.round}, not 3`);
+
+  const mate = phone.players[1];
+  ok(mate && mate.name === 'PC', 'the joining PC has no name on the phone');
+
+  // ---- 2. and it can move, with a keyboard ---------------------------------
+  // the guest used to ship its touch stick and nothing else, which on a
+  // desktop is always (0, 0): "I cannot move and nothing happens"
+  pc.input.keys.add('KeyD');
+  const px0 = mate.pos.x;
+  for (let i = 0; i < 60; i++) { step(phone, 1); step(pc, 1); }
+  pc.input.keys.delete('KeyD');
+  ok(mate.pos.x - px0 > 25, `a keyboard guest pushing D moved ${(mate.pos.x - px0).toFixed(1)}px`);
+
+  // a phone guest pushing its stick still moves too
+  pc.input.stick.x = 1;
+  const px1 = mate.pos.x;
+  for (let i = 0; i < 60; i++) { step(phone, 1); step(pc, 1); }
+  pc.input.stick.x = 0;
+  ok(mate.pos.x - px1 > 15, `a stick guest pushing right moved ${(mate.pos.x - px1).toFixed(1)}px`);
+
+  // ---- 3. the other way round: the PC runs it, the phone walks in ----------
+  const w3 = new Wire();
+  const pc2 = mk();
+  const phone2 = mk();
+  pc2.begin();
+  pc2.startRound(2);
+  step(pc2, 30);
+  w3.attach(pc2.net, 'PC2');
+  w3.attach(phone2.net, 'PHONE2');
+  pc2.net.hostGame('DESKROOM', 'PC2');
+  step(pc2, 2);
+  phone2.net.joinGame('DESKROOM', 'PHONE2');
+  step(pc2, 4); step(phone2, 4);
+  ok(pc2.net.role === 'host', 'the PC could not host for a phone');
+  ok(phone2.started === true, 'the phone could not join the PC at all');
+  ok(phone2.net.role === 'guest', 'the phone came in as something other than a guest');
+  ok(pc2.players.length === 2, 'the host did not see the phone arrive');
+
+  // ---- 4. two hosts in one room: the second is told, not silently refused --
+  const third = mk();
+  w3.attach(third.net, 'THIRD');
+  third.net.hostGame('DESKROOM', 'THIRD');
+  step(third, 2);
+  ok(third.net.isHost === false, 'a second host was allowed to take the room');
+  ok(third.net.error === 'SOMEBODY ELSE IS HOSTING', `the refused host was told "${third.net.error}"`);
+  ok(w3.host === 1, 'the room changed hands anyway');
+  ok(third.net.logLines.some((l) => /host/i.test(l)), 'nothing was written to the net log');
+
+  // ---- 5. the trail a stuck lobby leaves behind ----------------------------
+  ok(phone2.net.logLines.length > 0, 'a joined client kept no log of what happened');
+  ok(phone2.net.logLines.length <= 8, `the log grew to ${phone2.net.logLines.length} lines`);
+  phone2.net.hostGame('LONELY', 'PHONE2');
+  step(phone2, 1);
+  ok(phone2.net.logLines[phone2.net.logLines.length - 1].includes('hosting'),
+    `the last log line is "${phone2.net.logLines[phone2.net.logLines.length - 1]}"`);
 }
 
 // ------------------------------------------------------------------- report --
