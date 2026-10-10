@@ -19,6 +19,7 @@ const game = new Game(input);
 //  to fill the window while keeping the pixel grid as clean as possible.
 // ---------------------------------------------------------------------------
 const wrap = document.getElementById('stage');
+const touch = new TouchControls(input, { mount: wrap });
 
 const SIZE_MULTS = [0.82, 1, 1.18];
 
@@ -40,10 +41,9 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---------------------------------------------------------------------------
-//  On-screen controls. Mounted on the stage wrapper so they scale with the
-//  game, shown when the setting says so (AUTO = any touch screen).
+//  On-screen controls: shown when the setting says so (AUTO = any touch
+//  screen). Mounted on the stage wrapper above, so they scale with the game.
 // ---------------------------------------------------------------------------
-const touch = new TouchControls(input, { mount: wrap });
 function syncTouch() {
   const mode = settings.get('touch');
   touch.setSize(SIZE_MULTS[settings.get('touchSize') ?? 1]);
@@ -98,3 +98,4 @@ requestAnimationFrame(frame);
 // expose a little handle for debugging in the console
 window.GAME = game;
 window.TOUCH = touch;
+window.INPUT = input;
