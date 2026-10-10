@@ -65,8 +65,8 @@ const start = (target, x, y, id = 1) =>
   touch.panel.fire('touchstart', { changedTouches: [T(id, x, y, target)], preventDefault() {} });
 const moveTo = (x, y, id = 1) =>
   touch.panel.fire('touchmove', { changedTouches: [T(id, x, y, null)], preventDefault() {} });
-const end = (id = 1) =>
-  touch.panel.fire('touchend', { changedTouches: [T(id, 0, 0, null)], preventDefault() {} });
+const end = (id = 1, x = 0, y = 0) =>
+  touch.panel.fire('touchend', { changedTouches: [T(id, x, y, null)], preventDefault() {} });
 
 // a stand-in game: the touch layer only reads player.pos, cam, zombies, settings
 const game = {
@@ -165,15 +165,37 @@ ok(input.mouse.x === frozen.x && input.mouse.y === frozen.y, 'assist ran while s
 // is unpressable on the only device that needs the panel.
 canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 500 });
 input.endFrame();
+
+// ---- in a menu: hold, slide to the row you want, let go -------------------
+// A thumb covers the row it is about to press, so the choice is made on
+// release, wherever the finger ended up -- not where it landed.
 start(touch.panel, 400, 100, 50);
-ok(input.mouse.pressed === true && input.mouse.down === true, 'a tap on bare canvas did not reach the game');
+ok(input.mouse.down === true, 'a press in a menu did not register at all');
+ok(input.mouse.pressed === false, 'a menu chose the row before the finger lifted');
 ok(Math.abs(input.mouse.x - 400) < 0.01 && Math.abs(input.mouse.y - 100) < 0.01,
-  `a tap landed at ${input.mouse.x},${input.mouse.y} instead of 400,100`);
+  `a press landed at ${input.mouse.x},${input.mouse.y} instead of 400,100`);
 moveTo(250, 200, 50);
-ok(Math.abs(input.mouse.x - 250) < 0.01 && Math.abs(input.mouse.y - 200) < 0.01, 'dragging a tap did not track');
-end(50);
-ok(input.mouse.down === false && input.mouse.released === true, 'a tap never lifted');
+ok(Math.abs(input.mouse.x - 250) < 0.01 && Math.abs(input.mouse.y - 200) < 0.01, 'dragging a press did not track');
+end(50, 250, 200);
+ok(input.mouse.pressed === true, 'letting go in a menu did not choose the row');
+ok(Math.abs(input.mouse.x - 250) < 0.01, 'the row it chose is not the row under the finger');
+ok(input.mouse.down === false && input.mouse.released === true, 'a press never lifted');
 input.endFrame();
+
+// ---- in the game: the trigger answers at once ------------------------------
+// Holding to shoot cannot wait for a release, or every shot lands late.
+game.started = true;
+input.endFrame();
+start(touch.panel, 300, 150, 51);
+ok(input.mouse.pressed === true && input.mouse.down === true,
+  'a press in the game waited for a release before firing');
+input.endFrame();                      // the game has taken the shot
+moveTo(320, 160, 51);
+end(51, 320, 160);
+ok(input.mouse.down === false && input.mouse.released === true, 'a press in the game never lifted');
+ok(input.mouse.pressed === false, 'a release in the game fired a second shot');
+input.endFrame();
+game.started = false;
 
 // --------------------------------------------------------------- 7. layout --
 // The panel is laid out in the same 800x500 space the game draws in, so a

@@ -8,8 +8,13 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* dvh is the bit of the screen the browser is not sitting on: with plain
+     100% a phone measured the space behind Safari's bars and made the stage
+     taller than what you can actually see */
+  height: 100dvh;
   background: var(--bg);
   overflow: hidden;
+  overscroll-behavior: none;
   font-family: "Courier New", monospace;
   color: #cfc7ad;
 }

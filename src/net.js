@@ -132,6 +132,7 @@ export class Net {
     this._edge = new Set();        // keys tapped since the last input report
     this._fireEdge = false;
     this._buffer = null;           // guest: newest snapshot waiting to be applied
+    this._evq = [];                // guest: everything worth seeing, in order
     this._targets = new Map();     // guest: entity id -> interpolation target
     this.onStatus = opts.onStatus ?? (() => {});
     // a few lines of what the net is doing: a lobby that will not let you in
@@ -425,7 +426,18 @@ export class Net {
     if (m.m === 'hostis') { this.hostId = m.host; return; }
     if (m.m === 'peerlist') { this._names = m.list ?? []; this._status(); return; }
     if (m.m === 'bye') { this.close(); return; }
-    if (m.m === 'snap') { this._buffer = m; return; }
+    if (m.m === 'snap') {
+      // Events are queued, not buffered: a snapshot only keeps the newest
+      // world state, and anything riding on the one it replaced -- a shot, a
+      // kill, a door -- used to be thrown away with it whenever two arrived
+      // between two frames of the guest's own loop.
+      if (m.ev?.length) {
+        this._evq.push(...m.ev);
+        if (this._evq.length > 200) this._evq.splice(0, this._evq.length - 200);
+      }
+      this._buffer = m;
+      return;
+    }
     if (m.m === 'ev') { this._event(m); return; }
   }
 
@@ -547,6 +559,7 @@ export class Net {
     }
     // ---- the world -------------------------------------------------------
     if (this._buffer) { this._apply(this._buffer, false); this._buffer = null; }
+    while (this._evq.length) this._event(this._evq.shift());
     this._interp(dt);
   }
 
@@ -787,11 +800,21 @@ export class Net {
     if (!g) return;
     switch (m.k) {
       case 'shot':
-        g.tracers?.push?.({ x: m.x, y: m.y, x2: m.x2, y2: m.y2, life: 0.06, max: 0.06 });
+        // The host simulated the shot and drew its own tracer, so it must not
+        // draw the echo as well -- but a guest has no simulation at all, and
+        // without this line fires into silence.
+        if (this.isHost) break;
+        g.tracers?.push?.({
+          x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1,
+          life: 0.075, max: 0.075, colour: m.c ?? '#d9c27a',
+        });
         if (m.w !== 'knife') audio.shot?.(m.w ?? 'm1911', 1);
         break;
       case 'hit':
         g.particles?.blood?.(m.x, m.y, m.a ?? 0, m.head ? 8 : 5);
+        // the marker belongs to the hands that squeezed the trigger, not to
+        // whoever happens to own the screen
+        if (m.by === g.player?.netId) g.hud?.hit(!!m.head);
         break;
       case 'kill':
         g.splat?.(m.x, m.y, 10, 0.5);

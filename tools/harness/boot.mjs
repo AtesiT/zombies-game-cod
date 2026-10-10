@@ -157,6 +157,33 @@ win.innerWidth = 1280; win.innerHeight = 800;
 frame.clientWidth = 1280; frame.clientHeight = 800;
 win.dispatch('resize', {});
 
+// ---- a cursor you can see --------------------------------------------------
+// The page hides the system one, and a phone has no pointer at all, so the
+// menu has to draw its own -- otherwise you are clicking at nothing.
+const brightAt = (x, y) => {
+  const d = canvas.getContext('2d').getImageData(x, y, 12, 16).data;
+  let lit = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 450) lit++;
+  return lit;
+};
+input.mouse.x = 120; input.mouse.y = 120;
+frames(1);
+const here = brightAt(120, 120);
+input.mouse.x = 620; input.mouse.y = 420;
+frames(1);
+const there = brightAt(120, 120);
+ok(here > 20 && there < here / 2,
+  `the cursor is not drawn where the pointer is (${here} lit under it, ${there} after it moved)`);
+input.mouse.x = VW / 2; input.mouse.y = VH * 0.46;
+
+// ---- FILL fills the screen, FIT keeps it all in view -----------------------
+game.settings.set('screen', 1);                 // FILL
+const fillW = parseInt(canvas.style.width, 10), fillH = parseInt(canvas.style.height, 10);
+ok(fillW >= 1280 && fillH >= 800, `FILL left a ${fillW}x${fillH} stage in a 1280x800 window`);
+game.settings.set('screen', 0);                 // FIT
+const fitW = parseInt(canvas.style.width, 10), fitH = parseInt(canvas.style.height, 10);
+ok(fitW <= 1280 && fitH <= 800, `FIT overflowed the window: ${fitW}x${fitH}`);
+
 // ------------------------------------------------------------- press SOLO ----
 // the way a thumb or a mouse would, through the input the real loop is reading
 input.mouse.x = VW / 2;

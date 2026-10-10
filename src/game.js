@@ -4,7 +4,7 @@ import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES,
 } from './entities.js';
-import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
@@ -14,9 +14,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette } from './lighting.js';
-import {
-  HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text,
-} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -1080,8 +1078,15 @@ export class Game {
       anyHit = true;
       if (!firstHit) firstHit = h;
       this.stats.hits++;
-      this.addPoints(POINTS_HIT, h.x, h.y - 8, h.head ? '#f0d98a' : 'rgba(230,220,194,0.9)');
-      this.hud.hit(h.head);
+      // the hit pays the hands that made it, and the marker lights up on that
+      // player's screen only -- it used to light up the host's, whoever fired
+      this.addPoints(POINTS_HIT, h.x, h.y - 8, h.head ? '#f0d98a' : 'rgba(230,220,194,0.9)',
+        by ?? this.player);
+      if (!by || by === this.player) this.hud.hit(h.head);
+      this.net?.emit('hit', {
+        x: Math.round(h.x), y: Math.round(h.y), a: Math.round(angle * 100) / 100,
+        head: !!h.head, by: by?.netId ?? 0,
+      });
       if (res === 2) { this.onZombieKilled(h.z, h.head); }
       if (pierce > 0 && insta === 1) { pierce--; endT = Math.max(endT, h.t + 8); }
       else if (insta === 1) { endT = h.t; break; }
@@ -1102,7 +1107,16 @@ export class Game {
     }
 
     const hx = ox + dx * endT, hy = oy + dy * endT;
-    this.tracers.push({ x0: muzzle.x, y0: muzzle.y, x1: hx, y1: hy, life: 0.055, max: 0.055, colour: def.tracer });
+    // a punched gun fires a rainbow; everything else keeps its own tracer
+    const tc = def.packed ? packedTracer(this.time + this.stats.shots * 0.013) : def.tracer;
+    this.tracers.push({ x0: muzzle.x, y0: muzzle.y, x1: hx, y1: hy, life: 0.055, max: 0.055, colour: tc });
+    // Nobody but the host simulates this shot, so nobody but the host can tell
+    // anybody about it: a guest's bullets were invisible to everybody.
+    this.net?.emit('shot', {
+      x0: Math.round(muzzle.x), y0: Math.round(muzzle.y),
+      x1: Math.round(hx), y1: Math.round(hy),
+      c: tc, w: def.id, by: by?.netId ?? 0,
+    });
   }
 
   /** Ray Gun splash / DG-2 chain / Winter's Howl frost. */
@@ -2171,6 +2185,7 @@ export class Game {
         this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0;
         this._ensureRelay();
         break;
+      case 'controls': this.scene = 'controls'; this.menuIndex = 0; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'host': this._startHost(); break;
       case 'join':
@@ -2581,6 +2596,13 @@ export class Game {
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
+
+    // A menu you cannot see your own pointer in is a menu you cannot use, and
+    // a phone has never had one: draw it over everything, wherever the mouse
+    // or the last finger is. In the game itself the crosshair does this job.
+    if (this.settingsOpen || this.craftOpen || this.paused || !this.started) {
+      drawCursor(ctx, this);
+    }
   }
 
   /** All light positions are world-space; the layer itself is screen-space. */

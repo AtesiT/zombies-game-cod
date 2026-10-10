@@ -1,6 +1,6 @@
 // Player, zombies, projectiles and the particle system.
 import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art.js';
-import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
@@ -696,8 +696,10 @@ export class Player {
     game.particles.spark(muzzle.x, muzzle.y, this.aim, 3, d.tracer);
     game.particles.smoke(muzzle.x, muzzle.y, 2);
     game.particles.casing(ox, oy, this.aim);
-    game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: d.tint };
-    game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: d.tint });
+    // a punched gun flashes in the same colour it fires
+    const tint = d.packed ? packedTracer(game.time + game.stats.shots * 0.013) : d.tint;
+    game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: tint };
+    game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: tint });
     game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
     if (lastRound) audio.lastRound();

@@ -317,6 +317,99 @@ ok(host.net.peers.size === 0, 'the peer list kept a ghost');
   ok(shape.z.length === host.zombies.filter((z) => !z.remove).length, 'the snapshot is missing walkers');
 }
 
+// ------------------------------------------------ 9. shots and hit marks ---
+// A guest has no simulation at all: unless the host tells it, its own bullets
+// are invisible to it -- and the host used to flinch at hits it never took.
+{
+  const { defFor } = await import(SRC + '/weapons.js');
+  // a fresh pair: everything before this has shot the place to pieces
+  const w4 = new Wire();
+  const h2 = new Game(fakeInput());
+  const g2 = new Game(fakeInput());
+  h2.applySettings(); g2.applySettings();
+  h2.begin();
+  h2.player.hurt = () => false;
+  h2.startRound(3);
+  step(h2, 90);
+  w4.attach(h2.net, 'H2');
+  w4.attach(g2.net, 'G2');
+  h2.net.hostGame('SHOTS', 'H2');
+  g2.net.joinGame('SHOTS', 'G2');
+  step(h2, 4); step(g2, 4);
+  ok(h2.players.length === 2 && g2.started === true, 'the fresh pair never paired up');
+
+  const mate = h2.players[1];
+  mate.downed = false; mate.dead = false; mate.hp = mate.maxHp ?? 100;
+  mate.slots[mate.active] = 'm1911';
+  mate.loadout.m1911.owned = true;
+  mate.loadout.m1911.mag = 30;
+
+  // a walker, planted right in front of the guest's barrel
+  const z = h2.zombies.find((o) => !o.dead && !o.remove);
+  ok(!!z, 'no walker left to shoot at');
+  if (z) {
+    z.floor = h2.map.floor;
+    z.pos.x = mate.pos.x + 22;
+    z.pos.y = mate.pos.y;
+    z.hp = 999;                       // it must survive to be shot more than once
+
+    // ---- the guest fires ---------------------------------------------------
+    h2.hud.hitMarker = 0;
+    g2.hud.hitMarker = 0;
+    h2.tracers.length = 0;
+    g2.tracers.length = 0;
+    const hostPts = h2.points, matePts = mate.points;
+
+    h2.fireHitscan(mate.pos.x, mate.pos.y, 0, defFor('m1911'),
+      { x: mate.pos.x, y: mate.pos.y }, mate);
+    ok(h2.tracers.length > 0, 'the host drew no tracer for its guest');
+    step(h2, 6); step(g2, 3);      // 6 frames: long enough to cross a snapshot
+
+    ok(g2.tracers.length > 0, "a guest's own bullet is invisible to it");
+    const t = g2.tracers[0];
+    ok(t && Number.isFinite(t.x0) && Number.isFinite(t.x1),
+      `the echoed tracer has no ends: ${JSON.stringify(t)}`);
+    ok(h2.hud.hitMarker === 0, 'the host flinched at a hit its guest made');
+    ok(g2.hud.hitMarker > 0, 'the shooter got no hit marker');
+    ok(mate.points > matePts, 'the hit did not pay the guest who made it');
+    ok(h2.points === hostPts, 'the hit paid the host as well');
+
+    // ---- and the host fires ------------------------------------------------
+    z.pos.x = h2.player.pos.x + 22;
+    z.pos.y = h2.player.pos.y;
+    h2.hud.hitMarker = 0;
+    g2.hud.hitMarker = 0;
+    h2.fireHitscan(h2.player.pos.x, h2.player.pos.y, 0, defFor('m1911'),
+      { x: h2.player.pos.x, y: h2.player.pos.y }, h2.player);
+    step(h2, 6); step(g2, 3);
+    ok(h2.hud.hitMarker > 0, 'the host got no hit marker for its own shot');
+    ok(g2.hud.hitMarker === 0, "the guest flinched at the host's hit");
+  }
+
+  // ---- a punched gun fires a rainbow ---------------------------------------
+  const base = defFor('m1911', false).tracer;
+  const packed = defFor('m1911', true);
+  ok(packed.packed === true, 'the packed def forgot it is packed');
+  h2.tracers.length = 0;
+  const px = h2.player.pos.x, py = h2.player.pos.y;
+  h2.fireHitscan(px, py, 0, packed, { x: px, y: py }, h2.player);
+  const c1 = h2.tracers[0]?.colour;
+  h2.time += 0.5;
+  h2.fireHitscan(px, py, 0, packed, { x: px, y: py }, h2.player);
+  const c2 = h2.tracers[1]?.colour;
+  h2.time -= 0.5;
+  h2.fireHitscan(px, py, 0, defFor('m1911', false), { x: px, y: py }, h2.player);
+  const c3 = h2.tracers[2]?.colour;
+  ok(/^hsl\(/.test(c1 ?? ''), `a packed bullet is ${c1}, not a rainbow`);
+  ok(/^hsl\(/.test(c2 ?? ''), `a second packed bullet is ${c2}`);
+  ok(c1 !== c2, 'a punched gun fired two bullets the same colour');
+  ok(c3 === base, `an unpunched bullet changed colour: ${c3} vs ${base}`);
+  // and the colour travels: the guest sees the same rainbow, not its own
+  step(h2, 6); step(g2, 3);
+  ok(g2.tracers.some((tr) => tr.colour === c1 || tr.colour === c2),
+    'the guest never saw the rainbow');
+}
+
 // ------------------------------------------------------------------ part B --
 // The relay itself: two real sockets through server.mjs.
 const PORT = 8137;

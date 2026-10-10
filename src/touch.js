@@ -337,10 +337,24 @@ export class TouchControls {
    * every menu press on a phone, which makes the front door unusable on the
    * one device that most needs on-screen controls.
    */
+  /**
+   * Is a list on screen? In one, a finger behaves differently: the row under
+   * it lights up as it slides, and the choice is made when it lets go. In the
+   * game itself a press has to fire the instant it lands, or shooting would
+   * feel a thumb-beat late.
+   */
+  _menuOpen() {
+    const g = this.game;
+    if (!g) return false;
+    return !g.started || g.settingsOpen || g.craftOpen || g.paused;
+  }
+
   _tap(t, mode = 'move') {
     const inp = this.input;
     const box = inp?.canvas?.getBoundingClientRect?.();
-    if (box && box.width && box.height && inp.canvas.width) {
+    // a lift with no coordinates keeps the last one it was given, rather than
+    // dragging the cursor off to nowhere
+    if (box && box.width && box.height && inp.canvas.width && Number.isFinite(t?.clientX)) {
       inp.mouse.cx = t.clientX - box.left;
       inp.mouse.cy = t.clientY - box.top;
       inp.mouse.x = (inp.mouse.cx / box.width) * inp.canvas.width;
@@ -349,8 +363,14 @@ export class TouchControls {
     if (mode === 'up') {
       inp.mouse.down = false;
       inp.mouse.released = true;
+      // hold, slide, let go: the row you release over is the row you meant,
+      // which is the only way to pick one with a thumb covering the screen
+      if (this._slid) { inp.mouse.pressed = true; this._slid = false; }
     } else if (mode === 'down') {
-      if (!inp.mouse.down) inp.mouse.pressed = true;
+      if (!inp.mouse.down) {
+        if (this._menuOpen()) this._slid = true;
+        else inp.mouse.pressed = true;
+      }
       inp.mouse.down = true;
     }
     inp.anyInput = true;
@@ -384,6 +404,7 @@ export class TouchControls {
   // ----------------------------------------------------------------- frame --
   /** Called once per frame, before the game reads its input. */
   update(game) {
+    this.game = game;          // the panel has to know when a list is open
     if (!this.enabled) return;
     const inp = this.input;
     // walking: the stick is a vector, the keyboard still works alongside it

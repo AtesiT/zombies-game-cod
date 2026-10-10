@@ -215,6 +215,16 @@ for (const w of Object.values(WEAPONS)) {
   PACKED[w.id] = p;
 }
 
+/**
+ * A punched gun fires a rainbow: no two bullets leave the barrel the same
+ * colour, and a stream of them reads as a ribbon. The hue runs on the clock,
+ * so it is the same colour on every machine watching the shot.
+ */
+export function packedTracer(time = 0) {
+  const hue = Math.round(((time * 210) % 360 + 360) % 360);
+  return `hsl(${hue}, 88%, 62%)`;
+}
+
 /** Weapon stats for `id`, upgraded if it has been through the machine. */
 export function defFor(id, packed = false) {
   return packed ? (PACKED[id] ?? WEAPONS[id]) : WEAPONS[id];

@@ -31,7 +31,10 @@ function resize() {
   // The stage used to refuse to go below 800x500, which on a four-inch phone
   // is larger than the screen: it got centred, clipped, and the bottom of it
   // -- the walking stick -- simply was not there. It shrinks to fit instead.
-  const fit = Math.min(availW / VW, availH / VH);
+  const byW = availW / VW, byH = availH / VH;
+  // FIT leaves the whole game visible with bars to the sides; FILL crops the
+  // long axis and gives you the biggest picture the screen can hold
+  const fit = settings.get('screen') === 1 ? Math.max(byW, byH) : Math.min(byW, byH);
   const scale = Math.max(0.2, fit);
   const snap = scale >= 2 ? Math.floor(scale * 2) / 2 : scale;   // half steps above 2x
   const w = Math.round(VW * snap);
@@ -55,7 +58,10 @@ function syncTouch() {
   touch.setSize(SIZE_MULTS[settings.get('touchSize') ?? 1]);
   touch.show(mode === 2 || (mode === 0 && isTouchDevice()));
 }
-settings.onChange((id) => { if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch(); });
+settings.onChange((id) => {
+  if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch();
+  if (id === 'screen') resize();
+});
 syncTouch();
 
 // first gesture unlocks WebAudio

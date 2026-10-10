@@ -11,11 +11,14 @@ const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
 ok(g.scene === 'menu', `a fresh game boots into "${g.scene}", not the menu`);
 ok(g.started === false, 'a fresh game is already running');
 
-// the keyboard walks the list, the mouse points at it; both must agree
-const rowY = (i) => M.VH * 0.46 + i * 27;
-const click = (i) => {
+// the keyboard walks the list, the mouse points at it; both must agree.
+// The controls screen is a list, not a menu: it starts higher and packs tighter.
+const rowTop = (scene) => M.VH * (scene === 'controls' ? 0.16 : 0.46);
+const rowStep = (scene) => (scene === 'controls' ? 21 : 27);
+const rowY = (i, scene = 'menu') => rowTop(scene) + i * rowStep(scene);
+const click = (i, scene = 'menu') => {
   g.input.mouse.x = M.VW / 2;
-  g.input.mouse.y = rowY(i);
+  g.input.mouse.y = rowY(i, scene);
   g.input.mouse.pressed = true;
   g.update(H);
   g.input.endFrame();
@@ -23,12 +26,12 @@ const click = (i) => {
 const press = (code) => { g.input.pressed.add(code); g.update(H); g.input.endFrame(); };
 
 // ---- the drawing and the hit test are the same list -----------------------
-for (const scene of ['menu', 'mp', 'rooms', 'waiting']) {
+for (const scene of ['menu', 'mp', 'rooms', 'waiting', 'controls']) {
   g.scene = scene;
   const rows = M.menuRows(scene, g);
   ok(rows.length > 0, `the "${scene}" screen has no rows`);
   for (let i = 0; i < rows.length; i++) {
-    const hit = M.menuHitTest(scene, M.VW / 2, rowY(i), g);
+    const hit = M.menuHitTest(scene, M.VW / 2, rowY(i, scene), g);
     if (hit !== i) { fails.push(`row ${i} (${rows[i].id}) on "${scene}" hit-tests as ${hit}`); break; }
   }
   ok(M.menuHitTest(scene, 10, 10, g) === -1, `clicking empty space on "${scene}" selected something`);
@@ -57,6 +60,24 @@ click(rowId('menu', 'mp'));
 ok(g.scene === 'mp', `MULTIPLAYER went to "${g.scene}"`);
 click(rowId('mp', 'back'));
 ok(g.scene === 'menu', `BACK from multiplayer went to "${g.scene}"`);
+
+// ---- CONTROLS: what every letter on the panel stands for ------------------
+click(rowId('menu', 'controls'));
+ok(g.scene === 'controls', `CONTROLS went to "${g.scene}"`);
+const crows = M.menuRows('controls', g);
+const binds = crows.filter((r) => r.id === 'none');
+ok(binds.length >= 12, `the controls screen explains ${binds.length} things, not enough`);
+ok(crows[crows.length - 1].id === 'back', 'the controls screen has no way out');
+ok(binds.every((r) => /[A-Z]/.test(r.label)), 'a row on the controls screen names no key');
+ok(binds.every((r) => r.label.length >= 22), 'a row on the controls screen is truncated');
+// the whole list has to fit between the title and the bottom edge
+const lastY = M.VH * 0.16 + (crows.length - 1) * 21;
+ok(lastY < M.VH - 12, `the controls list runs off the bottom: last row at ${lastY}`);
+// and a binding is not a button: pressing it must do nothing
+click(0, 'controls');
+ok(g.scene === 'controls', 'picking a line of the controls list left the screen');
+click(rowId('controls', 'back'), 'controls');
+ok(g.scene === 'menu', `BACK from controls went to "${g.scene}"`);
 
 // ---- SETTINGS -------------------------------------------------------------
 click(rowId('menu', 'settings'));

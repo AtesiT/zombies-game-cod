@@ -952,6 +952,35 @@ export function drawTitle(ctx, game, w, h) {
 const MENU_TOP = 0.46;          // where the first row sits, as a fraction of h
 const MENU_STEP = 27;
 const MENU_HALF_W = 150;
+const CONTROLS_TOP = 0.16;      // the controls screen is a list, not a menu
+const CONTROLS_STEP = 21;
+const CONTROLS_HALF_W = 250;
+
+/** What every key and on-screen button actually does. */
+const CONTROL_ROWS = [
+  ['MOVE', 'W A S D   ARROWS   LEFT STICK'],
+  ['AIM', 'MOUSE   RIGHT STICK'],
+  ['FIRE', 'LEFT MOUSE   FIRE'],
+  ['RELOAD', 'R   RLD'],
+  ['USE  BUY  REVIVE', 'F   F'],
+  ['REPAIR A WINDOW', 'HOLD F   HOLD F'],
+  ['CRAFT AT THE BENCH', 'HOLD E'],
+  ['KNIFE', 'V   KNIFE'],
+  ['SWAP WEAPON', 'Q   SWAP'],
+  ['PICK WEAPON', '1  2   WHEEL   [ ]'],
+  ['SPRINT', 'SHIFT   DASH'],
+  ['GRENADE', 'G   NADE'],
+  ['MEDKIT', 'H   KIT'],
+  ['PAUSE', 'P   ESC   ||'],
+  ['SETTINGS', 'O'],
+  ['MUTE', 'M'],
+  ['PICK A MENU ROW', 'CLICK   TAP   HOLD AND SLIDE'],
+];
+
+/** A list scrolls tighter than a menu of three big doors. */
+export function menuStep(scene) {
+  return scene === 'controls' ? CONTROLS_STEP : MENU_STEP;
+}
 
 export function menuRows(scene, game) {
   if (scene === 'mp') {
@@ -976,6 +1005,14 @@ export function menuRows(scene, game) {
     rows.push({ id: 'back', label: 'BACK' });
     return rows;
   }
+  if (scene === 'controls') {
+    const rows = CONTROL_ROWS.map(([what, keys]) => ({
+      id: 'none', small: true,
+      label: `${what.padEnd(20, ' ')} ${keys}`,
+    }));
+    rows.push({ id: 'back', label: 'BACK', hint: 'W A S D picks a row, ENTER takes it' });
+    return rows;
+  }
   if (scene === 'waiting') {
     const dots = '.'.repeat(1 + (Math.floor(game.time * 2) % 3));
     return [{ id: 'waiting', label: `JOINING${dots}`, hint: 'the host will let you in where they are' }];
@@ -983,6 +1020,7 @@ export function menuRows(scene, game) {
   return [
     { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
     { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
+    { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
     { id: 'settings', label: 'SETTINGS', hint: 'volume, lighting, on-screen controls' },
   ];
 }
@@ -990,11 +1028,13 @@ export function menuRows(scene, game) {
 /** Which row is under this point, or -1. */
 export function menuHitTest(scene, mx, my, game) {
   const rows = menuRows(scene, game);
-  const top = (game.vh ?? 500) * MENU_TOP;
+  const top = (game.vh ?? 500) * (scene === 'controls' ? CONTROLS_TOP : MENU_TOP);
+  const step = menuStep(scene);
+  const half = scene === 'controls' ? CONTROLS_HALF_W : MENU_HALF_W;
   for (let i = 0; i < rows.length; i++) {
-    const y = top + i * MENU_STEP;
-    if (my >= y - MENU_STEP * 0.5 && my < y + MENU_STEP * 0.5
-      && mx > (game.vw ?? 800) / 2 - MENU_HALF_W && mx < (game.vw ?? 800) / 2 + MENU_HALF_W) return i;
+    const y = top + i * step;
+    if (my >= y - step * 0.5 && my < y + step * 0.5
+      && mx > (game.vw ?? 800) / 2 - half && mx < (game.vw ?? 800) / 2 + half) return i;
   }
   return -1;
 }
@@ -1004,28 +1044,42 @@ export function drawMenu(ctx, game, w, h) {
   ctx.save();
 
   const rows = menuRows(game.scene, game);
-  const top = h * MENU_TOP;
+  const step = menuStep(game.scene);
+  const half = game.scene === 'controls' ? CONTROLS_HALF_W : MENU_HALF_W;
+  const top = h * (game.scene === 'controls' ? CONTROLS_TOP : MENU_TOP);
   const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
+
+  if (game.scene === 'controls') {
+    text(ctx, 'CONTROLS', w / 2, h * 0.08, {
+      font: 'bold 18px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+    text(ctx, 'ON A PHONE: HOLD ANYWHERE AND SLIDE TO A ROW, THEN LET GO', w / 2, h * 0.08 + 18, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    const y = top + i * MENU_STEP;
+    const y = top + i * step;
     const on = i === sel;
+    const band = step - 3;
     if (on) {
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
-      ctx.fillRect(w / 2 - MENU_HALF_W, y - 12, MENU_HALF_W * 2, 24);
+      ctx.fillRect(w / 2 - half, y - band / 2, half * 2, band);
       ctx.fillStyle = 'rgba(240,217,138,0.55)';
-      ctx.fillRect(w / 2 - MENU_HALF_W, y - 12, 2, 24);
-      ctx.fillRect(w / 2 + MENU_HALF_W - 2, y - 12, 2, 24);
+      ctx.fillRect(w / 2 - half, y - band / 2, 2, band);
+      ctx.fillRect(w / 2 + half - 2, y - band / 2, 2, band);
     }
-    text(ctx, row.label, w / 2, y + 4, {
-      font: `bold ${row.id === 'none' ? 11 : 16}px "Courier New", monospace`,
-      colour: row.id === 'none' ? INK_DIM : on ? GOLD : '#cdbfa0', align: 'center',
+    const size = row.small ? 11 : row.id === 'none' ? 11 : 16;
+    text(ctx, row.label, w / 2, y + (row.small ? 3 : 4), {
+      font: `bold ${size}px "Courier New", monospace`,
+      colour: row.id === 'none' ? (on ? '#b9ae90' : INK_DIM) : on ? GOLD : '#cdbfa0',
+      align: 'center',
     });
   }
 
   const hint = rows[sel]?.hint;
-  let hy = top + rows.length * MENU_STEP + 6;
+  let hy = top + rows.length * step + 6;
   if (hint) {
     text(ctx, hint, w / 2, hy, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     hy += 16;
@@ -1044,6 +1098,14 @@ export function drawMenu(ctx, game, w, h) {
   }
   if (game.netMsg) {
     text(ctx, game.netMsg, w / 2, hy, { font: 'bold 11px "Courier New", monospace', colour: RED, align: 'center' });
+    hy += 14;
+  }
+  // On a phone the browser's own bars eat a third of the screen; the home
+  // screen icon does not have any.
+  if (isTouchDevice() && !standalone()) {
+    text(ctx, 'SHARE \u2192 ADD TO HOME SCREEN  for the full screen', w / 2, hy, {
+      font: 'bold 10px "Courier New", monospace', colour: 'rgba(159,208,224,0.75)', align: 'center',
+    });
     hy += 14;
   }
 
@@ -1215,6 +1277,46 @@ export function drawSettings(ctx, game, w, h) {
   text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 14, {
     font: 'bold 11px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
   });
+  ctx.restore();
+}
+
+/**
+ * A menu with no pointer is a menu you cannot use: the page hides the system
+ * cursor, and a phone has no pointer at all, so the game draws its own. It is
+ * drawn last, over everything, wherever the last touch or the mouse is.
+ */
+/** Running from the home screen, with no browser bars around it? */
+function standalone() {
+  try {
+    return !!globalThis.navigator?.standalone
+      || !!globalThis.matchMedia?.('(display-mode: standalone)')?.matches;
+  } catch { return false; }
+}
+
+export function drawCursor(ctx, game) {
+  const m = game?.input?.mouse;
+  if (!m) return;
+  const x = Math.round(m.x ?? 0), y = Math.round(m.y ?? 0);
+  const path = (o) => {
+    ctx.beginPath();
+    ctx.moveTo(o, o);
+    ctx.lineTo(o, o + 13);
+    ctx.lineTo(o + 3.5, o + 9.5);
+    ctx.lineTo(o + 6, o + 14.5);
+    ctx.lineTo(o + 8.5, o + 13);
+    ctx.lineTo(o + 6, o + 8);
+    ctx.lineTo(o + 10.5, o + 7.5);
+    ctx.closePath();
+    ctx.fill();
+  };
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  path(1.5);
+  ctx.fillStyle = m.down ? GOLD : '#efe8d2';
+  path(0);
+  ctx.fillStyle = m.down ? 'rgba(240,217,138,0.35)' : 'rgba(239,232,210,0.18)';
+  ctx.fillRect(0, 0, 2, 2);
   ctx.restore();
 }
 

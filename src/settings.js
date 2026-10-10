@@ -80,6 +80,12 @@ export const SETTING_DEFS = [
     hint: 'With a touch stick held empty, the barrel finds the nearest walker',
   },
   {
+    id: 'screen', label: 'SCREEN', type: 'range',
+    min: 0, max: 1, step: 1, def: 0,
+    fmt: (v) => (v === 1 ? 'FILL' : 'FIT'),
+    hint: 'FILL crops the edges to use every pixel of the screen; FIT keeps the whole picture in view',
+  },
+  {
     id: 'touchSize', label: 'CONTROL SIZE', type: 'range',
     min: 0, max: 2, step: 1, def: 1,
     fmt: (v) => ['SMALL', 'NORMAL', 'LARGE'][v] ?? 'NORMAL',
