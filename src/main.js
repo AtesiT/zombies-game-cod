@@ -160,6 +160,8 @@ function frame(now) {
   ctx.setTransform(ss, 0, 0, ss, 0, 0);
   ctx.imageSmoothingQuality = 'high';
   game.smooth = ss > 1;
+  // and the lighting half of it: finer shadows and a soft bloom over them
+  game.setDlss(ss > 1);
   game.draw(ctx);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 

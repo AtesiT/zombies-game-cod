@@ -175,8 +175,49 @@ export class Lighting {
     }
   }
 
-  /** Composite the darkness layer + coloured glow onto the scene. */
-  composite(ctx, w, h) {
+  /**
+   * The soft light pass. Every lamp, muzzle flash and fire on the glow layer
+   * is taken down to an eighth of the screen and blown back up again, which
+   * is a blur for free: no shader, no per-pixel work, two blits. What you get
+   * is a halo around anything that burns, and light that looks like it is
+   * coming off the bulb instead of being stencilled on the floor.
+   */
+  _bloom(ctx, w, h, amount) {
+    const glow = this.glowCanvas;
+    if (!glow) return;
+    if (!this.bloomCanvas) {
+      this.bloomCanvas = document.createElement('canvas');
+      this.bloomCtx = this.bloomCanvas.getContext('2d');
+    }
+    const b = this.bloomCanvas, bc = this.bloomCtx;
+    const bw = Math.max(1, Math.round(w / 8)), bh = Math.max(1, Math.round(h / 8));
+    if (b.width !== bw || b.height !== bh) { b.width = bw; b.height = bh; }
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.globalCompositeOperation = 'source-over';
+    bc.globalAlpha = 1;
+    bc.imageSmoothingEnabled = true;
+    bc.clearRect(0, 0, bw, bh);
+    bc.drawImage(glow, 0, 0, bw, bh);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.imageSmoothingEnabled = true;
+    // wide: the halo that reaches into the dark around the bulb
+    const spread = Math.round(Math.min(w, h) * 0.07);
+    ctx.globalAlpha = 0.46 * amount;
+    ctx.drawImage(b, -spread, -spread, w + spread * 2, h + spread * 2);
+    // tight: the bloom hugging the light itself
+    ctx.globalAlpha = 0.34 * amount;
+    ctx.drawImage(b, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  /**
+   * Composite the darkness layer + coloured glow onto the scene. `bloom`
+   * (0..1) is DLSS5's soft light pass on top of all that.
+   */
+  composite(ctx, w, h, bloom = 0) {
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.globalCompositeOperation = 'source-over';
@@ -198,6 +239,8 @@ export class Lighting {
     ctx.globalCompositeOperation = 'lighter';
     ctx.drawImage(this.glowCanvas, 0, 0, w, h);
     ctx.globalAlpha = 1;
+
+    if (bloom > 0.01) this._bloom(ctx, w, h, bloom);
     ctx.restore();
   }
 }

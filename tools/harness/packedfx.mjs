@@ -10,7 +10,7 @@ import { nc, load, SRC } from './stub.mjs';
 const M = await load();
 const { hexA } = await import(SRC + '/game.js');
 const { Lighting } = await import(SRC + '/lighting.js');
-const { defFor } = await import(SRC + '/weapons.js');
+const { defFor, packedTracer } = await import(SRC + '/weapons.js');
 const H = 1 / 60;
 const fails = [];
 const ok = (c, l) => { if (!c) fails.push(l); };
@@ -35,6 +35,9 @@ const ok = (c, l) => { if (!c) fails.push(l); };
 }
 
 // ---- fire the same gun twice: plain, then punched --------------------------
+// The punch changes the bullet, not the bang: the flash and the pool of light
+// it throws must be exactly what an unpunched gun makes, or the room goes
+// white every time you pull the trigger.
 function shot(packIt) {
   const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
   g.begin();
@@ -67,17 +70,15 @@ ok(!plain.g.tracers.at(-1).packed, 'an unpunched tracer is marked as packed');
 ok(packed.g.tracers.at(-1).life > plain.g.tracers.at(-1).life,
   'a punched tracer vanishes as fast as a plain one');
 
-// the flash sprite is bigger
-ok(packed.g.muzzleFlash.packed === 1, 'the packed muzzle flash is not marked as packed');
-ok(packed.g.muzzleFlash.size > plain.g.muzzleFlash.size * 1.2,
-  `a punched muzzle flash is ${packed.g.muzzleFlash.size}, barely bigger than ${plain.g.muzzleFlash.size}`);
+// the flash is the same size it always was
+ok(Math.abs(packed.g.muzzleFlash.size - plain.g.muzzleFlash.size) < 0.01,
+  `a punched muzzle flash is ${packed.g.muzzleFlash.size}, an unpunched one is ${plain.g.muzzleFlash.size}`);
 
-// and so is the pool of light it throws
+// and it throws the same pool of light
 const pf = packed.g.flashLights.at(-1), nf = plain.g.flashLights.at(-1);
 ok(!!pf && !!nf, 'firing did not make a light');
-ok(pf.packed === 1, 'the packed shot light is not marked as packed');
-ok(pf.r > nf.r * 1.2, `a punched shot lights ${pf.r}px against ${nf.r}px`);
-ok(pf.life > nf.life, 'a punched shot light dies as fast as a plain one');
+ok(Math.abs(pf.r - nf.r) < 0.01, `a punched shot lights ${pf.r}px against ${nf.r}px`);
+ok(Math.abs(pf.life - nf.life) < 0.001, 'a punched shot light lasts a different time');
 
 // ---- and the light actually reaches the renderer ---------------------------
 // Watch every light the game asks for while a punched shot is on screen: none
@@ -105,11 +106,52 @@ for (const [name, s] of [['plain', plain], ['punched', packed]]) {
 }
 
 // the player's own torch is the same in both frames, so compare the total:
-// a punched shot has to add a clearly bigger pool of light than a plain one
+// a punched shot must not light the room up any more than a plain one
 const lit = (s) => litPoints(s.g).reduce((n, l) => n + l.r, 0);
 const plainSum = lit(plain), packedSum = lit(packed);
-ok(packedSum > plainSum + 120,
-  `the punched frame lights ${(packedSum - plainSum).toFixed(0)}px more than the plain one`);
+ok(Math.abs(packedSum - plainSum) < 1,
+  `the punched frame throws ${(packedSum - plainSum).toFixed(0)}px more light than the plain one`);
+
+// ---- the round itself is what travels brighter ------------------------------
+// Same shot, same place, one plain and one punched: the punched one has to
+// leave a fatter, brighter streak on the screen. Counted off the pixels,
+// because "brighter" is not a thing you can assert from the object.
+function streak(packedShot) {
+  const g2 = new M.Game(new M.Input(nc(M.VW, M.VH)));
+  g2.begin();
+  g2.startRound(1);
+  for (let i = 0; i < 30; i++) g2.update(H);
+  g2.tracers.length = 0;
+  g2.muzzleFlash = null;
+  g2.flashLights.length = 0;
+  // world coordinates: the scene is drawn inside one big camera translate
+  const wx = g2.player.pos.x, wy = g2.player.pos.y;
+  g2.tracers.push({
+    x0: wx - 200, y0: wy, x1: wx + 200, y1: wy, life: 0.085, max: 0.085,
+    colour: packedShot ? packedTracer(1.5) : '#d9c27a', packed: packedShot ? 1 : 0,
+  });
+  const c = nc(M.VW, M.VH);
+  const cx2 = c.getContext('2d');
+  g2.draw(cx2);
+  const sy = Math.max(0, Math.min(M.VH - 21, Math.round(wy - g2.cam.y) - 10));
+  const d = cx2.getImageData(0, sy, M.VW, 21).data;
+  let lit = 0, sum = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] + d[i + 1] + d[i + 2];
+    sum += v;
+    if (v > 210) lit++;
+  }
+  return { lit, sum };
+}
+
+const plainStreak = streak(false);
+const packedStreak = streak(true);
+ok(packedStreak.lit > plainStreak.lit * 1.5,
+  `a punched round lights ${packedStreak.lit} px against ${plainStreak.lit}`);
+ok(packedStreak.sum > plainStreak.sum * 1.15,
+  `a punched round is barely brighter (${(packedStreak.sum / Math.max(1, plainStreak.sum)).toFixed(2)}x)`);
+console.log(`  round: ${plainStreak.lit} -> ${packedStreak.lit} lit px, ` +
+  `brightness x${(packedStreak.sum / Math.max(1, plainStreak.sum)).toFixed(2)}`);
 
 // ---- and the rainbow survives being drawn ----------------------------------
 {

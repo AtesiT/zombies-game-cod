@@ -52,9 +52,12 @@ export function rollPowerup(rng = Math.random, opts = {}) {
 }
 
 export class Powerup {
-  constructor(x, y, id) {
+  // a drop belongs to the storey it fell on: a Max Ammo upstairs is not
+  // lying at your feet downstairs just because the x and y happen to match
+  constructor(x, y, id, f = 0) {
     this.x = x; this.y = y;
     this.id = id;
+    this.f = f;
     this.def = POWERUPS[id];
     this.life = 0;
     this.maxLife = 18;

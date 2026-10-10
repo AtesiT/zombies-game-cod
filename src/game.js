@@ -14,7 +14,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -225,6 +225,14 @@ export class Game {
     this.interaction = null;
     this.muzzleFlash = null;
     this.settingsOpen = false;
+    // A panel for testing: god mode, all the perks, jump storey. It is not
+    // part of the game -- it opens on the backquote key, or, on a phone that
+    // has no such key, on five taps of the round counter.
+    this.debugOpen = false;
+    this.debugIndex = 0;
+    this.debug = { god: false, ammo: false, paths: false };
+    this._dbgTaps = 0;
+    this._dbgTapT = -9;
     this.settingsIndex = 0;
     this.fps = 60;
     this.tension = 0;
@@ -880,14 +888,14 @@ export class Game {
 
   /** Napalm zombies go up in a pool of burning fuel. */
   addFire(x, y, r, life) {
-    this.fires.push({ x, y, r, life, max: life, tick: 0, puff: 0 });
+    this.fires.push({ x, y, r, life, max: life, tick: 0, puff: 0, f: this.fxFloor });
     this.particles.spark(x, y, -Math.PI / 2, 22, '#f07a2a');
     this.particles.smoke(x, y, 10);
   }
 
   /** Gasbags burst into a thick, choking cloud. */
   addGas(x, y, r, life) {
-    this.gases.push({ x, y, r, life, max: life, puff: 0, drift: randRange(0, TAU) });
+    this.gases.push({ x, y, r, life, max: life, puff: 0, drift: randRange(0, TAU), f: this.fxFloor });
     this.particles.smoke(x, y, 16);
   }
 
@@ -922,7 +930,7 @@ export class Game {
       hasBox: true,
       brokenWindows: this.map.barricades.filter((b) => b.planks < b.maxPlanks).length,
     });
-    this.powerups.push(new Powerup(x, y, id));
+    this.powerups.push(new Powerup(x, y, id, this.fxFloor));
     audio.chime();
   }
 
@@ -950,7 +958,7 @@ export class Game {
           n++;
         }
         this.shake(9, 0.5);
-        this.explosionLights.push({ x: p.pos.x, y: p.pos.y, r: 900, life: 0.7, max: 0.7 });
+        this.explosionLights.push({ x: p.pos.x, y: p.pos.y, r: 900, life: 0.7, max: 0.7, f: this.fxFloor });
         this.bannerShow('NUKE', n ? `${n} down` : 'the air crackles', { dur: 2.4, colour: '#8fe05a' });
         audio.nuke();
         break;
@@ -1000,7 +1008,7 @@ export class Game {
   explosion(x, y, r) {
     audio.explosion();
     this.shake(11, 0.42);
-    this.explosionLights.push({ x, y, r: r * 2.4, life: 0.4, max: 0.4 });
+    this.explosionLights.push({ x, y, r: r * 2.4, life: 0.4, max: 0.4, f: this.fxFloor });
     this.splat(x, y, r * 0.5, 0.25, '#1a1512');
   }
 
@@ -1149,7 +1157,7 @@ export class Game {
     this.tracers.push({
       x0: muzzle.x, y0: muzzle.y, x1: hx, y1: hy,
       life: def.packed ? 0.085 : 0.055, max: def.packed ? 0.085 : 0.055,
-      colour: tc, packed: !!def.packed,
+      colour: tc, packed: !!def.packed, f: this.fxFloor,
     });
     // Nobody but the host simulates this shot, so nobody but the host can tell
     // anybody about it: a guest's bullets were invisible to everybody.
@@ -1162,13 +1170,16 @@ export class Game {
 
   /** Ray Gun splash / DG-2 chain / Winter's Howl frost. */
   applySpecial(def, x, y, source, insta = 1) {
+    // a wonder weapon belongs to the storey the shot came from: a guest
+    // firing upstairs does not blow the floor below apart
+    const sf = source?.floor ?? this.map.floor;
     if (def.special === 'splash') {
-      this.explosionLights.push({ x, y, r: def.splashR * 3.2, life: 0.28, max: 0.28, colour: def.splashColor });
+      this.explosionLights.push({ x, y, r: def.splashR * 3.2, life: 0.28, max: 0.28, colour: def.splashColor, f: sf });
       for (const z of this.zombies) {
         if (z.dead) continue;
         const d = dist(x, y, z.pos.x, z.pos.y);
         if (d > def.splashR) continue;
-        if ((z.floor ?? 0) !== this.map.floor) continue;
+        if ((z.floor ?? 0) !== sf) continue;
         if (this.tryCrawl(z, 0.18)) continue;
         const res = z.hurt(def.splashDmg * insta * (1 - d / def.splashR * 0.4), false, this,
           Math.atan2(z.pos.y - y, z.pos.x - x));
@@ -1184,14 +1195,17 @@ export class Game {
       for (let i = 0; i < def.chainCount; i++) {
         let best = null, bd = def.chainRange * def.chainRange;
         for (const z of this.zombies) {
+          // the arc crawls along the storey it started on -- it does not
+          // climb the stairs to find the next thing to burn
           if (z.dead || hitSet.has(z)) continue;
+          if ((z.floor ?? 0) !== sf) continue;
           const d2 = dist2(from.x, from.y, z.pos.x, z.pos.y);
           if (d2 < bd) { bd = d2; best = z; }
         }
         if (!best) break;
         this.arcs.push({
           x0: from.x, y0: from.y - 6, x1: best.pos.x, y1: best.pos.y - 6,
-          life: 0.22, max: 0.22, colour: def.chainColor,
+          life: 0.22, max: 0.22, colour: def.chainColor, f: sf,
         });
         const dmg = def.dmg * Math.pow(def.chainFalloff, i + 1) * insta;
         const res = best.hurt(dmg, false, this, Math.atan2(best.pos.y - from.y, best.pos.x - from.x));
@@ -1216,7 +1230,7 @@ export class Game {
         this.particles.spark(z.pos.x, z.pos.y, randRange(0, TAU), 3, def.freezeColor);
       }
       if (frozen >= 10) this.achievements.unlock('frostbite');
-      this.explosionLights.push({ x, y, r: def.freezeR * 3, life: 0.3, max: 0.3, colour: def.freezeColor });
+      this.explosionLights.push({ x, y, r: def.freezeR * 3, life: 0.3, max: 0.3, colour: def.freezeColor, f: this.fxFloor });
     }
   }
 
@@ -1628,7 +1642,7 @@ export class Game {
     this.monkeys.push(new MonkeyBomb(
       p.pos.x + Math.cos(p.aim) * 14, p.pos.y + Math.sin(p.aim) * 14,
       Math.cos(p.aim) * speed + p.vel.x * 0.4, Math.sin(p.aim) * speed + p.vel.y * 0.4,
-      def,
+      def, p.floor ?? this.map.floor,
     ));
     this._monkeyKills = 0;
     audio.shot('throw', 0);
@@ -1655,7 +1669,7 @@ export class Game {
       hit++;
       if (res === 2) this.onZombieKilled(z, false);
     }
-    this.explosionLights.push({ x: ox + Math.cos(angle) * 80, y: oy + Math.sin(angle) * 80, r: 320, life: 0.35, max: 0.35 });
+    this.explosionLights.push({ x: ox + Math.cos(angle) * 80, y: oy + Math.sin(angle) * 80, r: 320, life: 0.35, max: 0.35, f: this.fxFloor });
     this.shake(8, 0.32);
     audio.shot('thundergun', 0);
   }
@@ -1665,7 +1679,7 @@ export class Game {
     const p = this.player;
     audio.explosion();
     this.shake(opts.shake ?? 10, 0.4);
-    this.explosionLights.push({ x, y, r: r * 2.6, life: 0.42, max: 0.42, colour: opts.colour });
+    this.explosionLights.push({ x, y, r: r * 2.6, life: 0.42, max: 0.42, colour: opts.colour, f: this.fxFloor });
     this.splat(x, y, r * 0.42, 0.22, '#1a1512');
     for (let i = 0; i < 16; i++) {
       this.particles.spark(x, y, randRange(0, TAU), 2, opts.colour ?? '#ffcf70');
@@ -1704,6 +1718,86 @@ export class Game {
     audio.buy();
     this.popups.add(this.player.pos.x, this.player.pos.y - 26, r.name.toUpperCase(), r.colour, 12);
     return true;
+  }
+
+  /** The debug panel as data, so the HUD can draw it and the mouse can hit it. */
+  debugRows() {
+    const on = (b) => (b ? 'ON' : 'OFF');
+    const d = this.debug, p = this.player;
+    return [
+      { id: 'god', label: 'GOD MODE', value: on(d.god) },
+      { id: 'ammo', label: 'INFINITE AMMO', value: on(d.ammo) },
+      { id: 'paths', label: 'SHOW WALLS & PATHS', value: on(d.paths) },
+      { id: 'points', label: '+5000 POINTS', value: 'GO' },
+      { id: 'perks', label: 'EVERY PERK', value: `${p?.perks?.size ?? 0}/6` },
+      { id: 'armour', label: 'REFILL ARMOUR', value: String(Math.round(p?.armor ?? 0)) },
+      { id: 'pack', label: 'PACK THE CURRENT GUN', value: p?.packed?.has(p.current) ? 'DONE' : 'GO' },
+      { id: 'ray', label: 'GIVE RAY GUN', value: 'GO' },
+      { id: 'power', label: 'THE POWER', value: on(this.powerOn) },
+      { id: 'doors', label: 'OPEN EVERY DOOR', value: 'GO' },
+      { id: 'floor', label: 'STOREY (teleport)', value: String(this.map.floor) },
+      { id: 'drop', label: 'DROP A POWER-UP', value: 'GO' },
+      { id: 'kill', label: 'KILL EVERYTHING HERE', value: 'GO' },
+      { id: 'round', label: 'END THE ROUND', value: 'GO' },
+    ];
+  }
+
+  /** Do the thing on that row. */
+  _debugRun(id) {
+    const p = this.player;
+    switch (id) {
+      case 'god': this.debug.god = !this.debug.god; break;
+      case 'ammo': this.debug.ammo = !this.debug.ammo; break;
+      case 'paths': this.debug.paths = !this.debug.paths; break;
+      case 'points':
+        this.addPoints(5000, p.pos.x, p.pos.y - 26, '#f0d98a');
+        break;
+      case 'perks':
+        this.powerOn = true;
+        for (const k of Object.keys(PERKS)) p.addPerk(k);
+        this.bannerShow('EVERY PERK', 'debug', { dur: 1.6, colour: '#f0d98a' });
+        break;
+      case 'armour': p.armor = 120; break;
+      case 'pack':
+        p.packed.add(p.current);
+        this.bannerShow('PACK-A-PUNCHED', p.current.toUpperCase(), { dur: 1.6, colour: '#c8a0e0' });
+        break;
+      case 'ray': p.giveWeapon('raygun'); break;
+      case 'power':
+        if (this.powerOn) { this.powerOn = false; }
+        else { this.powerOn = true; this.powerSurge = 1.4; audio.powerUp(); }
+        break;
+      case 'doors':
+        for (const d of this.map.doors) {
+          if (d.open) continue;
+          d.open = true; d.planks = 0; this.stats.doors++;
+        }
+        for (const b of this.map.barricades) b.planks = 0;
+        this.flowTimer = 0;
+        break;
+      case 'floor': {
+        const n = (this.map.floor + 1) % 3;
+        const lk = (this.map.links ?? []).find((l) => l.a.floor === n)
+          ?? (this.map.links ?? []).find((l) => l.b.floor === n);
+        if (!lk) break;
+        const dest = lk.a.floor === n ? lk.a : lk.b;
+        this.goToFloor(n, { x: (dest.tx + 0.5) * T, y: (dest.ty + 0.5) * T }, lk);
+        break;
+      }
+      case 'drop': this.dropPowerup(p.pos.x + 26, p.pos.y); break;
+      case 'kill':
+        for (const z of this.zombies) {
+          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.hurt(99999, false, this, 0) === 2) this.onZombieKilled(z, false);
+        }
+        break;
+      case 'round':
+        for (const z of this.zombies) { z.dead = true; z.remove = true; }
+        this.zombiesKilled = this.zombiesTotal;
+        this.endRound();
+        break;
+    }
+    audio.dryFire();
   }
 
   // ---------------------------------------------------------------- update
@@ -1757,6 +1851,56 @@ export class Game {
       return;
     }
 
+    // ---- debug panel (a testing tool, not a part of the game) -------------
+    // the same care as the settings key: one press must not open and close
+    const bq = this.input.wasPressed('Backquote');
+    let openedByBq = false;
+    if (bq) {
+      const was = this.debugOpen;
+      this.debugOpen = !this.debugOpen;
+      openedByBq = !was;
+      if (this.debugOpen) { this._dbgWasPaused = this.paused; this.paused = true; }
+      else this.paused = this._dbgWasPaused || false;
+    }
+    // and on a phone, where there is no backquote key at all: five taps on
+    // the round counter. Only while paused -- during a round, the corner with
+    // the round in it is exactly where you aim and click at whatever is
+    // coming through the window, and five of those must not open a menu.
+    if (!this.debugOpen && this.paused && this.started && !this.gameOver
+      && this.input.mouse.pressed
+      && this.input.mouse.x < 132 && this.input.mouse.y < 46) {
+      this._dbgTaps = (this.time - this._dbgTapT < 0.7) ? this._dbgTaps + 1 : 1;
+      this._dbgTapT = this.time;
+      if (this._dbgTaps >= 5) {
+        this._dbgTaps = 0;
+        this.debugOpen = true;
+        this._dbgWasPaused = this.paused;
+        this.paused = true;
+        audio.dryFire();
+      }
+    }
+    if (this.debugOpen) {
+      const rows = this.debugRows();
+      const n = rows.length;
+      if (this.input.wasPressed('ArrowUp', 'KeyW')) {
+        this.debugIndex = (this.debugIndex - 1 + n) % n; audio.dryFire();
+      }
+      if (this.input.wasPressed('ArrowDown', 'KeyS')) {
+        this.debugIndex = (this.debugIndex + 1) % n; audio.dryFire();
+      }
+      const hit = debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+      if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
+      if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
+        this._debugRun(rows[this.debugIndex].id);
+      }
+      if (this.input.wasPressed('Escape', 'KeyP') || (bq && !openedByBq)) {
+        this.debugOpen = false;
+        this.paused = this._dbgWasPaused || false;
+      }
+      this.hud.update(dt, this);
+      return;
+    }
+
     // ---- a guest runs no simulation at all: it draws what the host says ---
     if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
 
@@ -1800,10 +1944,20 @@ export class Game {
     this._refreshProps();
 
     // ---- player ------------------------------------------------------------
+    this._fxOn(this.player);
     this.player.update(dt, this, this.input);
+    if (this.debug.ammo) {
+      for (const id in this.player.loadout) {
+        const sl = this.player.loadout[id], w = WEAPONS[id];
+        if (!sl.owned || !w) continue;
+        sl.mag = w.mag; sl.reserve = w.maxReserve;
+      }
+      this.player.grenades = Math.max(this.player.grenades, 4);
+    }
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
 
     // ---- co-op: the host also drives every body that joined ---------------
+    this._fxOn(this.player);
     if (this.net?.active) this.net.step(dt);
 
     // ---- workbench craft menu (swallows the number keys while open) --------
@@ -1899,7 +2053,8 @@ export class Game {
     }
     if (!this.lastCall) this._lastCallPing = false;
 
-    for (const z of this.zombies) z.update(dt, this);
+    this._fxOn(this.player);        // anything the world itself does is here
+    for (const z of this.zombies) { this._fxOn(z); z.update(dt, this); }
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       if (this.zombies[i].remove) {
         if (this.zombies[i].dead) this.zombies.splice(i, 1);
@@ -1922,11 +2077,11 @@ export class Game {
       }
     }
 
-    for (const g of this.grenades) g.update(dt, this);
+    for (const g of this.grenades) { this._fxOn(g); g.update(dt, this); }
     this.grenades = this.grenades.filter((g) => !g.remove);
 
     // ---- monkey bombs ------------------------------------------------------
-    for (const m of this.monkeys) m.update(dt, this);
+    for (const m of this.monkeys) { this._fxOn(m); m.update(dt, this); }
     for (const m of this.monkeys) {
       if (m.remove) {
         if (this._monkeyKills >= 10) this.achievements.unlock('monkey_business');
@@ -1938,6 +2093,7 @@ export class Game {
     // ---- power-ups ---------------------------------------------------------
     for (const pu of this.powerups) pu.update(dt);
     for (const pu of this.powerups) {
+      if ((pu.f ?? 0) !== this.map.floor) continue;
       if (dist(pu.x, pu.y, this.player.pos.x, this.player.pos.y) < 24) {
         pu.dead = true;
         this.collectPowerup(pu);
@@ -1952,6 +2108,7 @@ export class Game {
         if (this.timers[k] === 0 && k === 'deathmachine') this.player.dmTimer = 0;
       }
     }
+    this._fxOn(this.player);       // ...and back again for the traps and box
     this.traps.update(dt, this);
     this.box.update(dt);
     this.egg.update(dt, this);
@@ -2179,7 +2336,22 @@ export class Game {
   _applyLightScale() {
     const SCALES = [0.25, 0.375, 0.5];
     const i = Math.max(0, Math.min(SCALES.length - 1, (this._userLighting ?? 2) - this._perfStage));
-    this.lighting.setScale(SCALES[i]);
+    // DLSS5 cuts the darkness finer as well. The edge of a shadow is the first
+    // place you notice the staircase, and a sharper cut is the difference
+    // between "lit by a lamp" and "a grey circle on the floor".
+    const scale = SCALES[i] * (this._dlss ? 1.5 : 1);
+    this.lighting.setScale(Math.min(0.75, scale));
+  }
+
+  /**
+   * DLSS5, as far as the renderer is concerned: a finer darkness layer plus
+   * the soft light pass over the top of it. src/main.js owns the switch and
+   * turns it off by itself if the machine cannot keep up.
+   */
+  setDlss(on) {
+    if (this._dlss === !!on) return;
+    this._dlss = !!on;
+    this._applyLightScale();
   }
 
   /**
@@ -2453,6 +2625,7 @@ export class Game {
     this.drawStairs(ctx);
     // 2b. hazards live on the floor: gas first, then fire on top of it
     for (const g of this.gases) {
+      if ((g.f ?? this.map.floor) !== this.map.floor) continue;
       const k = Math.min(1, g.life / g.max);
       const a = 0.30 * Math.min(1, k * 1.6);
       const wob = Math.sin(this.time * 1.6 + g.drift) * 3;
@@ -2467,6 +2640,7 @@ export class Game {
       ctx.restore();
     }
     for (const f of this.fires) {
+      if ((f.f ?? 0) !== this.map.floor) continue;
       const k = Math.min(1, f.life / f.max);
       const flick = 0.86 + Math.sin(this.time * 13 + f.x) * 0.14;
       const r = Math.max(3, f.r * (0.55 + 0.45 * k) * flick);
@@ -2511,6 +2685,7 @@ export class Game {
 
     // 4. tracers -- a punched gun's round is a ribbon of light, not a hairline
     for (const t of this.tracers) {
+      if ((t.f ?? this.map.floor) !== this.map.floor) continue;
       const k = t.life / t.max;
       ctx.save();
       ctx.lineCap = 'round';
@@ -2545,25 +2720,25 @@ export class Game {
       ctx.restore();
     }
 
-    // 5. muzzle flash -- punched guns burn wider and hotter
+    // 5. muzzle flash -- the same for every gun, punched or not
     if (this.muzzleFlash) {
       const m = this.muzzleFlash;
       const k = m.t / 0.055;
-      const size = m.size * (m.packed ? 1.5 : 1);
+      const size = m.size;
       ctx.save();
       ctx.translate(m.x, m.y);
       ctx.rotate(m.a);
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = clamp(k, 0, 1) * (m.packed ? 1 : 0.9);
+      ctx.globalAlpha = clamp(k, 0, 1) * 0.9;
       const g = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
-      g.addColorStop(0, m.packed ? 'rgba(255,255,255,1)' : 'rgba(255,240,200,0.95)');
-      g.addColorStop(0.4, m.packed ? m.colour : 'rgba(255,170,60,0.55)');
+      g.addColorStop(0, 'rgba(255,240,200,0.95)');
+      g.addColorStop(0.4, 'rgba(255,170,60,0.55)');
       g.addColorStop(1, 'rgba(255,120,20,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(0, 0, size, 0, TAU);
       ctx.fill();
-      ctx.fillStyle = m.packed ? 'rgba(255,255,255,0.95)' : 'rgba(255,235,190,0.9)';
+      ctx.fillStyle = 'rgba(255,235,190,0.9)';
       ctx.beginPath();
       ctx.moveTo(0, 0);
       ctx.lineTo(size * 1.5, -3);
@@ -2575,8 +2750,12 @@ export class Game {
     }
 
     // 6. monkey bombs + grenades
-    for (const m of this.monkeys) m.draw(ctx, this.art);
+    for (const m of this.monkeys) {
+      if ((m.floor ?? this.map.floor) !== this.map.floor) continue;
+      m.draw(ctx, this.art);
+    }
     for (const g of this.grenades) {
+      if ((g.floor ?? this.map.floor) !== this.map.floor) continue;
       ctx.save();
       ctx.translate(g.pos.x, g.pos.y);
       ctx.rotate(g.rot);
@@ -2593,6 +2772,7 @@ export class Game {
 
     // 7. lightning arcs + web blasts
     for (const a of this.arcs) {
+      if ((a.f ?? this.map.floor) !== this.map.floor) continue;
       const k = a.life / a.max;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -2611,6 +2791,7 @@ export class Game {
       ctx.restore();
     }
     for (const r of this.shriekRings) {
+      if ((r.f ?? 0) !== this.map.floor) continue;
       const k = r.life / r.maxLife;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -2630,6 +2811,7 @@ export class Game {
       ctx.restore();
     }
     for (const w of this.webBlasts) {
+      if ((w.f ?? 0) !== this.map.floor) continue;
       const k = w.life / w.max;
       ctx.save();
       ctx.globalAlpha = k * 0.7;
@@ -2646,8 +2828,8 @@ export class Game {
     }
 
     // 8. particles + popups
-    this.particles.draw(ctx);
-    this.popups.draw(ctx);
+    this.particles.draw(ctx, this.map.floor);
+    this.popups.draw(ctx, this.map.floor);
 
     // 8. faint eye glow for nearby zombies (pre-baked sprite, not a gradient)
     ctx.save();
@@ -2655,12 +2837,17 @@ export class Game {
     const glowImg = this._eyeGlow();
     const gr = glowImg.width / 2;
     for (const z of this.zombies) {
-      if (z.dead) continue;
+      // the storey matters here: every pair of glowing eyes on another floor
+      // used to drift over your walls, plain as day, while they walked about
+      // upstairs. The bodies themselves were culled -- the glow was not.
+      if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
       const gx = z.pos.x - camX, gy = z.pos.y - camY - HEAD_OFF_Y;
       if (gx < -20 || gy < -20 || gx > vw + 20 || gy > vh + 20) continue;
       ctx.drawImage(glowImg, Math.round(z.pos.x - gr), Math.round(z.pos.y - HEAD_OFF_Y - gr));
     }
     ctx.restore();
+
+    if (this.debug.paths) this.drawDebugWorld(ctx, camX, camY);
 
     ctx.restore();     // <-- back to screen space
 
@@ -2699,6 +2886,7 @@ export class Game {
     this.achievements.drawBanner?.(ctx, vw, vh);
 
     if (this.controlsOpen) drawControls(ctx, this, vw, vh);
+    else if (this.debugOpen) drawDebug(ctx, this, vw, vh);
     else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
@@ -2707,7 +2895,8 @@ export class Game {
     // A menu you cannot see your own pointer in is a menu you cannot use, and
     // a phone has never had one: draw it over everything, wherever the mouse
     // or the last finger is. In the game itself the crosshair does this job.
-    if (this.controlsOpen || this.settingsOpen || this.craftOpen || this.paused || !this.started) {
+    if (this.controlsOpen || this.settingsOpen || this.craftOpen || this.debugOpen
+      || this.paused || !this.started) {
       drawCursor(ctx, this);
     }
   }
@@ -2748,6 +2937,22 @@ export class Game {
       }
     }
     blocked.set(f, set);
+  }
+
+  /**
+   * The storey the next effect belongs to. Everything that sprays, flashes or
+   * floats is spawned from a body that knows which floor it is standing on,
+   * and following that body is cheaper -- and far more reliable -- than
+   * threading a storey number through every call that makes a spark.
+   */
+  get fxFloor() { return this._fxFloor ?? this.map.floor; }
+
+  /** Aim the effect streams at one body before it is updated. */
+  _fxOn(body) {
+    const f = body?.floor ?? this.map.floor;
+    this._fxFloor = f;
+    this.particles.floor = f;
+    this.popups.floor = f;
   }
 
   /** All light positions are world-space; the layer itself is screen-space. */
@@ -2794,6 +2999,7 @@ export class Game {
 
     // burning ground lights the room
     for (const f of this.fires) {
+      if ((f.f ?? 0) !== this.map.floor) continue;
       const k = Math.min(1, f.life / f.max);
       const flick = 0.8 + Math.sin(this.time * 15 + f.x) * 0.2;
       L.point(sx(f.x), sy(f.y), f.r * 2.6, 0.85 * k * flick, hexA('#f0913a', 0.5), 0.55 * k);
@@ -2815,12 +3021,11 @@ export class Game {
     L.point(sx(p.pos.x), sy(p.pos.y - 4), 76, 0.74, 'rgba(255,210,150,0.15)', 0.32);
 
     for (const f of this.flashLights) {
-      // a punched gun lights the room up: bigger, brighter, and it lingers
-      const boost = f.packed ? 1.75 : 1;
-      L.point(sx(f.x), sy(f.y), f.r * boost, 1,
-        f.colour ? hexA(f.colour, f.packed ? 0.85 : 0.5) : 'rgba(255,190,110,0.55)', 0.9 * boost);
+      if ((f.f ?? this.map.floor) !== this.map.floor) continue;
+      L.point(sx(f.x), sy(f.y), f.r, 1, f.colour ? hexA(f.colour, 0.5) : 'rgba(255,190,110,0.55)', 0.9);
     }
     for (const f of this.explosionLights) {
+      if ((f.f ?? this.map.floor) !== this.map.floor) continue;
       const k = f.life / f.max;
       L.point(sx(f.x), sy(f.y), f.r * (0.6 + (1 - k) * 0.6), k,
         f.colour ? hexA(f.colour, 0.65 * k) : `rgba(255,170,80,${0.7 * k})`, 0.9 * k);
@@ -2834,7 +3039,7 @@ export class Game {
       L.point(bx, by, broken ? 96 : 62, broken ? 0.6 : 0.34,
         broken ? 'rgba(126,156,198,0.18)' : 'rgba(110,140,180,0.10)', broken ? 0.34 : 0.18);
     }
-    L.composite(ctx, VW, VH);
+    L.composite(ctx, VW, VH, this._dlss ? 1 : 0);
 
     // lamp fixtures (drawn after the darkness so they stay visible)
     ctx.save();
@@ -3319,6 +3524,7 @@ export class Game {
 
   drawPowerups(ctx) {
     for (const pu of this.powerups) {
+      if ((pu.f ?? 0) !== this.map.floor) continue;
       if (this._vis(pu.x, pu.y, 40)) pu.draw(ctx);
     }
   }
@@ -3327,6 +3533,63 @@ export class Game {
   _vis(x, y, pad = 60) {
     return x > this.cam.x - pad && y > this.cam.y - pad
       && x < this.cam.x + VW + pad && y < this.cam.y + VH + pad;
+  }
+
+  /**
+   * The walls and the paths, drawn over the world so you can see what the
+   * dead are walking into: solid tiles in red, the way every walker means to
+   * go in green, spawn points in yellow, and the furniture with a body in
+   * blue. It costs a screenful of strokes, so it is debug-only.
+   */
+  drawDebugWorld(ctx, camX, camY) {
+    const m = this.map, T2 = T;
+    const tx0 = Math.max(0, Math.floor(camX / T2) - 1);
+    const ty0 = Math.max(0, Math.floor(camY / T2) - 1);
+    const tx1 = Math.min(m.w - 1, Math.ceil((camX + VW) / T2));
+    const ty1 = Math.min(m.h - 1, Math.ceil((camY + VH) / T2));
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (!m.solidAt(tx, ty)) continue;
+        ctx.strokeStyle = 'rgba(230,70,60,0.55)';
+        ctx.strokeRect(tx * T2 + 0.5, ty * T2 + 0.5, T2 - 1, T2 - 1);
+      }
+    }
+    // the furniture that has a body
+    ctx.strokeStyle = 'rgba(110,170,240,0.85)';
+    for (const pr of m.solidProps ?? []) {
+      if ((pr.floor ?? 0) !== this.map.floor) continue;
+      ctx.strokeRect(pr.x0, pr.y0, pr.x1 - pr.x0, pr.y1 - pr.y0);
+    }
+    // where they come in
+    const here = (m.floor === this.map.floor ? m : m.floors[m.floor]);
+    ctx.strokeStyle = 'rgba(240,217,138,0.9)';
+    for (const sp of here?.spawnPoints ?? []) {
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 7, 0, TAU);
+      ctx.stroke();
+    }
+    // and where each of them means to go next
+    ctx.strokeStyle = 'rgba(120,230,120,0.9)';
+    ctx.beginPath();
+    for (const z of this.zombies) {
+      if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+      const st = m.flowStep(z.pos.x, z.pos.y, this.map.floor);
+      if (!st) continue;
+      ctx.moveTo(z.pos.x, z.pos.y);
+      ctx.lineTo(st.x, st.y);
+      ctx.moveTo(st.x - 2, st.y - 2); ctx.lineTo(st.x + 2, st.y + 2);
+      ctx.moveTo(st.x + 2, st.y - 2); ctx.lineTo(st.x - 2, st.y + 2);
+    }
+    ctx.stroke();
+    // the storey you are on, in the corner of the world
+    ctx.fillStyle = 'rgba(240,217,138,0.9)';
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.fillText(`FLOOR ${this.map.floor}  ${this.zombies.filter((z) => !z.dead).length} UP  `
+      + `${this.zombies.filter((z) => !z.dead && (z.floor ?? 0) === this.map.floor).length} HERE`,
+      camX + 8, camY + 16);
+    ctx.restore();
   }
 
   /** Baked once: the soft green eye-glow blobs zombies carry. */

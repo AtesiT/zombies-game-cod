@@ -123,6 +123,52 @@ console.log(`  supersampled: ${off.colours} -> ${on.colours} shades, ` +
   `hard edges ${(off.hard * 100).toFixed(2)}% -> ${(on.hard * 100).toFixed(2)}%, ` +
   `mean step ${off.mean.toFixed(1)} -> ${on.mean.toFixed(1)}`);
 
+// ---- the lighting half: a soft bloom over everything that burns ------------
+// DLSS5 is not only sharper pixels. It cuts the darkness layer finer and then
+// blows the light layer back up over the top of it, so a lamp looks like it is
+// giving off light instead of being stencilled on the floor.
+function litFrame(dlss) {
+  const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
+  g.begin();
+  g.startRound(3);
+  g.setDlss(dlss);
+  for (let i = 0; i < 120; i++) g.update(H);
+  const c = nc(M.VW, M.VH);
+  const cx = c.getContext('2d');
+  g.draw(cx);
+  const d = cx.getImageData(0, 0, M.VW, M.VH).data;
+  let sum = 0, bright = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
+    sum += v;
+    if (v > 60) bright++;
+  }
+  return { mean: sum / (d.length / 4), bright, scale: g.lighting.scale };
+}
+
+const plainLight = litFrame(false);
+const bloomLight = litFrame(true);
+ok(bloomLight.mean > plainLight.mean,
+  `DLSS5 did not make the picture any brighter (${plainLight.mean.toFixed(2)} -> ${bloomLight.mean.toFixed(2)})`);
+ok(bloomLight.bright > plainLight.bright * 1.02,
+  `DLSS5 did not spread the light (${plainLight.bright} -> ${bloomLight.bright} lit pixels)`);
+ok(bloomLight.scale > plainLight.scale,
+  'DLSS5 did not cut the darkness any finer');
+console.log(`  lighting: mean ${plainLight.mean.toFixed(2)} -> ${bloomLight.mean.toFixed(2)}, ` +
+  `lit pixels ${plainLight.bright} -> ${bloomLight.bright}, ` +
+  `shadow layer ${plainLight.scale} -> ${bloomLight.scale}`);
+
+// and it is a switch: turning it back off takes it all away again
+{
+  const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
+  g.begin();
+  g.setDlss(true);
+  const upScale = g.lighting.scale;
+  g.setDlss(false);
+  ok(g.lighting.scale < upScale, 'DLSS5 would not switch back off');
+  ok(!g._dlss, 'the game still thinks DLSS5 is on');
+}
+
 if (fails.length) {
   console.log('DLSS FAIL:');
   for (const f of fails) console.log('  -', f);

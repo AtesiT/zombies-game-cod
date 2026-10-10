@@ -32,6 +32,15 @@ const N8 = [
   [1, 1, COST_DIAG], [1, -1, COST_DIAG], [-1, 1, COST_DIAG], [-1, -1, COST_DIAG],
 ];
 
+// Tiles that are simply there, whatever the barricades and doors are doing:
+// the parse-time solidity of the raw map, used to decide whether an opening
+// really is one. Windows and doors are deliberately not in here -- they are
+// openings, even while they are boarded up.
+const TILE_SOLID = new Set([
+  TILE.WALL, TILE.CRATE, TILE.TREE, TILE.FENCE, TILE.VEHICLE,
+  TILE.VOID, TILE.BUNK, TILE.LOCKER, TILE.TABLE,
+]);
+
 const CHAR_TO_TILE = {
   ' ': TILE.EXTERIOR, '.': TILE.FLOOR, '#': TILE.WALL, W: TILE.WINDOW,
   D: TILE.DOOR, c: TILE.CRATE, r: TILE.RUBBLE, T: TILE.TREE,
@@ -202,9 +211,19 @@ export class GameMap {
       }
     }
 
+    // --- honest openings ---------------------------------------------------
+    // A window tile with a wall on every side of it, and a door standing in
+    // the middle of a room with nothing walled off either side of it, are not
+    // openings: they are boards painted into the masonry, and they look like
+    // a bug because they are one. Solidity here is the tile's own, not the
+    // barricade's -- a window with planks up is solid, but it is still a way
+    // through, and a neighbour's planks must not count as a wall.
+    const idx = (x, y) => y * MAP_W + x;
+    const hardTile = (x, y) => (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H)
+      || TILE_SOLID.has(tiles[idx(x, y)]);
+
     // --- group contiguous window tiles into barricade objects --------------
     const seen = new Uint8Array(this.n);
-    const idx = (x, y) => y * MAP_W + x;
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
         const i = idx(x, y);
@@ -224,10 +243,28 @@ export class GameMap {
         }
         const xs = group.map((g) => g % MAP_W);
         const ys = group.map((g) => (g / MAP_W) | 0);
+        // a window nobody can reach from either side is just a boarded patch
+        // of wall: make it wall and have done with it
+        let openSides = 0;
+        for (const g of group) {
+          const gx = g % MAP_W, gy = (g / MAP_W) | 0;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = gx + dx, ny = gy + dy;
+            if (group.includes(idx(nx, ny))) continue;
+            if (!hardTile(nx, ny)) openSides++;
+          }
+        }
+        if (openSides === 0) {
+          for (const g of group) tiles[g] = TILE.WALL;
+          continue;
+        }
         const b = {
           id: F.barricades.length,
           tiles: group,
+          // the run of tiles says which way the wall goes; a single tile has
+          // to be told by what is solid on either side of it
           horizontal: new Set(ys).size === 1,
+          opening: openSides,
           planks: MAX_PLANKS,
           maxPlanks: MAX_PLANKS,
           hurt: 0,
@@ -244,9 +281,21 @@ export class GameMap {
       for (let x = 0; x < MAP_W; x++) {
         const i = idx(x, y);
         if (tiles[i] !== TILE.DOOR) continue;
+        // Which way does the wall this door is cut into run? Walls above and
+        // below means it runs east-west, and the boards lie east-west too.
+        // (It used to be taken from the *other* axis, which laid every board
+        // across the opening and nailed the ends into the masonry -- the
+        // "barrier inside the wall" you could see on every storey.)
+        const walledUD = hardTile(x, y - 1) && hardTile(x, y + 1);
+        const walledLR = hardTile(x - 1, y) && hardTile(x + 1, y);
+        if (!walledUD && !walledLR) {
+          // no wall to be a doorway in: standing boards in an open room
+          tiles[i] = TILE.FLOOR;
+          continue;
+        }
         const d = {
           id: F.doors.length, tx: x, ty: y, i,
-          horizontal: tiles[idx(x - 1, y)] === TILE.WALL && tiles[idx(x + 1, y)] === TILE.WALL,
+          horizontal: walledUD,
           open: false,
           price: DOOR_PRICES[`${x},${y}`] ?? 750,
           hurt: 0,

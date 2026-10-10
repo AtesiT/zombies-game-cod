@@ -16,14 +16,27 @@ export class Particles {
   constructor(cap = 900) {
     this.items = [];
     this.cap = cap;
+    // The storey the next speck belongs to. The game sets it from whatever
+    // body it is updating -- a walker bleeding on the second floor must not
+    // spray blood over the ground floor you are standing on.
+    this.floor = 0;
   }
   clear() { this.items.length = 0; }
 
   add(p) {
     if (this.items.length >= this.cap) this.items.shift();
     p.age = 0;
+    if (p.f === undefined) p.f = this.floor;
     this.items.push(p);
     return p;
+  }
+
+  /** Draw only the storey you are looking at. */
+  draw(ctx, floor) {
+    for (const p of this.items) {
+      if (floor !== undefined && (p.f ?? 0) !== floor) continue;
+      this._one(ctx, p);
+    }
   }
 
   blood(x, y, dir, amount = 6, scale = 1) {
@@ -135,8 +148,8 @@ export class Particles {
     }
   }
 
-  draw(ctx, decalCtx) {
-    for (const p of this.items) {
+  _one(ctx, p) {
+    {
       const k = 1 - p.age / p.life;
       ctx.save();
       switch (p.type) {
@@ -185,10 +198,15 @@ export class Particles {
 //  Floating score popups
 // ---------------------------------------------------------------------------
 export class Popups {
-  constructor() { this.items = []; }
+  constructor() {
+    this.items = [];
+    // set by the game from whatever body is talking: "+130" belongs to the
+    // storey the walker died on, not to the one you happen to be looking at
+    this.floor = 0;
+  }
   clear() { this.items.length = 0; }
   add(x, y, text, colour = '#e8d9a8', size = 10) {
-    this.items.push({ x: x + randRange(-4, 4), y, text, colour, size, age: 0, life: 0.95, vy: -26 });
+    this.items.push({ x: x + randRange(-4, 4), y, text, colour, size, age: 0, life: 0.95, vy: -26, f: this.floor });
   }
   update(dt) {
     for (let i = this.items.length - 1; i >= 0; i--) {
@@ -199,10 +217,12 @@ export class Popups {
       if (p.age >= p.life) this.items.splice(i, 1);
     }
   }
-  draw(ctx) {
+  /** Draw only the storey you are looking at. */
+  draw(ctx, floor) {
     ctx.save();
     ctx.textAlign = 'center';
     for (const p of this.items) {
+      if (floor !== undefined && (p.f ?? 0) !== floor) continue;
       const k = 1 - p.age / p.life;
       ctx.globalAlpha = clamp(k * 1.8, 0, 1);
       ctx.font = `bold ${p.size}px "Courier New", monospace`;
@@ -452,6 +472,7 @@ export class Player {
 
   hurt(amount, srcX, srcY, game) {
     if (this.invuln > 0 || this.dead) return false;
+    if (game?.debug?.god) return false;          // the debug panel's god mode
     // already on the floor: the hits do not kill you, they hurry you up
     if (this.downed) {
       this.bleedT = Math.max(0, this.bleedT - 3);
@@ -661,7 +682,7 @@ export class Player {
         if (z.dead) continue;
         if (dist(this.pos.x, this.pos.y, z.pos.x, z.pos.y) < 70) z.webbed = Math.max(z.webbed, 3.5);
       }
-      game.webBlasts.push({ x: this.pos.x + Math.cos(this.aim) * 24, y: this.pos.y + Math.sin(this.aim) * 24, r: 46, life: 0.5, max: 0.5 });
+      game.webBlasts.push({ x: this.pos.x + Math.cos(this.aim) * 24, y: this.pos.y + Math.sin(this.aim) * 24, r: 46, life: 0.5, max: 0.5, f: this.floor ?? game.map.floor });
     }
   }
 
@@ -698,18 +719,13 @@ export class Player {
     game.particles.casing(ox, oy, this.aim);
     // a punched gun flashes in the same colour it fires
     const tint = d.packed ? packedTracer(game.time + game.stats.shots * 0.013) : d.tint;
-    // a punched gun is the loudest thing on the map: a wider flash and a
-    // bigger, longer-lived pool of light in the colour it fires
-    const flash = d.packed ? 1.5 : 1;
-    game.muzzleFlash = {
-      x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055,
-      size: (pellets > 1 ? 15 : 11) * flash, colour: tint, packed: d.packed ? 1 : 0,
-    };
-    game.flashLights.push({
-      x: muzzle.x, y: muzzle.y, r: (pellets > 1 ? 150 : 110) * flash,
-      life: d.packed ? 0.12 : 0.075, max: d.packed ? 0.12 : 0.075,
-      colour: tint, packed: d.packed ? 1 : 0,
-    });
+    // The punch changes the *bullet*, not the bang: a punched gun used to
+    // throw a flash half again as big and a light nearly twice the radius,
+    // and that was simply too much -- you could not see the room. The flash
+    // stays exactly as it is for every other gun; what travels brighter is
+    // the round (see tracers in src/game.js).
+    game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: tint };
+    game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: tint, f: this.floor ?? game.map.floor });
     game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
     if (lastRound) audio.lastRound();
@@ -1002,6 +1018,11 @@ export class Zombie {
     }
   }
 
+  /** Is there a floor between me and the player who is listening? */
+  _muffled(game) {
+    return (this.floor ?? 0) !== (game.player?.floor ?? game.map.floor);
+  }
+
   update(dt, game) {
     if (this.dead) {
       this.deadT += dt;
@@ -1044,7 +1065,11 @@ export class Zombie {
     if (this.growlT <= 0) {
       this.growlT = 3 + Math.random() * 9;
       const d = dist(this.pos.x, this.pos.y, game.player.pos.x, game.player.pos.y);
-      if (d < 520) audio.growl(randRange(0.85, 1.2), clamp(1 - d / 520, 0.12, 1));
+      // through a ceiling you still hear them, but only just: the old code
+      // went on distance alone, so a walker pacing about directly overhead
+      // growled as if it were standing in the room with you
+      const v = clamp(1 - d / 520, 0.12, 1) * (this._muffled(game) ? 0.22 : 1);
+      if (d < 520) audio.growl(this._muffled(game) ? 0.72 : randRange(0.85, 1.2), v);
     }
 
     if (this.state === ZSTATE.CLIMB) {
@@ -1082,8 +1107,8 @@ export class Zombie {
           this.state = ZSTATE.EMERGE;
           this.emergeT = 0.5;
           game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 10);
-          game.shake(1.6, 0.14);
-          audio.growl(0.72, 1);
+          if (!this._muffled(game)) game.shake(1.6, 0.14);
+          audio.growl(0.72, this._muffled(game) ? 0.25 : 1);
         }
         return;
       }
@@ -1122,9 +1147,9 @@ export class Zombie {
         this.state = ZSTATE.HUNT;
         this.lunge = 1;
         this.attackCd = 0.25;
-        game.shake(2.4, 0.2);
+        if (!this._muffled(game)) game.shake(2.4, 0.2);
         game.popups.add(this.pos.x, this.pos.y - 32, 'IT MOVED', '#e07a7a', 11);
-        audio.growl(0.7, 1);
+        audio.growl(0.7, this._muffled(game) ? 0.25 : 1);
       }
       return;
     }
@@ -1403,6 +1428,7 @@ export class Zombie {
     audio.shriek();
     game.shriekRings.push({
       x: this.pos.x, y: this.pos.y, r: 8, max: 230, life: 0.75, maxLife: 0.75,
+      f: this.floor ?? game.map.floor,
       colour: '#d0a0e8',
     });
     game.shake(3, 0.25);
@@ -1752,10 +1778,11 @@ export class Zombie {
 //  Monkey Bomb -- the crowd-control wonder weapon
 // ---------------------------------------------------------------------------
 export class MonkeyBomb {
-  constructor(x, y, vx, vy, def) {
+  constructor(x, y, vx, vy, def, floor = 0) {
     this.pos = { x, y };
     this.vel = { x: vx, y: vy };
     this.def = def;
+    this.floor = floor;     // it only distracts the dead on its own storey
     this.fuse = def.fuse ?? 6;
     this.maxFuse = this.fuse;
     this.r = 4;
@@ -1822,9 +1849,10 @@ export class MonkeyBomb {
 //  Grenade
 // ---------------------------------------------------------------------------
 export class Grenade {
-  constructor(x, y, vx, vy) {
+  constructor(x, y, vx, vy, floor = 0) {
     this.pos = { x, y };
     this.vel = { x: vx, y: vy };
+    this.floor = floor;     // it rolls on, and blows up on, the storey it was thrown from
     this.fuse = 2.4;
     this.r = 3;
     this.rot = 0;
@@ -1847,7 +1875,7 @@ export class Grenade {
     const R = 96;
     game.explosion(x, y, R);
     for (const z of game.zombies) {
-      if (z.dead) continue;
+      if (z.dead || (z.floor ?? 0) !== (this.floor ?? 0)) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
       if (d > R) continue;
       if (game.tryCrawl(z, 0.30)) continue;         // blast takes the legs
@@ -1863,16 +1891,17 @@ export class Grenade {
     game.particles.chunk(x, y, randRange(0, TAU), 8);
     if (game.player.perkFx.webs) {
       for (const z of game.zombies) {
-        if (z.dead) continue;
+        if (z.dead || (z.floor ?? 0) !== (this.floor ?? 0)) continue;
         if (dist(x, y, z.pos.x, z.pos.y) < R * 1.2) z.webbed = Math.max(z.webbed, 5);
       }
-      game.webBlasts.push({ x, y, r: R, life: 0.7, max: 0.7 });
+      game.webBlasts.push({ x, y, r: R, life: 0.7, max: 0.7, f: this.floor ?? game.map.floor });
     }
   }
 }
 
 export function throwGrenade(game, px, py, aim) {
   const speed = 380;
-  const g = new Grenade(px, py, Math.cos(aim) * speed, Math.sin(aim) * speed);
+  const g = new Grenade(px, py, Math.cos(aim) * speed, Math.sin(aim) * speed,
+    game.player?.floor ?? game.map.floor);
   game.grenades.push(g);
 }

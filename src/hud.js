@@ -975,6 +975,7 @@ export const CONTROL_ROWS = [
   ['SETTINGS', 'O'],
   ['CONTROLS LIST', 'C   CONTROLS ON THE MENU'],
   ['MUTE', 'M'],
+  ['DEBUG MENU', '`   FIVE TAPS ON THE ROUND (PAUSED)'],
   ['PICK A MENU ROW', 'CLICK   TAP   HOLD AND SLIDE'],
 ];
 
@@ -1199,6 +1200,84 @@ export function drawPause(ctx, game, w, h) {
   text(ctx, 'P / ESC — resume      O — settings      C — controls      R — restart run', w / 2, h * 0.42 + 28, {
     font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
+  ctx.restore();
+}
+
+/**
+ * The debug panel: a list of things you would otherwise have to earn.
+ *
+ * It is a tool for testing, not a part of the game, so it stays out of the
+ * menu and out of the way -- the backquote key opens it, and on a phone
+ * (which has no backquote key) five taps on the round counter do.
+ */
+export const DEBUG_ROW = 22;
+
+/** Where the panel sits, shared by the drawing and the click test. */
+export function debugPanel(game, w, h) {
+  const rows = game.debugRows();
+  const cw = 380, HEAD = 46, FOOT = 40;
+  const ch = HEAD + rows.length * DEBUG_ROW + FOOT;
+  return {
+    rows, cw, ch,
+    x: Math.round((w - cw) / 2),
+    y: Math.round((h - ch) / 2),
+    head: HEAD,
+  };
+}
+
+/** Which row is under this point, or -1. */
+export function debugHitTest(game, w, h, mx, my) {
+  const p = debugPanel(game, w, h);
+  if (mx < p.x || mx > p.x + p.cw) return -1;
+  const i = Math.floor((my - (p.y + p.head)) / DEBUG_ROW);
+  return (i >= 0 && i < p.rows.length) ? i : -1;
+}
+
+export function drawDebug(ctx, game, w, h) {
+  const p = debugPanel(game, w, h);
+  const { x: cx, y: cy, cw, ch, rows } = p;
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.86)';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 28);
+
+  text(ctx, 'DEBUG — FOR TESTING', cx + 14, cy + 19, {
+    font: 'bold 15px "Courier New", monospace', colour: GOLD,
+  });
+
+  let y = cy + p.head;
+  rows.forEach((r, i) => {
+    const sel = i === game.debugIndex;
+    if (sel) {
+      ctx.fillStyle = 'rgba(240,217,138,0.10)';
+      ctx.fillRect(cx + 6, y - 12, cw - 12, 20);
+      ctx.fillStyle = GOLD;
+      ctx.fillRect(cx + 6, y - 12, 2, 20);
+    }
+    const live = r.value === 'ON';
+    text(ctx, r.label, cx + 18, y + 1, {
+      font: 'bold 12px "Courier New", monospace',
+      colour: sel ? INK : INK_DIM,
+    });
+    text(ctx, r.value, cx + cw - 18, y + 1, {
+      font: 'bold 12px "Courier New", monospace',
+      colour: r.value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
+      align: 'right',
+    });
+    y += DEBUG_ROW;
+  });
+
+  text(ctx, 'W / S — pick      ENTER — do it      ` or ESC — close',
+    cx + cw / 2, cy + ch - 16, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
   ctx.restore();
 }
 
