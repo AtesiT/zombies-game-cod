@@ -2,7 +2,7 @@
 import { T, TILE, paintLevel } from './art.js';
 import {
   MAP_W, MAP_H, FLOORS, LEVEL_LINKS, PLAYER_START, SPAWN_POINTS, WALL_BUYS, GRENADE_CRATES,
-  PERK_SPOTS, BOX_SPOTS, STAIRS, POWER_SWITCH, WORKBENCH, SECRET_SWITCHES,
+  PERK_SPOTS, BOX_SPOTS, STAIRS, POWER_SWITCH, WORKBENCH, WORKBENCH_ROOF, SECRET_SWITCHES,
   SECRET_DOOR, SECRET_LOOT, DOOR_PRICES, PAP_SPOT,
 } from './mapData.js';
 import { MinHeap } from './util.js';
@@ -22,6 +22,8 @@ const MAX_PLANKS = 6;
 // solidTileOn, because the hand-written list that used to live inside
 // buildFlow went stale the moment furniture went in upstairs -- and then the
 // horde cheerfully tried to walk through bunks and jammed itself on them.
+const FLOOR_ROOF = 2;      // the top storey: attic and roof, where the bench is
+
 const BLOCKS_FLOW = new Set([
   TILE.WALL, TILE.CRATE, TILE.TREE, TILE.VEHICLE, TILE.VOID, TILE.FENCE,
   TILE.BUNK, TILE.LOCKER, TILE.TABLE, TILE.SECRET_DOOR,
@@ -320,7 +322,10 @@ export class GameMap {
         id: p.id, x: (p.x + 0.5) * T, y: (p.y + 0.5) * T, tx: p.x, ty: p.y,
       }));
       F.powerSwitch = { x: (POWER_SWITCH.x + 0.5) * T, y: (POWER_SWITCH.y + 0.5) * T };
-      F.workbench = { x: (WORKBENCH.x + 0.5) * T, y: (WORKBENCH.y + 0.5) * T };
+      // the bench used to live in the shed down here; it is on the top floor
+      // now, which is what the top floor is for -- and it means carrying your
+      // scrap up three flights while the dead are coming in behind you
+      F.workbench = null;
       F.papSpot = { x: (PAP_SPOT.x + 0.5) * T, y: (PAP_SPOT.y + 0.5) * T };
       F.secretSwitches = SECRET_SWITCHES.map((s, i) => ({
         id: i, x: (s.x + 0.5) * T, y: (s.y + 0.5) * T, found: false,
@@ -329,7 +334,10 @@ export class GameMap {
     } else {
       F.perkSpots = [];
       F.powerSwitch = null;
-      F.workbench = null;
+      // the top storey is the only one with a bench
+      F.workbench = index === FLOOR_ROOF
+        ? { x: (WORKBENCH_ROOF.x + 0.5) * T, y: (WORKBENCH_ROOF.y + 0.5) * T }
+        : null;
       F.papSpot = null;
       F.secretSwitches = [];
       F.secretLoot = [];
@@ -362,9 +370,27 @@ export class GameMap {
       F.cacheSpots = objs.cache.map((c) => ({
         x: (c.x + 0.5) * T, y: (c.y + 0.5) * T, taken: false,
       }));
+      // `always` marks the fittings that run off their own battery -- three
+      // of them upstairs, so the barracks is never a black box while the
+      // generator is still off
       F.lamps = objs.lamps.map((l) => ({
-        x: (l.x + 0.5) * T, y: (l.y + 0.5) * T, mains: true, flick: 1,
+        x: (l.x + 0.5) * T, y: (l.y + 0.5) * T, mains: !l.always,
+        // phase too, or the flicker update turns the lamp's brightness into
+        // NaN on the very first frame and it never burns at all
+        phase: (l.x * 7 + l.y * 13) % 6.283, flick: 1,
       }));
+    }
+
+    // A link tile is the one tile in the building that has to be standable on
+    // both of the storeys it joins. A bunk parked on the west stair landing
+    // upstairs turned it into a one-way trip: you could climb out of the spawn
+    // room and never get back down. Clear anything solid off them.
+    for (const l of this.links) {
+      for (const end of [l.a, l.b]) {
+        if (end.floor !== index) continue;
+        const i = end.ty * MAP_W + end.tx;
+        if (BLOCKS_FLOW.has(tiles[i]) && tiles[i] !== TILE.VOID) tiles[i] = TILE.FLOOR;
+      }
     }
 
     F.staticCanvas = paintLevel(tiles, MAP_W, MAP_H, 20240917 + index * 7919, index);

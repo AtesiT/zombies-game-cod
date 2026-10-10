@@ -70,14 +70,17 @@ ok(!plain.g.tracers.at(-1).packed, 'an unpunched tracer is marked as packed');
 ok(packed.g.tracers.at(-1).life > plain.g.tracers.at(-1).life,
   'a punched tracer vanishes as fast as a plain one');
 
-// the flash is the same size it always was
-ok(Math.abs(packed.g.muzzleFlash.size - plain.g.muzzleFlash.size) < 0.01,
+// A punched gun is meant to be flashier *downrange*, not blinder in your own
+// face -- the flash used to cover a third of the room and wash the walls out
+// for four frames. So the punched flash is the smallest of the lot.
+ok(packed.g.muzzleFlash.size < plain.g.muzzleFlash.size * 0.8,
   `a punched muzzle flash is ${packed.g.muzzleFlash.size}, an unpunched one is ${plain.g.muzzleFlash.size}`);
+ok(packed.g.muzzleFlash.size > 2, 'the punched flash has shrunk to nothing at all');
 
-// and it throws the same pool of light
+// and it throws a smaller pool of light, for the same time
 const pf = packed.g.flashLights.at(-1), nf = plain.g.flashLights.at(-1);
 ok(!!pf && !!nf, 'firing did not make a light');
-ok(Math.abs(pf.r - nf.r) < 0.01, `a punched shot lights ${pf.r}px against ${nf.r}px`);
+ok(pf.r < nf.r * 0.8, `a punched shot lights ${pf.r}px against ${nf.r}px`);
 ok(Math.abs(pf.life - nf.life) < 0.001, 'a punched shot light lasts a different time');
 
 // ---- and the light actually reaches the renderer ---------------------------
@@ -106,11 +109,12 @@ for (const [name, s] of [['plain', plain], ['punched', packed]]) {
 }
 
 // the player's own torch is the same in both frames, so compare the total:
-// a punched shot must not light the room up any more than a plain one
+// a punched shot must light the room up *less* than a plain one, not more
 const lit = (s) => litPoints(s.g).reduce((n, l) => n + l.r, 0);
 const plainSum = lit(plain), packedSum = lit(packed);
-ok(Math.abs(packedSum - plainSum) < 1,
+ok(packedSum < plainSum,
   `the punched frame throws ${(packedSum - plainSum).toFixed(0)}px more light than the plain one`);
+ok(packedSum > plainSum * 0.5, 'the punched shot has stopped lighting anything at all');
 
 // ---- the round itself is what travels brighter ------------------------------
 // Same shot, same place, one plain and one punched: the punched one has to

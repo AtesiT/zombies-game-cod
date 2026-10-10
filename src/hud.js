@@ -3,6 +3,7 @@ import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
 import { RECIPES, RECIPE_ORDER } from './crafting.js';
+import { ACHIEVEMENTS } from './achievements.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
 import { T } from './art.js';
@@ -173,6 +174,7 @@ export class HUD {
     this._lowHealth(ctx, game, w, h);
     this._damageDirs(ctx, game, w, h);
     this._crosshair(ctx, game, w, h);   // doubles as the mouse cursor
+    this._boxArrow(ctx, game, w, h);
 
     ctx.save();
     // soft gradient strip behind the bottom HUD so it reads on any background
@@ -190,8 +192,13 @@ export class HUD {
     this._perks(ctx, game, w, h);
     this._timers(ctx, game, w, h);
     this._scrap(ctx, game, w, h);
-    this._prompt(ctx, game, w, h);
-    this._minimap(ctx, game, w, h);
+    // While a Jammer is close the picture it takes away is everything that
+    // thinks for you: the prompts, the prices, the little map in the corner.
+    if (!game.jammed) {
+      this._prompt(ctx, game, w, h);
+      this._minimap(ctx, game, w, h);
+    }
+    this._jam(ctx, game, w, h);
     this._net(ctx, game, w, h);
     this._squad(ctx, game, w, h);
     this._revive(ctx, game, w, h);
@@ -200,6 +207,117 @@ export class HUD {
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
     this._toast(ctx, game, w, h);
+  }
+
+  /**
+   * A brass arrow at the edge of the screen pointing at the Magic Box.
+   *
+   * The crate has five homes on the ground floor and three on each of the
+   * floors above, and it packs up and moves between them once the teddy bear
+   * comes for it -- so people quite reasonably think there are several boxes.
+   * There is one; it just wanders. This is how you find it again. It sits
+   * quiet while you are near enough to see it, and flares for a few seconds
+   * after it has moved.
+   */
+  _boxArrow(ctx, game, w, h) {
+    this._boxArrowAt = null;
+    const box = game.box;
+    if (!box || box.state === 'gone') return;
+    const s = box.spot;
+    if (!s) return;
+    const sx = s.x - game.cam.x, sy = s.y - game.cam.y;
+    const pad = 30;
+    if (sx > -pad && sx < w + pad && sy > -pad && sy < h + pad) return;
+
+    const cx = w / 2, cy = h / 2;
+    const a = Math.atan2(sy - cy, sx - cx);
+    const hw = Math.max(20, w / 2 - pad), hh = Math.max(20, h / 2 - pad);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const t = Math.min(Math.abs(ca) > 1e-4 ? hw / Math.abs(ca) : 1e9,
+                       Math.abs(sa) > 1e-4 ? hh / Math.abs(sa) : 1e9);
+    const px = cx + ca * t, py = cy + sa * t;
+    this._boxArrowAt = { x: px, y: py, a };
+
+    const fresh = (game.time ?? 0) - box.movedAt < 6;
+    const pulse = fresh ? 0.75 + 0.25 * Math.sin((game.time ?? 0) * 9) : 0.4;
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(a);
+    ctx.globalAlpha = pulse;
+    // a chevron
+    ctx.fillStyle = fresh ? '#ffe9a8' : '#a8853c';
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-6, -7);
+    ctx.lineTo(-2, 0);
+    ctx.lineTo(-6, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = pulse * 0.9;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-6, -7);
+    ctx.lineTo(-2, 0);
+    ctx.lineTo(-6, 7);
+    ctx.closePath();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.stroke();
+    ctx.restore();
+
+    if (fresh) {
+      const far = Math.round(Math.hypot(s.x - game.player.pos.x, s.y - game.player.pos.y) / 24);
+      ctx.save();
+      ctx.globalAlpha = 0.8;
+      ctx.font = 'bold 8px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      const tx = px - ca * 13, ty = py - sa * 13;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillText(`${far}m`, tx + 1, ty + 4);
+      ctx.fillStyle = '#f0d98a';
+      ctx.fillText(`${far}m`, tx, ty + 3);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * What a Jammer looks like from behind the sights: a picture that will not
+   * quite settle, and a countdown you can read. Deliberately not a black
+   * screen -- you can still fight, you just cannot be told where everything is.
+   */
+  _jam(ctx, game, w, h) {
+    if (!game.jammed) return;
+    const t = game.time ?? 0;
+    ctx.save();
+    // rolling interference bands
+    ctx.globalAlpha = 0.10 + Math.sin(t * 7) * 0.03;
+    ctx.fillStyle = '#9fd0e0';
+    const band = (t * 90) % (h + 120) - 60;
+    ctx.fillRect(0, band, w, 3);
+    ctx.fillRect(0, (band + h * 0.45) % (h + 120) - 60, w, 2);
+    // a few torn horizontal streaks, seeded off the clock
+    ctx.globalAlpha = 0.13;
+    for (let i = 0; i < 7; i++) {
+      const y = ((i * 97 + Math.floor(t * 11) * 53) % h) | 0;
+      const x = ((i * 151 + Math.floor(t * 7) * 29) % w) | 0;
+      ctx.fillRect(x, y, 20 + (i % 4) * 22, 1);
+    }
+    ctx.restore();
+
+    ctx.save();
+    const secs = Math.ceil(game.jamT);
+    const pulse = 0.65 + Math.sin(t * 6) * 0.25;
+    ctx.globalAlpha = pulse;
+    ctx.font = 'bold 10px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    const label = `NO SIGNAL  ${secs}`;
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillText(label, w / 2 + 1, h - 96);
+    ctx.fillStyle = '#9fd0e0';
+    ctx.fillText(label, w / 2, h - 97);
+    ctx.restore();
   }
 
   // ------------------------------------------------------------------ net --
@@ -664,10 +782,22 @@ export class HUD {
   // ------------------------------------------------------------ crosshair --
   _crosshair(ctx, game, w, h) {
     const m = game.input.mouse;
-    const onTarget = settings.get('crosshair') && game.aimOnTarget;
-    const spread = 5 + game.player.def.spread * 320
-      + Math.hypot(game.player.vel.x, game.player.vel.y) * 0.045
-      + game.player.recoil * 1.4 + game.player.kickVis * 5;
+    const p = game.player;
+    // a Jammer takes the target highlight away with the rest of the markers
+    const onTarget = settings.get('crosshair') && game.aimOnTarget && !game.jammed;
+    // The ring shows the cone the next shot will actually land in, worked out
+    // from the very same spread the bullet gets -- it used to be a lookalike
+    // formula with its own constants, so it lied: a shotgun's ring was 42px
+    // wide with a formula that had nothing to do with where the pellets went,
+    // and it jumped about the moment you twitched or changed guns.
+    const moveSpread = Math.hypot(p.vel.x, p.vel.y) / Math.max(1, p.speed);
+    const cone = p.def.spread * (1 + moveSpread * 1.3);
+    const want = 4 + Math.min(24, cone * 210) + p.recoil * 1.4 + p.kickVis * 3;
+    // and it eases into place instead of snapping
+    this._xhair = this._xhair === undefined
+      ? want
+      : this._xhair + (want - this._xhair) * 0.3;
+    const spread = this._xhair;
     const len = 5;
     ctx.save();
     ctx.strokeStyle = 'rgba(0,0,0,0.6)';
@@ -1032,6 +1162,89 @@ export function drawControls(ctx, game, w, h) {
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+//  Achievements screen. Every badge the run can earn, laid out with what it
+//  takes and whether it is yours yet. Scrolls: up/down and the wheel walk it.
+// ---------------------------------------------------------------------------
+const ACH_ROW = 40;
+
+export function achPanel(game, w, h) {
+  const cw = Math.min(w - 20, 540);
+  const ch = Math.min(h - 20, 460);
+  return {
+    cw, ch,
+    x: Math.round((w - cw) / 2),
+    y: Math.round((h - ch) / 2),
+    head: 46, foot: 26,
+  };
+}
+
+export function drawAchievements(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.9)';
+  ctx.fillRect(0, 0, w, h);
+
+  const p = achPanel(game, w, h);
+  const { x: cx, y: cy, cw, ch, head, foot } = p;
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  const unlocked = game.achievements?.unlocked ?? new Set();
+  text(ctx, 'ACHIEVEMENTS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, `${unlocked.size} / ${ACHIEVEMENTS.length}`, cx + cw - 14, cy + 20, {
+    font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+  });
+
+  // visible window
+  const rowsH = ch - head - foot;
+  const visible = Math.floor(rowsH / ACH_ROW);
+  const maxScroll = Math.max(0, ACHIEVEMENTS.length - visible);
+  const scroll = Math.max(0, Math.min(game.achScroll ?? 0, maxScroll));
+
+  // scroll bar
+  if (maxScroll > 0) {
+    const bx = cx + cw - 6;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(bx, cy + head, 3, rowsH);
+    const th = Math.max(24, rowsH * (visible / ACHIEVEMENTS.length));
+    const ty = cy + head + (rowsH - th) * (scroll / maxScroll);
+    ctx.fillStyle = 'rgba(240,217,138,0.5)';
+    ctx.fillRect(bx, ty, 3, th);
+  }
+
+  let y = cy + head + ACH_ROW * 0.66;
+  for (let i = scroll; i < Math.min(scroll + visible, ACHIEVEMENTS.length); i++) {
+    const a = ACHIEVEMENTS[i];
+    const got = unlocked.has(a.id);
+    // icon
+    ctx.fillStyle = got ? '#2b3038' : '#1a1d23';
+    ctx.fillRect(cx + 14, y - 13, 26, 26);
+    ctx.strokeStyle = got ? GOLD : '#3a3f4a';
+    ctx.strokeRect(cx + 14.5, y - 12.5, 25, 25);
+    ctx.save();
+    if (got) { ctx.globalAlpha = 1; }
+    else { ctx.globalAlpha = 0.4; }
+    text(ctx, a.icon, cx + 27, y + 3, { font: 'bold 12px "Courier New", monospace', colour: got ? GOLD : '#8a8371', align: 'center' });
+    ctx.restore();
+    // name + description
+    text(ctx, a.name, cx + 50, y - 4, { font: 'bold 11px "Courier New", monospace', colour: got ? '#e6dcc2' : '#5c5748' });
+    text(ctx, a.desc, cx + 50, y + 9, { font: '9px "Courier New", monospace', colour: got ? '#8f8a7a' : '#4a463a' });
+    // earned tick
+    if (got) text(ctx, '\u2713', cx + cw - 20, y + 3, { font: 'bold 13px "Courier New", monospace', colour: '#8fdc6a', align: 'right' });
+    y += ACH_ROW;
+  }
+
+  text(ctx, 'UP / DOWN OR WHEEL TO SCROLL      ESC TO CLOSE', cx + cw / 2, cy + ch - 9, {
+    font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  });
+  ctx.restore();
+}
+
 export function menuRows(scene, game) {
   if (scene === 'mp') {
     const net = game.net;
@@ -1062,6 +1275,7 @@ export function menuRows(scene, game) {
   return [
     { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
     { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
+    { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
     { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
     { id: 'settings', label: 'SETTINGS', hint: 'volume, lighting, on-screen controls' },
   ];
@@ -1212,13 +1426,41 @@ export function drawPause(ctx, game, w, h) {
  */
 export const DEBUG_ROW = 22;
 
-/** Where the panel sits, shared by the drawing and the click test. */
+/** The tabs along the top of the debug panel. */
+export const DEBUG_TABS = [
+  { id: 'cheats', label: 'CHEATS' },
+  { id: 'zombies', label: 'ZOMBIES' },
+];
+
+/** Where the strip of tabs sits, shared by the drawing and the click test. */
+export function debugTabBar(game, w, h) {
+  const p = debugPanel(game, w, h);
+  return { x: p.x + 1, y: p.y + 30, w: p.cw - 2, h: 22, tabs: DEBUG_TABS };
+}
+
+/** Which tab is under this point, or -1. */
+export function debugTabHit(game, w, h, mx, my) {
+  const b = debugTabBar(game, w, h);
+  if (my < b.y || my > b.y + b.h) return -1;
+  const tabW = b.w / b.tabs.length;
+  const i = Math.floor((mx - b.x) / tabW);
+  return (i >= 0 && i < b.tabs.length && mx >= b.x && mx <= b.x + b.w) ? i : -1;
+}
+
+/**
+ * Where the panel sits, shared by the drawing and the click test.
+ *
+ * The rows get shorter when there are a lot of them -- the zoo tab has one
+ * row per creature, and at the full height the panel would not fit on screen
+ * at all.
+ */
 export function debugPanel(game, w, h) {
   const rows = game.debugRows();
-  const cw = 380, HEAD = 46, FOOT = 40;
-  const ch = HEAD + rows.length * DEBUG_ROW + FOOT;
+  const cw = 380, HEAD = 46 + 24, FOOT = 40;   // the extra 24 is the tab strip
+  const rowH = rows.length > 13 ? 18 : DEBUG_ROW;
+  const ch = Math.min(h - 16, HEAD + rows.length * rowH + FOOT);
   return {
-    rows, cw, ch,
+    rows, cw, ch, rowH,
     x: Math.round((w - cw) / 2),
     y: Math.round((h - ch) / 2),
     head: HEAD,
@@ -1229,7 +1471,7 @@ export function debugPanel(game, w, h) {
 export function debugHitTest(game, w, h, mx, my) {
   const p = debugPanel(game, w, h);
   if (mx < p.x || mx > p.x + p.cw) return -1;
-  const i = Math.floor((my - (p.y + p.head)) / DEBUG_ROW);
+  const i = Math.floor((my - (p.y + p.head)) / p.rowH);
   return (i >= 0 && i < p.rows.length) ? i : -1;
 }
 
@@ -1252,14 +1494,32 @@ export function drawDebug(ctx, game, w, h) {
     font: 'bold 15px "Courier New", monospace', colour: GOLD,
   });
 
+  // ---- tabs -------------------------------------------------------------
+  const b = debugTabBar(game, w, h);
+  const tabW = b.w / b.tabs.length;
+  b.tabs.forEach((tab, i) => {
+    const onTab = i === (game.debugTab ?? 0);
+    ctx.fillStyle = onTab ? '#2b3038' : '#191c22';
+    ctx.fillRect(b.x + i * tabW, b.y, tabW - 1, b.h);
+    if (onTab) {
+      ctx.fillStyle = GOLD;
+      ctx.fillRect(b.x + i * tabW, b.y + b.h - 2, tabW - 1, 2);
+    }
+    text(ctx, tab.label, b.x + i * tabW + tabW / 2, b.y + 15, {
+      font: 'bold 11px "Courier New", monospace',
+      colour: onTab ? GOLD : INK_DIM, align: 'center',
+    });
+  });
+
   let y = cy + p.head;
   rows.forEach((r, i) => {
     const sel = i === game.debugIndex;
     if (sel) {
+      const bh = p.rowH - 2, by = y - Math.round(p.rowH * 0.6);
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
-      ctx.fillRect(cx + 6, y - 12, cw - 12, 20);
+      ctx.fillRect(cx + 6, by, cw - 12, bh);
       ctx.fillStyle = GOLD;
-      ctx.fillRect(cx + 6, y - 12, 2, 20);
+      ctx.fillRect(cx + 6, by, 2, bh);
     }
     const live = r.value === 'ON';
     text(ctx, r.label, cx + 18, y + 1, {
@@ -1271,10 +1531,10 @@ export function drawDebug(ctx, game, w, h) {
       colour: r.value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
       align: 'right',
     });
-    y += DEBUG_ROW;
+    y += p.rowH;
   });
 
-  text(ctx, 'W / S — pick      ENTER — do it      ` or ESC — close',
+  text(ctx, 'W / S — pick      \u2190 / \u2192 — tab      ENTER — do it      ` or ESC — close',
     cx + cw / 2, cy + ch - 16, {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });

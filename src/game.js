@@ -13,8 +13,8 @@ import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
-import { Lighting, drawVignette } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest} from './hud.js';
+import { Lighting, drawVignette, postgrade } from './lighting.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -76,6 +76,31 @@ export function hexA(hex, a) {
  * Ceiling lamps, bunker floodlights and machine glows.
  * `mains: true` fixtures only burn once the generator is running.
  */
+/**
+ * Every storey has its own night. The ground floor is the deepest room in the
+ * building; the barracks has windows along two walls; the roof is outside,
+ * under the moon, and pretending otherwise makes it a black rectangle.
+ * (alpha is how much darkness is laid over the scene: lower is brighter.)
+ */
+const AMBIENT = [
+  { rgb: [19, 25, 40], alpha: 0.66 },     // ground floor: the deepest room
+  { rgb: [25, 31, 49], alpha: 0.42 },     // second floor: windows on two walls
+  { rgb: [36, 44, 66], alpha: 0.20 },     // roof: outdoors, under the moon
+];
+
+/**
+ * How much of the night is taken back off each storey. The darkness layer
+ * only ever subtracts, so a moonlit roof is a hole punched in it *plus* a
+ * little light of its own -- upstairs the boards and the tar paper are far
+ * darker than the ground floor to begin with, and laying the same night over
+ * them turned two whole storeys into a cave.
+ */
+const SKY_LIGHT = [
+  null,                                                        // ground floor: no sky
+  { power: 0.40, colour: 'rgba(124,154,208,0.12)', glow: 0.20 },  // barracks: windows both sides
+  { power: 0.88, colour: 'rgba(152,184,238,0.24)', glow: 0.54 },  // roof: open sky and moon
+];
+
 const LAMPS = [
   // room A
   { x: 16, y: 12, mains: true }, { x: 23, y: 12, mains: true }, { x: 19, y: 16, mains: true },
@@ -229,6 +254,8 @@ export class Game {
     // part of the game -- it opens on the backquote key, or, on a phone that
     // has no such key, on five taps of the round counter.
     this.debugOpen = false;
+    this.debugTab = 0;      // 0 = cheats, 1 = the zoo
+    this._dbgWhere = 'front';   // where the zoo tab drops what it spawns
     this.debugIndex = 0;
     this.debug = { god: false, ammo: false, paths: false };
     this._dbgTaps = 0;
@@ -248,17 +275,24 @@ export class Game {
 
     this.stats = {
       round: 0, kills: 0, headshots: 0, points: 0, shots: 0, hits: 0, planks: 0, doors: 0,
+      // creature + crafting tallies, for the newer achievements
+      crafted: 0, knifeKills: 0, skeletonKills: 0, grenadeBest: 0,
+      teddyDraws: 0, darkKills: 0, darkRound: true,
     };
+    this.floorsVisited = new Set();   // storeys touched this run, for Grand Tour
 
     // --- systems ---------------------------------------------------------
     this.powerOn = false;
     this.powerSurge = 0;
     this.box = new MysteryBox(this.map.boxSpots);
+    this.box._now = () => this.time;
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches);
     this.craftOpen = false;
     this.dogRound = false;
     this.timers = { instakill: 0, doublepoints: 0, firesale: 0, deathmachine: 0 };
+    this.jamT = 0;            // seconds of radio silence a Jammer has bought
+    this.jamSrc = null;
     this.killsSinceDrop = 0;
     this.roundDamageTaken = 0;
     this.weather = { wind: Math.random() * TAU, gust: 0, leaves: [], rain: null, fog: 0 };
@@ -363,6 +397,8 @@ export class Game {
   useFloor(floor) {
     this.decals = this._decalFor(floor);
     this.decalCtx = this._decalCtx[floor];
+    // the bench is in the attic: it exists on the top storey and nowhere else
+    this.workbench?.useSpot(this.map.workbench);
     // the mystery box has a spot on every storey: follow the one we are on,
     // or it keeps the ground floor's and stands inside a wall upstairs
     this._boxOnFloor();
@@ -396,6 +432,28 @@ export class Game {
     this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
   }
 
+  /**
+   * A Jammer has got its set close enough to take your markers away: the
+   * minimap, the prices on the doors, the machines and the crosshair telling
+   * you that you are on target. Ten seconds, refreshed for as long as one is
+   * still standing near you -- kill it and the picture comes back at once.
+   *
+   * Your guns still work, and so do your ears. That is the whole counter.
+   */
+  jam(dur = 10, src = null) {
+    const was = this.jamT > 0;
+    this.jamT = Math.max(this.jamT, dur);
+    if (src) this.jamSrc = src;
+    if (!was) {
+      this.bannerShow('SIGNAL JAMMED', 'no markers -- find the radio', { dur: 2.6, colour: '#9fd0e0' });
+      audio.shriek(0.6);
+      this.shake(2.5, 0.2);
+    }
+  }
+
+  /** Is the player's picture being jammed right now? */
+  get jammed() { return this.jamT > 0; }
+
   /** Points belong to a body, not to the match -- four of you, four wallets. */
   get points() { return this.player ? this.player.points : 0; }
   set points(v) { if (this.player) this.player.points = v; }
@@ -406,6 +464,7 @@ export class Game {
     if (t === this.player) {
       this.stats.points += Math.max(0, n);
       if (n > 0) this.hud.pointPulse = 1;
+      if (t.points >= 10000) this.achievements.unlock('big_spender');
     }
     if (x !== undefined) this.popups.add(x, y, (n > 0 ? '+' : '') + n, colour);
   }
@@ -529,12 +588,19 @@ export class Game {
     const minerChance = Math.min(0.065, Math.max(0, (r - 11) * 0.010));
     const medicChance = Math.min(0.05, Math.max(0, (r - 12) * 0.009));
     const mimicChance = Math.min(0.04, Math.max(0, (r - 14) * 0.007));
+    // the first three of the creature shortlist. The Bonewright is rare and
+    // early -- one of it changes a round from a shooting gallery into a job --
+    // while the swarm and the jammer belong to the late game.
+    const boneChance = Math.min(0.05, Math.max(0, (r - 5) * 0.006));
+    const swarmChance = Math.min(0.07, Math.max(0, (r - 17) * 0.010));
+    const jammerChance = Math.min(0.05, Math.max(0, (r - 24) * 0.008));
     const x = Math.random();
     let acc = 0;
     for (const [type, chance] of [
       ['shrieker', shriekChance], ['helmet', helmetChance], ['gasbag', gasChance],
       ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
       ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
+      ['bonewright', boneChance], ['swarmling', swarmChance], ['jammer', jammerChance],
     ]) {
       acc += chance;
       if (x < acc) return type;
@@ -606,6 +672,7 @@ export class Game {
     if (n >= 10) this.achievements.unlock('round_10');
     if (n >= 20) this.achievements.unlock('round_20');
     if (n >= 30) this.achievements.unlock('round_30');
+    if (n >= 40) this.achievements.unlock('round_40');
     if (n >= 10 && this.stats.doors === 0) this.achievements.unlock('recluse');
   }
 
@@ -661,7 +728,21 @@ export class Game {
     for (const g of group) { cx += g.pos.x; cy += g.pos.y; hp += g.maxHp; }
     cx /= group.length; cy /= group.length;
 
+    // The average of several open tiles can land inside a crate between them;
+    // an amalgam born in the wall would never move again. Nudge it onto floor.
+    if (this.map.solidTileOn(this.map.floor, Math.floor(cx / T), Math.floor(cy / T))) {
+      const at = this._besideTile(cx, cy);
+      cx = at.x; cy = at.y;
+    }
+
     const fused = this.makeZombie({ x: cx, y: cy, floor: this.map.floor }, 'fusion');
+    // makeZombie jitters the body a little; that nudge can shove a fusion born
+    // at the edge of a crate back into it. Pin the result to open floor.
+    if (this.map.solidTileOn(this.map.floor,
+      Math.floor(fused.pos.x / T), Math.floor(fused.pos.y / T))) {
+      const at = this._besideTile(fused.pos.x, fused.pos.y);
+      fused.pos.x = at.x; fused.pos.y = at.y;
+    }
     fused.maxHp = Math.round(hp * 1.15);
     fused.hp = fused.maxHp;
     fused.state = 0;                 // CLIMB: a moment of it heaving itself together
@@ -849,8 +930,13 @@ export class Game {
   }
 
   onZombieKilled(z, head, ptsOverride = null, source = 'bullet') {
-    this.zombiesKilled++;
+    // Skeletons and the pieces that come off a swarm are not part of the
+    // round's tally -- they are made during it. They do not bring the round
+    // closer to done; they only hold it open until you have killed them too.
+    if (!z.summoned) this.zombiesKilled++;
     const who = z._by ?? this.player;
+    // the set goes off the air the moment the thing carrying it does
+    if (z.def.jams && this.jamT > 0) { this.jamT = Math.min(this.jamT, 0.45); this.jamSrc = null; }
     if (z.type === 'medic') this.say('medic');
     else if (z.type === 'fusion') this.say('amalgam');
     this.stats.kills++;
@@ -884,6 +970,24 @@ export class Game {
     if (this.player.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
     if (source === 'monkey') this._monkeyKills = (this._monkeyKills ?? 0) + 1;
     if (source === 'trap') this.traps.kills++;
+    // the creature shortlist, tallied by kind
+    if (z.type === 'bonewright') this.achievements.unlock('bone_collector');
+    if (z.type === 'swarmling') this.achievements.unlock('swarm_season');
+    if (z.def.jams) this.achievements.unlock('off_the_air');
+    if (z.type === 'skeleton') {
+      this.stats.skeletonKills++;
+      if (this.stats.skeletonKills >= 10) this.achievements.unlock('skeleton_key');
+    }
+    // knife work
+    if (source === 'knife') {
+      this.stats.knifeKills++;
+      if (this.stats.knifeKills >= 25) this.achievements.unlock('knife_work');
+    }
+    // a kill taken before the power ever came on
+    if (!this.powerOn) {
+      this.stats.darkKills++;
+      if (this.stats.darkKills >= 15) this.achievements.unlock('lights_out');
+    }
   }
 
   /** Napalm zombies go up in a pool of burning fuel. */
@@ -1061,7 +1165,8 @@ export class Game {
       const low = z.def.low ? 0.72 : 1;
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
       const headR = 5.2 * low;
-      if (res.d2 > headR * headR) {
+      // no head on a skeleton: there is nothing to aim at but the ribs
+      if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1);
         if (res.d2 > bodyR * bodyR) continue;
@@ -1100,7 +1205,7 @@ export class Game {
       const low = z.def.low ? 0.72 : 1;
       const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low;
       const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1);
-      if (res.d2 > headR * headR) {
+      if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         if (res.d2 > bodyR * bodyR) continue;
       } else head = true;
@@ -1123,6 +1228,9 @@ export class Game {
       anyHit = true;
       if (!firstHit) firstHit = h;
       this.stats.hits++;
+      if (this.stats.shots >= 100 && this.stats.hits / this.stats.shots >= 0.5) {
+        this.achievements.unlock('marksman');
+      }
       // the hit pays the hands that made it, and the marker lights up on that
       // player's screen only -- it used to light up the host's, whoever fired
       this.addPoints(POINTS_HIT, h.x, h.y - 8, h.head ? '#f0d98a' : 'rgba(230,220,194,0.9)',
@@ -1416,7 +1524,10 @@ export class Game {
         const kind = p.giveWeapon(id);
         audio.buy();
         this.popups.add(p.pos.x, p.pos.y - 26, WEAPONS[id].name.toUpperCase(), '#f0d98a', 12);
-        if (WEAPONS[id].wonder) this.achievements.unlock('wonder_seeker');
+        if (WEAPONS[id].wonder) {
+          this.achievements.unlock('wonder_seeker');
+          if ((this.stats.teddyDraws ?? 0) === 0) this.achievements.unlock('lucky_pull');
+        }
         if (p.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
         return;
       }
@@ -1426,6 +1537,7 @@ export class Game {
       const res = this.box.spin();
       audio.boxSpin();
       if (res === 'teddy') {
+        this.stats.teddyDraws++;
         this.bannerShow('THE BOX MOVES', 'you hear a faint giggle', { dur: 2.4, colour: '#f0a0d0' });
       }
       return;
@@ -1622,6 +1734,8 @@ export class Game {
     this.bannerShow(this.map.floorName, link?.name ?? '', { dur: 1.7, colour: '#9fd0f0' });
     if (n === 2) this.achievements.unlock('up_on_the_roof');
     if (n === 1) this.achievements.unlock('upstairs');
+    this.floorsVisited?.add(n);
+    if (this.floorsVisited?.size >= 3) this.achievements.unlock('tourist');
     this.rebuildFlow();
   }
 
@@ -1715,13 +1829,61 @@ export class Game {
       return false;
     }
     this.workbench.craft(this, id);
+    this.stats.crafted++;
+    if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
+    if (id === 'medkit') this.achievements.unlock('field_medic');
     audio.buy();
     this.popups.add(this.player.pos.x, this.player.pos.y - 26, r.name.toUpperCase(), r.colour, 12);
     return true;
   }
 
   /** The debug panel as data, so the HUD can draw it and the mouse can hit it. */
+  /**
+   * A tab for the cheats and a tab for the zoo. The zoo lists every creature
+   * in the game -- including the ones that never spawn on their own -- so you
+   * can put one in front of you and find out what it does.
+   */
+  _zooRows() {
+    const alive = (t) => this.zombies.reduce((n, z) => n + (!z.dead && z.type === t ? 1 : 0), 0);
+    const rows = Object.keys(ENEMY_TYPES).map((t) => ({
+      id: `spawn:${t}`,
+      label: `SPAWN  ${ENEMY_TYPES[t].name.toUpperCase()}`,
+      value: alive(t) > 0 ? `${alive(t)} LOOSE` : 'GO',
+    }));
+    rows.push({ id: 'where', label: 'DROP THEM (toggle)', value: this._dbgWhere === 'front' ? 'IN FRONT OF ME' : 'AT A WINDOW' });
+    rows.push({ id: 'freeze', label: 'HOLD THEM STILL', value: this._dbgFreeze ? 'HELD' : 'GO' });
+    rows.push({ id: 'clear', label: 'CLEAR THE HORDE', value: 'GO' });
+    return rows;
+  }
+
+  /** Put one of anything in front of you, on an open tile. */
+  _debugSpawn(type) {
+    let x, y;
+    const floor = this.map.floor;
+    if (this._dbgWhere === 'window') {
+      const pick = this.pickSpawn();
+      const sp = pick?.s ?? pick;
+      if (sp) { x = sp.x; y = sp.y; }
+    }
+    if (x === undefined) {
+      const p = this.player;
+      for (const r of [72, 96, 120, 56, 150]) {
+        const tx = Math.floor((p.pos.x + Math.cos(p.aim) * r) / T);
+        const ty = Math.floor((p.pos.y + Math.sin(p.aim) * r) / T);
+        if (!this.map.solidTileOn(floor, tx, ty)) { x = (tx + 0.5) * T; y = (ty + 0.5) * T; break; }
+      }
+      if (x === undefined) { x = p.pos.x + Math.cos(p.aim) * 72; y = p.pos.y + Math.sin(p.aim) * 72; }
+    }
+    const z = this.makeZombie({ x, y, floor }, type);
+    this.zombies.push(z);
+    if (this._dbgFreeze) z.frozen = 9999;
+    this.bannerShow('SPAWNED', (ENEMY_TYPES[type]?.name ?? type).toUpperCase(),
+      { dur: 1.4, colour: '#c8a86b' });
+    audio.growl(0.8, 0.8);
+  }
+
   debugRows() {
+    if (this.debugTab === 1) return this._zooRows();
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
     return [
@@ -1745,7 +1907,19 @@ export class Game {
   /** Do the thing on that row. */
   _debugRun(id) {
     const p = this.player;
+    if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
     switch (id) {
+      case 'where':
+        this._dbgWhere = this._dbgWhere === 'front' ? 'window' : 'front';
+        break;
+      case 'freeze':
+        this._dbgFreeze = !this._dbgFreeze;
+        for (const z of this.zombies) z.frozen = this._dbgFreeze ? 9999 : 0;
+        break;
+      case 'clear':
+        for (const z of this.zombies) { z.dead = true; z.remove = true; }
+        this.zombies = [];
+        break;
       case 'god': this.debug.god = !this.debug.god; break;
       case 'ammo': this.debug.ammo = !this.debug.ammo; break;
       case 'paths': this.debug.paths = !this.debug.paths; break;
@@ -1888,10 +2062,29 @@ export class Game {
       if (this.input.wasPressed('ArrowDown', 'KeyS')) {
         this.debugIndex = (this.debugIndex + 1) % n; audio.dryFire();
       }
-      const hit = debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+      // left and right move between the tabs, and reset the cursor with them
+      const tabs = 2;
+      if (this.input.wasPressed('ArrowLeft', 'KeyQ')) {
+        this.debugTab = (this.debugTab - 1 + tabs) % tabs;
+        this.debugIndex = 0; audio.dryFire();
+      }
+      if (this.input.wasPressed('ArrowRight', 'KeyE')) {
+        this.debugTab = (this.debugTab + 1) % tabs;
+        this.debugIndex = 0; audio.dryFire();
+      }
+      const tabHit = debugTabHit(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+      if (this.input.mouse.pressed && tabHit >= 0 && tabHit !== this.debugTab) {
+        this.debugTab = tabHit;
+        this.debugIndex = 0;
+        audio.dryFire();
+      }
+      const hit = (this.input.mouse.pressed && tabHit >= 0)
+        ? -1
+        : debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
       if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
-        this._debugRun(rows[this.debugIndex].id);
+        const row = rows[this.debugIndex] ?? rows[0];
+        if (row) this._debugRun(row.id);
       }
       if (this.input.wasPressed('Escape', 'KeyP') || (bq && !openedByBq)) {
         this.debugOpen = false;
@@ -2059,9 +2252,12 @@ export class Game {
       if (this.zombies[i].remove) {
         if (this.zombies[i].dead) this.zombies.splice(i, 1);
         else {
-          // despawned because it was stuck: re-queue it for this round
+          // despawned because it was stuck: re-queue it for this round. A
+          // summoned body was never in the tally, so it must not give the
+          // round a free replacement.
+          const gone = this.zombies[i];
           this.zombies.splice(i, 1);
-          this.zombiesSpawned = Math.max(0, this.zombiesSpawned - 1);
+          if (!gone.summoned) this.zombiesSpawned = Math.max(0, this.zombiesSpawned - 1);
         }
       }
     }
@@ -2111,10 +2307,17 @@ export class Game {
     this._fxOn(this.player);       // ...and back again for the traps and box
     this.traps.update(dt, this);
     this.box.update(dt);
+    this._watchBox();
     this.egg.update(dt, this);
     this.achievements.update(dt);
     if (this.traps.kills >= 15) this.achievements.unlock('trap_master');
     if (this.powerSurge > 0) this.powerSurge = Math.max(0, this.powerSurge - dt);
+    // a jammer that has been shot stops jamming: it only holds while it lives
+    if (this.jamT > 0) {
+      if (this.jamSrc && (this.jamSrc.dead || this.jamSrc.remove)) this.jamSrc = null;
+      const held = this.jamT - dt;
+      this.jamT = Math.max(0, (this.jamSrc && !this.jamSrc.dead) ? Math.min(held, 10) : held);
+    }
     if (this.teleportFx > 0) this.teleportFx = Math.max(0, this.teleportFx - dt * 2);
 
     // ---- webs + lightning arcs --------------------------------------------
@@ -2287,10 +2490,11 @@ export class Game {
     }
 
     // ---- lamps flicker -----------------------------------------------------
-    for (const l of LAMPS) {
+    for (const l of this.lampsHere()) {
+      if (!Number.isFinite(l.phase)) l.phase = Math.random() * TAU;
       l.phase += dt * (2 + Math.sin(this.time * 3 + l.phase) * 1.5);
       const n = Math.sin(l.phase) * 0.5 + Math.sin(l.phase * 2.7) * 0.3 + Math.sin(l.phase * 0.31) * 0.2;
-      l.flick = clamp(0.82 + n * 0.16, 0.45, 1.1);
+      l.flick = Number.isFinite(n) ? clamp(0.82 + n * 0.16, 0.45, 1.1) : 1;
       if (Math.random() < dt * 0.25) l.flick *= 0.35;
     }
 
@@ -2393,6 +2597,8 @@ export class Game {
     const inp = this.input;
     if (!inp) return;
     if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
+    // the achievements list is its own little screen: it scrolls, and ESC leaves
+    if (this.scene === 'achievements') { this._achUpdate(dt); return; }
     // keep the room list alive while it is on screen, and re-ask whenever the
     // link comes up -- the first request is usually sent before the socket is
     this._roomT = (this._roomT ?? 0) - dt;
@@ -2433,6 +2639,7 @@ export class Game {
         break;
       case 'controls': this.controlsOpen = true; this._wasPaused = false; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
+      case 'achievements': this.scene = 'achievements'; this.achScroll = 0; break;
       case 'host': this._startHost(); break;
       case 'join':
         this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0;
@@ -2446,6 +2653,28 @@ export class Game {
         if (row.room) this._joinRoom(row.room);
         break;
     }
+  }
+
+  /**
+   * The achievements list: scrolls with the arrow keys and the wheel, and
+   * leaves on ESC or a press of the close line. Nothing here runs the game.
+   */
+  _achUpdate(dt) {
+    const inp = this.input;
+    this.time += dt;
+    const rowsH = Math.min((this.vh ?? 500) - 20, 460) - 46 - 26;
+    const visible = Math.floor(rowsH / 40);
+    const total = this.achievements?.total ?? 0;
+    const maxScroll = Math.max(0, total - visible);
+    this.achScroll = Math.max(0, Math.min(this.achScroll ?? 0, maxScroll));
+    const step = (d) => { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + d)); audio.dryFire(); };
+    if (inp.wasPressed('ArrowUp', 'KeyW')) step(-1);
+    if (inp.wasPressed('ArrowDown', 'KeyS')) step(1);
+    if (inp.wasPressed('PageUp')) step(-visible);
+    if (inp.wasPressed('PageDown')) step(visible);
+    const wheel = inp.wheel ?? 0;
+    if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + Math.sign(wheel) * 2)); }
+    if (inp.wasPressed('Escape', 'Backspace', 'Enter')) { this.scene = 'menu'; this.menuIndex = 2; audio.dryFire(); }
   }
 
   /**
@@ -2524,6 +2753,27 @@ export class Game {
     if (!linked) this.bannerShow('NO RELAY', 'run with node server.mjs to let people join',
       { dur: 4, colour: '#c4463a' });
     this.begin();
+  }
+
+  /**
+   * The crate has one home at a time but several to choose from, and when the
+   * teddy bear takes it away it turns up somewhere else entirely -- which
+   * reads, quite reasonably, as "there are several mystery boxes". Say so out
+   * loud when it happens, so it is a rule of the map instead of a glitch.
+   */
+  _watchBox() {
+    const s = this.box.spot;
+    if (!s) return;
+    const key = `${this.map.floor}:${s.x}:${s.y}`;
+    if (this._boxKey === undefined) { this._boxKey = key; return; }
+    if (key === this._boxKey) return;
+    const sameFloor = this._boxKey.startsWith(`${this.map.floor}:`);
+    this._boxKey = key;
+    if (sameFloor && this.round > 0) {
+      this.bannerShow('THE BOX MOVED', 'follow the arrow at the edge of the screen',
+        { dur: 2.6, colour: '#f0d98a' });
+      audio.door?.();
+    }
   }
 
   /** The box has spots on every storey; follow the one you are standing on. */
@@ -2690,20 +2940,22 @@ export class Game {
       ctx.save();
       ctx.lineCap = 'round';
       if (t.packed) {
+        // a ribbon of light, not a rope: the core is a hairline and the
+        // colour is a thin halo around it
         ctx.globalCompositeOperation = 'lighter';
         ctx.strokeStyle = t.colour;
         ctx.globalAlpha = k * 0.20;
-        ctx.lineWidth = 7;
+        ctx.lineWidth = 5.5;
         ctx.beginPath();
         ctx.moveTo(t.x0, t.y0);
         ctx.lineTo(t.x1, t.y1);
         ctx.stroke();
         ctx.globalAlpha = k * 0.55;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 2.4;
         ctx.stroke();
         ctx.globalAlpha = k;
         ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1.1;
         ctx.beginPath();
         ctx.moveTo(t.x0, t.y0);
         ctx.lineTo(t.x1, t.y1);
@@ -2858,8 +3110,14 @@ export class Game {
     // 10. lighting (screen space!)
     this.drawLighting(ctx, camX, camY);
 
+    // 10b. DLSS5's grade over the lit scene: warm highlights, pushed contrast,
+    // a touch of film grain. Cheap full-screen blits, only when it is switched
+    // on. Run before the HUD so the text stays clean and readable.
+    if (this._dlss) postgrade(ctx, vw, vh, this.time);
+
     // 11. vignette + HUD
-    drawVignette(ctx, vw, vh, 0.38);
+    // a slightly deeper vignette when the grade is on, so the edges fall away
+    drawVignette(ctx, vw, vh, this._dlss ? 0.5 : 0.38);
     if (this.inFire) {
       ctx.save();
       const a = 0.16 + Math.sin(this.time * 14) * 0.05;
@@ -2888,6 +3146,7 @@ export class Game {
     if (this.controlsOpen) drawControls(ctx, this, vw, vh);
     else if (this.debugOpen) drawDebug(ctx, this, vw, vh);
     else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
+    else if (!this.started && this.scene === 'achievements') drawAchievements(ctx, this, vw, vh);
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
@@ -2955,15 +3214,30 @@ export class Game {
     this.popups.floor = f;
   }
 
+  /** The lamps that belong to the storey you are standing on. */
+  lampsHere() { return this.map.lamps ?? LAMPS; }
+
   /** All light positions are world-space; the layer itself is screen-space. */
   drawLighting(ctx, camX, camY) {
     const L = this.lighting;
     const sx = (wx) => wx - camX;
     const sy = (wy) => wy - camY;
+    // the night upstairs is not the night downstairs
+    const amb = AMBIENT[this.map.floor] ?? AMBIENT[0];
+    L.setAmbient(amb.rgb, amb.alpha);
     L.begin();
 
-    // ceiling lamps -- the mains ones only burn once the generator is on
-    for (const l of LAMPS) {
+    // open sky over the storey, if it has any
+    const sky = SKY_LIGHT[this.map.floor];
+    if (sky) {
+      L.point(VW / 2, VH / 2, Math.max(VW, VH) * 1.15, sky.power, sky.colour, sky.glow);
+    }
+
+    // ceiling lamps -- the mains ones only burn once the generator is on.
+    // Every storey has its own set; the hand-placed table is the ground
+    // floor's. (This used to read the ground floor's list on every storey,
+    // so the barracks lamps upstairs never lit anything at all.)
+    for (const l of this.lampsHere()) {
       if (l.mains && !this.powerOn) continue;
       const x = sx(l.x), y = sy(l.y);
       if (x < -220 || y < -220 || x > VW + 220 || y > VH + 220) continue;
@@ -2983,10 +3257,12 @@ export class Game {
       const bs = this.box.spot;
       L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
         'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
-      // Pack-a-Punch drum
-      {
-        const pp = this.map.papSpot;
-        if (!pp) return;
+      // Pack-a-Punch drum. Only the ground floor has one -- and the old
+      // `return` here did not skip the drum, it skipped the entire rest of
+      // the lighting pass: no darkness, no torch, no muzzle flash, no bloom
+      // and no composite at all on the two storeys upstairs.
+      const pp = this.map.papSpot;
+      if (pp) {
         const pulse = 0.8 + Math.sin(this.time * 2.2) * 0.2;
         L.point(sx(pp.x), sy(pp.y - 4), 130 * pulse, 0.85, 'rgba(130,235,110,0.30)', 0.55);
       }
@@ -3043,7 +3319,7 @@ export class Game {
 
     // lamp fixtures (drawn after the darkness so they stay visible)
     ctx.save();
-    for (const l of LAMPS) {
+    for (const l of this.lampsHere()) {
       if (l.mains && !this.powerOn) continue;
       const lx = l.x - camX, ly = l.y - camY;
       if (lx < -20 || ly < -20 || lx > VW + 20 || ly > VH + 20) continue;
@@ -3159,9 +3435,9 @@ export class Game {
           ctx.fillRect(px, y - 2, 1, T + 4);
         }
       }
-      // price tag
+      // price tag -- a Jammer takes the numbers off everything you buy
       const p = this.player;
-      if (dist(p.pos.x, p.pos.y, d.cx, d.cy) < 90) {
+      if (!this.jammed && dist(p.pos.x, p.pos.y, d.cx, d.cy) < 90) {
         ctx.save();
         ctx.globalAlpha = 0.9;
         ctx.font = 'bold 9px "Courier New", monospace';
@@ -3210,6 +3486,7 @@ export class Game {
       // the price sits where the player is standing, not inside the wall
       const lx = side ? cx + (wb.facing === 'right' ? -16 : 16) : cx;
       const ly = cy + (wb.facing === 'up' ? 18 : wb.facing === 'down' ? -10 : 3);
+      if (this.jammed) { ctx.restore(); continue; }
       ctx.fillStyle = 'rgba(0,0,0,0.8)';
       ctx.fillText(`${price}`, lx + 1, ly + 1);
       ctx.fillStyle = afford ? '#f0d98a' : '#6f6a5c';
@@ -3247,14 +3524,16 @@ export class Game {
       ctx.fillRect(ps.x + 1, ps.y - 5, 4, 7);
       ctx.fillRect(ps.x - 1, ps.y + 2, 4, 4);
       ctx.globalAlpha = 1;
-      // lettering
-      ctx.fillStyle = lit ? def.colour : '#6a6a6a';
-      ctx.font = 'bold 7px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(owned ? 'SOLD' : def.short, ps.x, ps.y + 8);
+      // lettering -- a Jammer takes the label off the machine, not the machine
+      if (!this.jammed) {
+        ctx.fillStyle = lit ? def.colour : '#6a6a6a';
+        ctx.font = 'bold 7px "Courier New", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(owned ? 'SOLD' : def.short, ps.x, ps.y + 8);
+      }
       ctx.restore();
 
-      if (!owned && dist(this.player.pos.x, this.player.pos.y, ps.x, ps.y) < 90) {
+      if (!owned && !this.jammed && dist(this.player.pos.x, this.player.pos.y, ps.x, ps.y) < 90) {
         ctx.save();
         ctx.font = 'bold 10px "Courier New", monospace';
         ctx.textAlign = 'center';
@@ -3282,7 +3561,7 @@ export class Game {
     this.box.draw(ctx, this.art);
     const s = this.box.spot;
     const price = this.box.price();
-    const showPrice = this.box.state === 'closed'
+    const showPrice = !this.jammed && this.box.state === 'closed'
       && dist(this.player.pos.x, this.player.pos.y, s.x, s.y) < 90;
     if (showPrice) {
       ctx.save();
@@ -3410,7 +3689,7 @@ export class Game {
     ctx.fillText('PACK-A-PUNCH', x, y - 24);
     ctx.restore();
 
-    if (dist(this.player.pos.x, this.player.pos.y, x, y) < 100) {
+    if (!this.jammed && dist(this.player.pos.x, this.player.pos.y, x, y) < 100) {
       ctx.save();
       ctx.font = 'bold 10px "Courier New", monospace';
       ctx.textAlign = 'center';

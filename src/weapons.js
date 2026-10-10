@@ -79,6 +79,64 @@ export const WEAPONS = {
     desc: 'Anti-tank rifle. Skewer the whole lane.',
   },
 
+  // ------------------------------------------------- second wave of weapons
+  python: {
+    id: 'python', name: 'Colt Python', slot: 'pistol', kind: 'semi',
+    price: 900, ammoPrice: 250, dmg: 130, headMul: 2.6, mag: 6, reserve: 84, maxReserve: 84,
+    delay: 0.26, reload: 2.40, spread: 0.009, pierce: 0, range: 850,
+    recoil: 0.050, kick: 2.2, flash: 1.2, tracer: '#e0c080', tint: '#c9a05a',
+    desc: 'A hand-cannon. Six rounds, and each one means it.',
+  },
+  sten: {
+    id: 'sten', name: 'Sten Mk II', slot: 'smg', kind: 'auto',
+    price: 800, ammoPrice: 250, dmg: 40, headMul: 2.0, mag: 32, reserve: 256, maxReserve: 256,
+    delay: 0.075, reload: 2.30, spread: 0.045, pierce: 0, range: 680,
+    recoil: 0.022, kick: 0.9, flash: 0.9, tracer: '#cfd4dc', tint: '#a9aeb8',
+    desc: 'Made of plumbing and spite. Cheap, fast, everywhere.',
+  },
+  greasegun: {
+    id: 'greasegun', name: 'M3 Grease Gun', slot: 'smg', kind: 'auto',
+    price: 1100, ammoPrice: 300, dmg: 70, headMul: 2.0, mag: 30, reserve: 240, maxReserve: 240,
+    delay: 0.105, reload: 2.60, spread: 0.038, pierce: 0, range: 700,
+    recoil: 0.028, kick: 1.3, flash: 1.0, tracer: '#d2d0c0', tint: '#b0ad9c',
+    desc: 'Slow and heavy, like the stamping press it was born in.',
+  },
+  garand: {
+    id: 'garand', name: 'M1 Garand', slot: 'rifle', kind: 'semi',
+    price: 1600, ammoPrice: 400, dmg: 150, headMul: 2.1, mag: 8, reserve: 120, maxReserve: 120,
+    delay: 0.20, reload: 2.50, spread: 0.012, pierce: 1, range: 1000,
+    recoil: 0.045, kick: 2.4, flash: 1.4, tracer: '#d8d2b8', tint: '#b6ac86',
+    desc: 'Eight rounds, then a ping. The sweetest sound in the war.',
+  },
+  stg44: {
+    id: 'stg44', name: 'StG 44', slot: 'rifle', kind: 'auto',
+    price: 2200, ammoPrice: 450, dmg: 90, headMul: 2.1, mag: 30, reserve: 270, maxReserve: 270,
+    delay: 0.095, reload: 2.70, spread: 0.026, pierce: 1, range: 950,
+    recoil: 0.032, kick: 1.8, flash: 1.3, tracer: '#d4d8e0', tint: '#a8adb8',
+    desc: 'The first assault rifle. Controllable full-auto.',
+  },
+  sawedoff: {
+    id: 'sawedoff', name: 'Sawed-Off Shotgun', slot: 'shotgun', kind: 'pump',
+    price: 900, ammoPrice: 250, dmg: 55, headMul: 1.5, pellets: 8, mag: 2, reserve: 60, maxReserve: 60,
+    delay: 0.55, reload: 2.00, spread: 0.160, pierce: 1, range: 300,
+    recoil: 0.12, kick: 4.8, flash: 2.0, tracer: '#e8c890', tint: '#c9a260',
+    desc: 'Two barrels, no stock, no survivors at arm\u2019s length.',
+  },
+  gewehr43: {
+    id: 'gewehr43', name: 'Gewehr 43', slot: 'sniper', kind: 'semi',
+    price: 1900, ammoPrice: 400, dmg: 260, headMul: 2.0, mag: 10, reserve: 100, maxReserve: 100,
+    delay: 0.45, reload: 2.90, spread: 0.006, pierce: 2, range: 1250,
+    recoil: 0.060, kick: 2.8, flash: 1.6, tracer: '#ccd4de', tint: '#9aa2b0',
+    desc: 'A marksman rifle that does not make you work the bolt.',
+  },
+  lewis: {
+    id: 'lewis', name: 'Lewis Gun', slot: 'lmg', kind: 'auto',
+    price: 2800, ammoPrice: 550, dmg: 95, headMul: 1.9, mag: 47, reserve: 282, maxReserve: 282,
+    delay: 0.075, reload: 4.80, spread: 0.045, pierce: 1, range: 950,
+    recoil: 0.030, kick: 1.7, flash: 1.5, tracer: '#d8dce4', tint: '#b0b4be',
+    desc: 'A pan on top and a barrel like a radiator. Hold the line.',
+  },
+
   // ---------------------------------------------------------- wonder weapons
   raygun: {
     id: 'raygun', name: 'Ray Gun', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 34,
@@ -127,6 +185,7 @@ export const WEAPONS = {
 export const WEAPON_ORDER = [
   'm1911', 'mp40', 'thompson', 'trenchgun', 'ppsh',
   'kar98k', 'fg42', 'bar', 'mg42', 'ptrs41',
+  'python', 'sten', 'greasegun', 'garand', 'stg44', 'sawedoff', 'gewehr43', 'lewis',
   'raygun', 'wunderwaffe', 'thundergun', 'winterhowl', 'monkeybomb',
 ];
 
@@ -180,6 +239,14 @@ export const PAP_NAMES = {
   bar: 'Barracudda',
   mg42: 'Belt-Fed Fury',
   ptrs41: 'The Penetrator',
+  python: 'King Cobra',
+  sten: "Plumber's Revenge",
+  greasegun: 'Greased Lightning',
+  garand: 'M1 Grand Slam',
+  stg44: 'Hailstorm',
+  sawedoff: 'Short Temper',
+  gewehr43: 'Longshot 43',
+  lewis: 'Pan Handler',
   raygun: "Porter's X2 Ray Gun",
   wunderwaffe: 'Wunderwaffe DG-3 JZ',
   thundergun: 'Zeus Cannon',

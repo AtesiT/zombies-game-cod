@@ -7,6 +7,8 @@ import { audio } from './audio.js';
 
 const SPRITE_OX = SPRITE_W / 2;
 const SPRITE_OY = BODY_ROW;             // sprite pixel drawn at the entity origin
+const MAX_SKELETONS = 4;         // the most one Bonewright can keep on its feet
+const JAM_RADIUS = 460;          // how close a Jammer has to be to blank your markers
 export const HEAD_OFF_Y = SPRITE_OY - HEAD_ROW;   // head centre relative to origin
 
 // ---------------------------------------------------------------------------
@@ -669,7 +671,7 @@ export class Player {
       const ang = Math.atan2(z.pos.y - this.pos.y, z.pos.x - this.pos.x);
       const res = z.hurt(dmg, false, game, ang, this);
       any = true;
-      if (res === 2) game.onZombieKilled(z, false, 130);
+      if (res === 2) game.onZombieKilled(z, false, 130, 'knife');
     }
     if (!any) {
       game.particles.spark(this.pos.x + Math.cos(this.aim) * 22, this.pos.y + Math.sin(this.aim) * 22, this.aim, 3, '#cfd6dd');
@@ -719,13 +721,20 @@ export class Player {
     game.particles.casing(ox, oy, this.aim);
     // a punched gun flashes in the same colour it fires
     const tint = d.packed ? packedTracer(game.time + game.stats.shots * 0.013) : d.tint;
-    // The punch changes the *bullet*, not the bang: a punched gun used to
-    // throw a flash half again as big and a light nearly twice the radius,
-    // and that was simply too much -- you could not see the room. The flash
-    // stays exactly as it is for every other gun; what travels brighter is
-    // the round (see tracers in src/game.js).
-    game.muzzleFlash = { x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055, size: pellets > 1 ? 15 : 11, colour: tint };
-    game.flashLights.push({ x: muzzle.x, y: muzzle.y, r: pellets > 1 ? 150 : 110, life: 0.075, max: 0.075, colour: tint, f: this.floor ?? game.map.floor });
+    // The muzzle blast was the loudest thing on screen by a long way -- a
+    // shotgun flash covered a third of the room and, on the ground floor
+    // where the lighting pass actually ran, washed the walls out for four
+    // frames at a time. A punched gun is *meant* to be flashier downrange,
+    // not blinder up close, so it now throws the smallest flash of all.
+    const punch = d.packed ? 0.62 : 1;
+    game.muzzleFlash = {
+      x: muzzle.x, y: muzzle.y, a: this.aim, t: 0.055,
+      size: (pellets > 1 ? 12 : 8.5) * punch, colour: tint,
+    };
+    game.flashLights.push({
+      x: muzzle.x, y: muzzle.y, r: (pellets > 1 ? 116 : 86) * punch,
+      life: 0.075, max: 0.075, colour: tint, f: this.floor ?? game.map.floor,
+    });
     game.shake(d.kick * 1.5, 0.11);
     audio.shot(shotSound(d), 0);
     if (lastRound) audio.lastRound();
@@ -881,6 +890,43 @@ export const ENEMY_TYPES = {
     id: 'fusion', name: 'Amalgam', hp: 3.6, speed: 0.7, dmg: 2.0, r: 11, scale: 1.6,
     chew: 3.0, points: 3.4, set: 'fusion', headOff: 1.3, smash: true,
   },
+  // ---- the first three of the creature shortlist -------------------------
+  bonewright: {
+    // Frail and slow, and it will not come to you: it stands off at 260px and
+    // sews. Every cycle two skeletons climb out of the dirt beside it, up to
+    // four at a time, and none of them count towards the round -- so the round
+    // will not end while its work is still walking about.
+    id: 'bonewright', name: 'Bonewright', hp: 0.85, speed: 0.62, dmg: 0.9, r: 7.2,
+    scale: 1.12, chew: 0.8, points: 2.8, set: 'bonewright', headOff: 1.15,
+    raises: true, standoff: 260,
+  },
+  skeleton: {
+    // never rolled: the Bonewright sews these. Forty hit points flat, one and
+    // a half times walking pace, no blood and no head to shoot at. Worth a
+    // fraction of a walker, and it still holds the round open.
+    id: 'skeleton', name: 'Skeleton', hp: 0.27, speed: 1.5, dmg: 0.7, r: 5.4,
+    scale: 0.9, chew: 0.5, points: 0.4, set: 'skeleton', headless: true,
+    noBlood: true, summoned: true, flatHp: 40,
+  },
+  swarmling: {
+    // Not one body: seven small ones sharing a single pool of hit points.
+    // Every fifth hit knocks one loose and it starts hunting on its own, so
+    // dying to a swarm means you let it come apart in your face.
+    id: 'swarmling', name: 'Swarmling', hp: 2.3, speed: 1.06, dmg: 0.55, r: 11,
+    scale: 1, chew: 1.2, points: 3.4, set: 'swarmling', headOff: 1, swarm: 7,
+  },
+  swarmlet: {
+    // a piece that has broken off the swarm: small, quick, on its own
+    id: 'swarmlet', name: 'Swarmlet', hp: 0.34, speed: 1.42, dmg: 0.45, r: 4.6,
+    scale: 0.72, chew: 0.6, points: 0.55, set: 'swarmlet', headOff: 0.8,
+  },
+  jammer: {
+    // Carries a wireless set: while it is close every marker you rely on goes
+    // dark -- minimap, perk machines, door prices, the crosshair telling you
+    // you are on target. The guns and your ears still work.
+    id: 'jammer', name: 'Jammer', hp: 1.15, speed: 0.95, dmg: 0.9, r: 6.8,
+    scale: 1.04, chew: 1.1, points: 3.0, set: 'jammer', headOff: 1, jams: true,
+  },
 };
 
 export class Zombie {
@@ -893,14 +939,18 @@ export class Zombie {
     this.pos = { x, y };
     this.vel = { x: 0, y: 0 };
     this.r = d.r;
-    this.maxHp = (opts.hp ?? 150) * d.hp;
+    // `flatHp` is for things that should cost the same in round thirty as in
+    // round five -- the skeletons a Bonewright sews are meant to be cheap
+    // however late you meet them.
+    this.maxHp = d.flatHp != null ? d.flatHp : (opts.hp ?? 150) * d.hp;
     this.hp = this.maxHp;
     this.baseSpeed = (opts.speed ?? 34) * d.speed;
     this.dmg = (opts.dmg ?? 34) * d.dmg;
     this.chewMul = d.chew;
     this.pointsMul = d.points;
     this.shriekCd = d.ranged ? randRange(2.5, 5) : 0;
-    this.standoff = d.ranged ? randRange(140, 215) : 0;
+    // the bonewright keeps its own distance, the shriekers pick one at random
+    this.standoff = d.ranged ? randRange(140, 215) : (d.standoff ?? 0);
     this.floor = 0;        // which storey it is currently on
     this.rally = 0;        // haste from a nearby Shrieker
     this.dmgMul = 1;
@@ -941,6 +991,16 @@ export class Zombie {
     this.reviveTarget = null;
     this.clusterT = 0;                                    // fusion: time spent in a huddle
     this.medicCd = 0;                                     // how often it looks for a patient
+    // ---- the first three of the creature shortlist ----
+    this.units = d.swarm ?? 1;                            // swarmling: bodies in the cloud
+    this.unitHp = this.units > 1 ? this.maxHp / this.units : this.maxHp;
+    this.hitCount = 0;                                    // every fifth hit knocks one loose
+    this.raiseCd = d.raises ? randRange(2.2, 3.4) : 0;    // bonewright: until it starts sewing
+    this.raiseT = 0;                                      // and how far into the stitching it is
+    this.minions = 0;                                     // what it has already raised and lost
+    this.summonedBy = opts.summonedBy ?? null;            // skeleton: whose work you are
+    this.summoned = !!opts.summoned || !!d.summoned;      // made during the round, not of it
+    this.jamCd = 0;
     if (this.hidden) this.state = ZSTATE.HIDDEN;   // a mimic starts out on the floor
   }
 
@@ -976,9 +1036,26 @@ export class Zombie {
       if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return 2; }
       return 1;
     }
+    // a skeleton has no head to shoot at: the shot lands on the ribs instead
+    if (head && this.def.headless) head = false;
     this.hp -= amount;
     this.hurtFlash = 0.12;
     const ang = dirAngle ?? 0;
+    // Every fifth hit on the cloud knocks one of the bodies loose, and it
+    // starts hunting on its own from wherever it was standing.
+    if (this.def.swarm && this.units > 1) {
+      this.hitCount++;
+      if (this.hitCount % 5 === 0) this._shedUnit(game);
+    }
+    if (this.def.noBlood) {
+      game.particles.dust(this.pos.x, this.pos.y, ang, 6);
+      game.particles.chunk(this.pos.x, this.pos.y - 3, ang, 2);
+      audio.impact(false, false);
+      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return 2; }
+      this.vel.x += Math.cos(ang) * 26;
+      this.vel.y += Math.sin(ang) * 26;
+      return 1;
+    }
     if (head) {
       game.particles.blood(this.pos.x, this.pos.y - HEAD_OFF_Y, ang, 10, 1.3);
       game.particles.mist(this.pos.x, this.pos.y - HEAD_OFF_Y, ang, 6);
@@ -1003,8 +1080,14 @@ export class Zombie {
     this.dead = true;
     this.state = ZSTATE.DEAD;
     this.deadT = 0;
-    game.particles.blood(this.pos.x, this.pos.y, ang, 14, 1.4);
-    game.particles.chunk(this.pos.x, this.pos.y, ang, 5);
+    if (this.def.noBlood) {
+      game.particles.dust(this.pos.x, this.pos.y, ang, 12);
+      game.particles.chunk(this.pos.x, this.pos.y, ang, 8);
+      game.particles.spark(this.pos.x, this.pos.y - 4, ang, 4, '#e8e4d2');
+    } else {
+      game.particles.blood(this.pos.x, this.pos.y, ang, 14, 1.4);
+      game.particles.chunk(this.pos.x, this.pos.y, ang, 5);
+    }
     audio.zombieDie();
 
     if (this.def.fireOnDeath) {
@@ -1201,6 +1284,77 @@ export class Zombie {
         game.particles.spark(this.reviveTarget.pos.x, this.reviveTarget.pos.y - 4,
           -Math.PI / 2, 3, '#8fd47a');
       }
+    }
+
+    // ------------------------------------------------- bonewright behaviour --
+    // It does not come to you. It stops at its own range, takes out a needle
+    // and sews for a second and a half -- and then two skeletons climb out of
+    // the dirt beside it. Four is the most it can keep standing at once, so
+    // one you ignore stops growing and simply stays a problem. Kill it inside
+    // the cycle and the cycle is wasted.
+    if (this.def.raises) {
+      if (this.raiseT > 0) {
+        this.vel.x = 0; this.vel.y = 0;
+        this.stuck = 0;
+        this._goto = null;
+        this.raiseT -= dt;
+        if (Math.random() < dt * 7) {
+          game.particles.spark(this.pos.x + randRange(-7, 7), this.pos.y - randRange(4, 18),
+            -Math.PI / 2, 1, '#cfc9b4');
+        }
+        if (this.raiseT <= 0) { this.raiseT = 0; this._raiseTwo(game); }
+        return;
+      }
+      this.raiseCd -= dt;
+      // not while it is busy at a barricade, and not from another storey
+      if (this.raiseCd <= 0 && sameFloor && pd < 640
+        && this.state !== ZSTATE.BARRICADE && this.state !== ZSTATE.DOOR) {
+        this.raiseT = 1.6;
+        this.raiseCd = randRange(7.5, 10.5);
+        if (!this._muffled(game)) audio.growl(0.7, 0.7);
+      }
+      // Keep its distance properly: back away when you crowd it, come in when
+      // you have run off, and sidle round you in between so it is never a
+      // statue.
+      //
+      // It picks a vantage and holds it for the better part of a second. That
+      // matters: choosing fresh every frame flips it between "back off" and
+      // the horde's own route in the same breath, and the two cancel out into
+      // a thing vibrating against a wall. A straight line through a partition
+      // is given up in favour of the next idea, and if none of them are open
+      // the horde's route takes over -- the trick the field medic uses.
+      this._vantageT = (this._vantageT ?? 0) - dt;
+      if (this._vantageT <= 0 || this.stuck > 1) {
+        this._vantageT = 0.7;
+        this._vantage = null;
+        if (sameFloor && pd < 640) {
+          const away = Math.atan2(this.pos.y - p.pos.y, this.pos.x - p.pos.x);
+          const clear = (x, y) => !this.map.rayWall(this.pos.x, this.pos.y, x, y);
+          if (pd < this.standoff - 40) {
+            for (const r of [140, 90, 60]) {
+              const c = { x: this.pos.x + Math.cos(away) * r, y: this.pos.y + Math.sin(away) * r };
+              if (clear(c.x, c.y)) { this._vantage = c; break; }
+            }
+          } else if (pd < this.standoff + 90) {
+            // circle rather than stand and grin: try one side, then the other
+            for (const side of [0.85, -0.85, 1.7, -1.7]) {
+              const a = away + side;
+              const c = { x: p.pos.x + Math.cos(a) * this.standoff, y: p.pos.y + Math.sin(a) * this.standoff };
+              if (clear(c.x, c.y)) { this._vantage = c; break; }
+            }
+          }
+        }
+      }
+      this._goto = this._vantage ?? null;
+    }
+
+    // ------------------------------------------------- jammer behaviour -----
+    // The wireless set on its back takes your markers away while it is close:
+    // the minimap, the machines, the prices on the doors, and the crosshair
+    // telling you that you are on target. The guns still work. So do your ears.
+    if (this.def.jams) {
+      this.jamCd = Math.max(0, this.jamCd - dt);
+      if (sameFloor && pd < JAM_RADIUS && this.state !== ZSTATE.CLIMB) game.jam?.(10, this);
     }
 
     // ------------------------------------------------- attack the player ---
@@ -1510,13 +1664,19 @@ export class Zombie {
   despawn(game) {
     if (this.remove) return;
     this.remove = true;
-    game.respawnQueue++;
+    // Something sewn out of the dirt, or a piece that came off a swarm, is not
+    // one of the round's own: queueing it would quietly hand the round a spare
+    // walker to spend somewhere else.
+    if (!this.summoned) game.respawnQueue++;
     game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 6);
   }
 
   /** Pick the sprite set for this enemy's type / pose / facing. */
   _set(art, attacking, flip) {
-    const s = this.def.set;
+    let s = this.def.set;
+    // the cloud is drawn as a cluster of bodies, never as one sprite; this is
+    // only the fallback so the shared draw path still has an image to hold
+    if (s === 'swarmling') s = 'swarmlet';
     if (s === 'dog') return { img: flip ? art.dogFlip : art.dog, framed: false };
     if (s === 'crawler') {
       return { img: (flip ? art.crawlerFlip : art.crawler)[this._frame(false)], framed: true };
@@ -1530,7 +1690,8 @@ export class Zombie {
       };
     }
     if (s === 'helmet' || s === 'napalm' || s === 'gasbag'
-      || s === 'miner' || s === 'medic' || s === 'fusion') {
+      || s === 'miner' || s === 'medic' || s === 'fusion'
+      || s === 'bonewright' || s === 'skeleton' || s === 'jammer' || s === 'swarmlet') {
       const set = attacking
         ? (flip ? art[`${s}AtkFlip`] : art[`${s}Atk`])
         : (flip ? art[`${s}Flip`] : art[s]);
@@ -1566,6 +1727,138 @@ export class Zombie {
 
   _frame(attacking) {
     return attacking ? (Math.floor(this.walkPhase * 1.6) % 4) : (Math.floor(this.walkPhase) % 4);
+  }
+
+  /**
+   * Somewhere beside this body to put a newly made one: open ground, on this
+   * storey, that the horde's own route can actually reach.
+   *
+   * It matters more than it looks. A skeleton dropped the far side of a
+   * partition is not a threat, it is a round that will never end: it can
+   * neither reach you nor be reached, and the tally sits and waits on it for
+   * ever. Nothing gets made unless there is somewhere sensible to put it.
+   */
+  _besideOpen(minR, maxR) {
+    for (let i = 0; i < 14; i++) {
+      const a = randRange(0, TAU);
+      const r = randRange(minR, maxR);
+      const x = this.pos.x + Math.cos(a) * r;
+      const y = this.pos.y + Math.sin(a) * r;
+      const tx = Math.floor(x / T), ty = Math.floor(y / T);
+      if (!this.map.inside(tx, ty)) continue;
+      if (this.map.solidTileOn(this.floor, tx, ty)) continue;
+      // the flow field is built for the storey the map is currently on, so
+      // only trust it when that is the one we are standing on
+      if (this.floor === this.map.floor && this.map.dist) {
+        const d = this.map.dist[ty * this.map.w + tx];
+        if (d === undefined || d >= 1e8) continue;
+      }
+      return { x: (tx + 0.5) * T, y: (ty + 0.5) * T };
+    }
+    return null;
+  }
+
+  /**
+   * Two skeletons climb out of the dirt beside it. They are not part of the
+   * round's tally, so the round cannot end while any of them are still up --
+   * which is the whole point of the thing.
+   */
+  _raiseTwo(game) {
+    const plan = game.roundPlan ? game.roundPlan(game.round) : null;
+    const live = () => game.zombies.reduce(
+      (n, z) => n + (!z.dead && z.summonedBy === this.id ? 1 : 0), 0);
+    let made = 0;
+    for (let i = 0; i < 2; i++) {
+      if (live() >= MAX_SKELETONS) break;
+      const spot = this._besideOpen(26, 46);
+      if (!spot) break;                  // nowhere to put one: the cycle is wasted
+      const { x, y } = spot;
+      const ang = Math.atan2(y - this.pos.y, x - this.pos.x);
+      const s = new Zombie(this.map, x, y, {
+        type: 'skeleton',
+        speed: (plan?.speed ?? 34) * randRange(0.95, 1.1),
+        dmg: 34,
+        summonedBy: this.id,
+      });
+      s.floor = this.floor;
+      // it climbs out of the ground rather than simply appearing
+      s.state = ZSTATE.EMERGE;
+      s.emergeT = 0.5;
+      s.lunge = 1;
+      game.zombies.push(s);
+      game.particles.dust(x, y, ang, 9);
+      made++;
+    }
+    if (made) {
+      game.particles.spark(this.pos.x, this.pos.y - 6, -Math.PI / 2, 6, '#e8e4d2');
+      if (!this._muffled(game)) {
+        game.popups.add(this.pos.x, this.pos.y - 34, 'IT SEWS', '#cfc9b4', 10);
+        audio.wood(false, 0.8);
+      }
+    }
+  }
+
+  /**
+   * A body comes off the cloud and starts hunting on its own, taking its share
+   * of the pool with it -- so a swarm you have been chipping at has less left
+   * in the middle than a fresh one. Dying to a swarm is letting it do this
+   * seven times.
+   */
+  _shedUnit(game) {
+    if (this.units <= 1) return;
+    const spot = this._besideOpen(9, 18);
+    if (!spot) return;                   // wedged in a corner: it stays in the pile
+    const { x, y } = spot;
+    const ang = Math.atan2(y - this.pos.y, x - this.pos.x);
+    const share = this.unitHp;
+    this.units--;
+    this.maxHp = Math.max(1, this.maxHp - share);
+    this.hp = Math.min(this.hp, this.maxHp);
+    const plan = game.roundPlan ? game.roundPlan(game.round) : null;
+    const s = new Zombie(this.map, x, y, {
+      type: 'swarmlet',
+      summoned: true,
+      hp: share / (ENEMY_TYPES.swarmlet.hp || 1),
+      speed: (plan?.speed ?? 34) * randRange(0.92, 1.08),
+      dmg: 34,
+    });
+    s.floor = this.floor;
+    s.lunge = 1;
+    game.zombies.push(s);
+    game.particles.dust(x, y, ang, 5);
+    game.particles.chunk(x, y, ang, 2);
+  }
+
+  /**
+   * The cloud: one small body for every unit still in it, jostling against
+   * each other. You can count them -- which is the point, because every fifth
+   * hit takes one off the pile and sets it running at you on its own.
+   */
+  _drawCluster(ctx, px, py, t) {
+    const n = Math.max(1, this.units);
+    ctx.save();
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + t * 0.7 + this.id * 0.7;
+      const rr = 5 + (i % 3) * 2.2;
+      const x = px + Math.cos(a) * rr + Math.sin(t * 7 + i * 2) * 1.1;
+      const y = py + Math.sin(a) * rr * 0.6 + Math.cos(t * 6 + i) * 0.9;
+      ctx.strokeStyle = '#241a12';
+      ctx.lineWidth = 1;
+      for (let k = 0; k < 3; k++) {
+        const la = a + (k - 1) * 0.9 + Math.sin(t * 9 + i + k) * 0.25;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(la) * 5.5, y + Math.sin(la) * 4 + 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = i % 2 ? '#5c4632' : '#4a3a2c';
+      ctx.beginPath(); ctx.ellipse(x, y, 3.4, 2.6, a, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#7a6248';
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 2.2, y + Math.sin(a) * 1.4, 1.7, 1.4, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   /** The only sign of a miner: a heap of disturbed earth, breathing. */
@@ -1637,7 +1930,8 @@ export class Zombie {
     }
 
     if (this.def.low) ctx.translate(0, 5);      // crawlers hug the floor
-    ctx.drawImage(img, gx, gy);
+    if (this.def.swarm) this._drawCluster(ctx, px, py, t);
+    else ctx.drawImage(img, gx, gy);
     if (this.def.low) ctx.translate(0, -5);
 
     if (this.state === ZSTATE.EMERGE) {
@@ -1661,6 +1955,51 @@ export class Zombie {
       ctx.globalAlpha = 0.8;
       ctx.fillStyle = '#8fd47a';
       ctx.beginPath(); ctx.ellipse(q.pos.x, q.pos.y + 2, 9, 3.5, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    if (this.def.raises) {
+      // the ring of disturbed earth it works inside, and the needle itself
+      ctx.save();
+      ctx.globalAlpha = this.raiseT > 0 ? 0.5 : 0.22;
+      ctx.strokeStyle = '#cfc9b4';
+      ctx.lineWidth = 1;
+      const rr = 15 + (this.raiseT > 0 ? Math.sin(t * 11) * 2.5 : 0);
+      ctx.beginPath(); ctx.ellipse(px, py + 4, rr, rr * 0.42, 0, 0, TAU); ctx.stroke();
+      if (this.raiseT > 0) {
+        // the thread being pulled: it grows as the cycle runs out
+        const k = 1 - this.raiseT / 1.6;
+        ctx.translate(px + (flip ? -6 : 6), py - 12);
+        ctx.rotate(Math.sin(t * 15) * 0.6);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#e8e4d2';
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 6); ctx.stroke();
+        ctx.globalAlpha = 0.35 + k * 0.6;
+        ctx.strokeStyle = '#9fd0e0';
+        ctx.beginPath(); ctx.moveTo(0, 6);
+        for (let i = 1; i <= 4; i++) ctx.lineTo(Math.sin(i * 2 + t * 9) * 3, 6 + i * 3.1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (this.def.jams) {
+      // the set on its back, with the noise leaking off the aerial
+      const ax = px + (flip ? 5 : -5);
+      const ay = py - SPRITE_OY + 5;
+      ctx.save();
+      ctx.fillStyle = '#2b333d';
+      ctx.fillRect(ax - 2.5, ay, 5, 7);
+      ctx.strokeStyle = '#8fa8bd';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax + (flip ? 3 : -3), ay - 12); ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.35 + Math.sin(t * 17 + this.id) * 0.25;
+      ctx.fillStyle = '#9fd0e0';
+      ctx.beginPath(); ctx.arc(ax + (flip ? 3 : -3), ay - 13, 1.6, 0, TAU); ctx.fill();
+      for (let i = 0; i < 2; i++) {
+        const rr2 = 6 + i * 6 + ((t * 22 + i * 3) % 8);
+        ctx.globalAlpha = Math.max(0, 0.3 - rr2 * 0.018);
+        ctx.beginPath(); ctx.arc(ax + (flip ? 3 : -3), ay - 13, rr2, 0, TAU); ctx.stroke();
+      }
       ctx.restore();
     }
     if (this.def.medic) {
@@ -1874,6 +2213,7 @@ export class Grenade {
     const { x, y } = this.pos;
     const R = 96;
     game.explosion(x, y, R);
+    let killed = 0;
     for (const z of game.zombies) {
       if (z.dead || (z.floor ?? 0) !== (this.floor ?? 0)) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
@@ -1882,9 +2222,13 @@ export class Grenade {
       const k = 1 - d / R;
       const ang = Math.atan2(z.pos.y - y, z.pos.x - x);
       const boom = (420 + game.round * 55) * (k * k * 0.75 + k * 0.25);
-      if (z.hurt(boom, false, game, ang) === 2) game.onZombieKilled(z, false);
+      if (z.hurt(boom, false, game, ang) === 2) { game.onZombieKilled(z, false, null, 'grenade'); killed++; }
       z.vel.x += Math.cos(ang) * 180 * k;
       z.vel.y += Math.sin(ang) * 180 * k;
+    }
+    if (killed) {
+      game.stats.grenadeBest = Math.max(game.stats.grenadeBest ?? 0, killed);
+      if (killed >= 5) game.achievements.unlock('frag_out');
     }
     game.particles.spark(x, y, 0, 26, '#ffcf7a');
     game.particles.smoke(x, y, 16);

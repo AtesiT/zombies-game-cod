@@ -156,8 +156,9 @@ function click(inp, x, y) {
   const p = debugPanel(g, M.VW, M.VH);
   ok(p.x >= 0 && p.y >= 0 && p.x + p.cw <= M.VW && p.y + p.ch <= M.VH,
     `the panel runs off the screen at ${p.x},${p.y} ${p.cw}x${p.ch}`);
+  // the rows get shorter when there are a lot of them, so ask the panel
   for (let i = 0; i < p.rows.length; i++) {
-    const hit = debugHitTest(g, M.VW, M.VH, p.x + p.cw / 2, p.y + p.head + i * 22 + 4);
+    const hit = debugHitTest(g, M.VW, M.VH, p.x + p.cw / 2, p.y + p.head + i * p.rowH + 4);
     ok(hit === i, `row ${i} was hit as ${hit}`);
   }
   ok(debugHitTest(g, M.VW, M.VH, 2, 2) === -1, 'clicking outside the panel picked a row');
@@ -166,7 +167,7 @@ function click(inp, x, y) {
   const before = g.player.points;
   const idx = g.debugRows().findIndex((r) => r.id === 'points');
   g.debugIndex = idx;
-  click(g.input, p.x + p.cw / 2, p.y + p.head + idx * 22 + 4);
+  click(g.input, p.x + p.cw / 2, p.y + p.head + idx * p.rowH + 4);
   g.update(H); g.input.endFrame();
   ok(g.player.points > before, 'clicking +5000 POINTS did nothing');
   console.log(`  panel: ${p.rows.length} rows, ${p.cw}x${p.ch} at ${p.x},${p.y}`);

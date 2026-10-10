@@ -19,9 +19,20 @@ export class MysteryBox {
     this.firesaleTimer = 0;
     this.cycleAngle = 0;
     this.shownWeapons = [];
+    this.movedAt = -99;         // when it last packed up and went somewhere else
   }
 
-  get spot() { return this.spots[this.current]; }
+  /**
+   * Where the crate is standing. Guarded because the number of homes changes
+   * with the storey you are on: a host on the ground floor has five, a guest
+   * upstairs has three, and a synchronised `current` can point past the end of
+   * the shorter list.
+   */
+  get spot() {
+    if (!this.spots.length) return null;
+    if (this.current < 0 || this.current >= this.spots.length) this.current = 0;
+    return this.spots[this.current];
+  }
   get open() { return this.state === 'spinning' || this.state === 'offering'; }
 
   update(dt) {
@@ -39,7 +50,7 @@ export class MysteryBox {
       if (this.timer <= 0) this.state = 'closed';
     } else if (this.state === 'leaving') {
       this.timer -= dt;
-      if (this.timer <= 0) { this.relocate(); this.state = 'closed'; }
+      if (this.timer <= 0) { this.relocate(); this.movedAt = this._now?.() ?? 0; this.state = 'closed'; }
     }
   }
 
@@ -63,11 +74,14 @@ export class MysteryBox {
 
   /** Send the box somewhere else and reset the pull counter. */
   relocate() {
+    // one home, or none: there is nowhere to go, so it simply stays put
+    if (this.spots.length < 2) { this.pulls = 0; return; }
     let n = this.current;
     for (let i = 0; i < 20; i++) {
       n = (Math.random() * this.spots.length) | 0;
       if (n !== this.current) break;
     }
+    if (n === this.current) n = (this.current + 1) % this.spots.length;
     this.current = n;
     this.pulls = 0;
   }

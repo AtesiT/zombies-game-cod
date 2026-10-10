@@ -158,6 +158,61 @@ console.log(`  lighting: mean ${plainLight.mean.toFixed(2)} -> ${bloomLight.mean
   `lit pixels ${plainLight.bright} -> ${bloomLight.bright}, ` +
   `shadow layer ${plainLight.scale} -> ${bloomLight.scale}`);
 
+// ---- the grade: a graded picture is not just a brighter one ----------------
+// DLSS5 also runs a colourist's pass over the lit frame -- warm highlights,
+// pushed contrast, film grain, a deeper vignette. So the corners fall darker
+// and the centre runs warmer than the ungraded picture.
+function graded(dlss) {
+  const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
+  g.begin(); g.startRound(3); g.setDlss(dlss);
+  for (let i = 0; i < 90; i++) g.update(H);
+  const c = nc(M.VW, M.VH).getContext('2d');
+  g.draw(c);
+  const d = c.getImageData(0, 0, M.VW, M.VH).data;
+  const at = (x, y) => { const i = (y * M.VW + x) * 4; return [d[i], d[i + 1], d[i + 2]]; };
+  // the four corners, averaged
+  const corners = [[6, 6], [M.VW - 6, 6], [6, M.VH - 6], [M.VW - 6, M.VH - 6]]
+    .map(([x, y]) => at(x, y)).reduce((a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]).map((v) => v / 4);
+  const corner = (corners[0] + corners[1] + corners[2]) / 3;
+  // the centre of the frame
+  let cl = 0, cn = 0;
+  for (let y = M.VH * 0.4; y < M.VH * 0.6; y++) {
+    for (let x = M.VW * 0.4; x < M.VW * 0.6; x++) {
+      const [r, g2, b] = at(x | 0, y | 0);
+      cl += (r + g2 + b) / 3; cn++;
+    }
+  }
+  const centre = cl / cn;
+  // warmth in the middle of the frame, R minus B
+  let rb = 0, n = 0;
+  for (let y = M.VH * 0.35; y < M.VH * 0.65; y++) {
+    for (let x = M.VW * 0.35; x < M.VW * 0.65; x++) {
+      const [r, , b] = at(x | 0, y | 0);
+      rb += r - b; n++;
+    }
+  }
+  return { corner, centre, warmth: rb / n, data: d };
+}
+const flat = graded(false), film = graded(true);
+// the grade lifts the whole frame, so the corners can be brighter in absolute
+// terms; what matters is that the edges fall away *relative* to the centre
+ok(film.centre - film.corner > flat.centre - flat.corner,
+  `DLSS5 did not deepen the falloff (centre-corner `
+  + `${(flat.centre - flat.corner).toFixed(1)} -> ${(film.centre - film.corner).toFixed(1)})`);
+let gradeDiff = 0, gn = 0;
+for (let i = 0; i < flat.data.length; i += 4) {
+  gradeDiff += Math.abs(flat.data[i] - film.data[i])
+    + Math.abs(flat.data[i + 1] - film.data[i + 1])
+    + Math.abs(flat.data[i + 2] - film.data[i + 2]);
+  gn++;
+}
+ok(gradeDiff / gn > 6,
+  `the grade is invisible (${(gradeDiff / gn).toFixed(1)} mean channel difference)`);
+console.log(`  grade: centre-corner falloff `
+  + `${(flat.centre - flat.corner).toFixed(1)} -> ${(film.centre - film.corner).toFixed(1)}, `
+  + `warmth ${flat.warmth.toFixed(1)} -> ${film.warmth.toFixed(1)}, `
+  + `mean channel diff ${(gradeDiff / gn).toFixed(1)}`);
+
 // and it is a switch: turning it back off takes it all away again
 {
   const g = new M.Game(new M.Input(nc(M.VW, M.VH)));

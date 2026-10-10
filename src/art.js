@@ -174,6 +174,15 @@ export const GUN_SPECS = {
   bar:        { len: 23, stock: 'wood', stockLen: 5, mag: 'box',  magLen: 4, barrel: 'thick',  muzzle: 'brake' },
   mg42:       { len: 27, stock: 'wood', stockLen: 5, mag: 'belt', magLen: 6, barrel: 'shroud', muzzle: 'brake' },
   ptrs41:     { len: 31, stock: 'wood', stockLen: 6, mag: 'box',  magLen: 4, barrel: 'thin',   muzzle: 'brake' },
+  // ---- the second wave ----
+  python:     { len: 13, stock: 'wood', stockLen: 3, mag: 'box',  magLen: 2, barrel: 'thin',   muzzle: 'none' },
+  sten:       { len: 19, stock: 'wire', stockLen: 5, mag: 'box',  magLen: 3, barrel: 'thin',   muzzle: 'none' },
+  greasegun:  { len: 18, stock: 'wire', stockLen: 5, mag: 'box',  magLen: 3, barrel: 'shroud', muzzle: 'none' },
+  garand:     { len: 24, stock: 'wood', stockLen: 6, mag: 'none', magLen: 0, barrel: 'thin',   muzzle: 'none' },
+  stg44:      { len: 23, stock: 'wood', stockLen: 5, mag: 'box',  magLen: 4, barrel: 'thin',   muzzle: 'brake' },
+  sawedoff:   { len: 14, stock: 'wood', stockLen: 4, mag: 'none', magLen: 0, barrel: 'thick',  muzzle: 'none' },
+  gewehr43:   { len: 25, stock: 'wood', stockLen: 6, mag: 'box',  magLen: 2, barrel: 'thin',   muzzle: 'none' },
+  lewis:      { len: 26, stock: 'wood', stockLen: 5, mag: 'drum', magLen: 5, barrel: 'shroud', muzzle: 'none' },
   raygun:     { len: 17, stock: 'tank', stockLen: 5, mag: 'tank', magLen: 3, barrel: 'none', muzzle: 'cone', accent: '#7fd75a' },
   wunderwaffe:{ len: 23, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'coil', accent: '#8fd6ff' },
   thundergun: { len: 21, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'cone', accent: '#f0a03c' },
@@ -373,6 +382,28 @@ export function buildArt() {
     fusionFlip: zombie.map((c) => tintCopy(flipH(c), '#4a3f52', 0.6)),
     fusionAtk: zombieAtk.map((c) => tintCopy(c, '#4a3f52', 0.6)),
     fusionAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#4a3f52', 0.6)),
+
+    // ---- three from the creature shortlist -----------------------------
+    // bonewright: bone-pale and gaunt, in a long dark apron, needle in hand
+    bonewright: zombie.map((c) => tintCopy(c, '#cfc9b4', 0.74)),
+    bonewrightFlip: zombie.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
+    bonewrightAtk: zombieAtk.map((c) => tintCopy(c, '#cfc9b4', 0.74)),
+    bonewrightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
+    // skeletons: what it sews out of the dirt -- chalk white and much thinner
+    skeleton: zombie.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
+    skeletonFlip: zombie.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
+    skeletonAtk: zombieAtk.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
+    skeletonAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
+    // swarmling's scattered halves: chitin, small and dark
+    swarmlet: zombie.map((c) => tintCopy(c, '#4a3a2c', 0.66)),
+    swarmletFlip: zombie.map((c) => tintCopy(flipH(c), '#4a3a2c', 0.66)),
+    swarmletAtk: zombieAtk.map((c) => tintCopy(c, '#4a3a2c', 0.66)),
+    swarmletAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#4a3a2c', 0.66)),
+    // jammer: signals grey, with the wireless set strapped to its back
+    jammer: zombie.map((c) => tintCopy(c, '#3a4756', 0.6)),
+    jammerFlip: zombie.map((c) => tintCopy(flipH(c), '#3a4756', 0.6)),
+    jammerAtk: zombieAtk.map((c) => tintCopy(c, '#3a4756', 0.6)),
+    jammerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#3a4756', 0.6)),
 
     dogWhite: flatCopy(buildDog(), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),

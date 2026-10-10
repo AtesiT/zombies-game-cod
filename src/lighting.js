@@ -203,11 +203,11 @@ export class Lighting {
     ctx.globalCompositeOperation = 'lighter';
     ctx.imageSmoothingEnabled = true;
     // wide: the halo that reaches into the dark around the bulb
-    const spread = Math.round(Math.min(w, h) * 0.07);
-    ctx.globalAlpha = 0.46 * amount;
+    const spread = Math.round(Math.min(w, h) * 0.10);
+    ctx.globalAlpha = 0.58 * amount;
     ctx.drawImage(b, -spread, -spread, w + spread * 2, h + spread * 2);
     // tight: the bloom hugging the light itself
-    ctx.globalAlpha = 0.34 * amount;
+    ctx.globalAlpha = 0.42 * amount;
     ctx.drawImage(b, 0, 0, w, h);
     ctx.globalAlpha = 1;
     ctx.restore();
@@ -243,6 +243,81 @@ export class Lighting {
     if (bloom > 0.01) this._bloom(ctx, w, h, bloom);
     ctx.restore();
   }
+}
+
+// ---------------------------------------------------------------------------
+//  DLSS5's post-grade. The supersample and the bloom get the pixels clean and
+//  glowing; this is the pass that makes the picture *feel* graded, the way a
+//  colourist works over a finished frame. It is all cheap full-screen blits --
+//  a couple of gradients and a tiny film-grain -- so it costs next to nothing
+//  even when the frame underneath was supersampled.
+// ---------------------------------------------------------------------------
+
+// Film grain: three small noise tiles, baked once and cycled through, drawn
+// with 'overlay' so it sits in the mid-tones instead of washing over the top.
+const GRAIN_N = 3;
+const GRAIN_SIZE = 96;
+let GRAIN = null;
+function grainTiles() {
+  if (GRAIN) return GRAIN;
+  GRAIN = [];
+  for (let i = 0; i < GRAIN_N; i++) {
+    const c = document.createElement('canvas');
+    c.width = GRAIN_SIZE; c.height = GRAIN_SIZE;
+    const x = c.getContext('2d');
+    const img = x.createImageData(GRAIN_SIZE, GRAIN_SIZE);
+    for (let j = 0; j < img.data.length; j += 4) {
+      const v = 96 + Math.floor(Math.random() * 64);      // mid-grey speckle
+      img.data[j] = v; img.data[j + 1] = v; img.data[j + 2] = v; img.data[j + 3] = 255;
+    }
+    x.putImageData(img, 0, 0);
+    GRAIN.push(c);
+  }
+  return GRAIN;
+}
+
+/**
+ * Grade the finished frame. `t` is time, used to walk the grain around.
+ * Returns silently when there is nothing to do.
+ */
+export function postgrade(ctx, w, h, t = 0) {
+  ctx.save();
+
+  // -- the grade itself -----------------------------------------------------
+  // Warm the highlights and lift the middle of the frame, so the lamp light
+  // reads as warmth rather than a flat circle. A soft radial, added.
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.imageSmoothingEnabled = true;
+  const warm = ctx.createRadialGradient(w / 2, h * 0.42, Math.min(w, h) * 0.1,
+                                        w / 2, h * 0.5, Math.max(w, h) * 0.75);
+  warm.addColorStop(0, 'rgba(255,178,102,0.16)');
+  warm.addColorStop(0.6, 'rgba(180,150,120,0.05)');
+  warm.addColorStop(1, 'rgba(70,90,120,0.10)');
+  ctx.fillStyle = warm;
+  ctx.fillRect(0, 0, w, h);
+
+  // Push the contrast a little: blacks slightly blacker, lights slightly more.
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(0, 0, w, h);
+
+  // -- film grain -----------------------------------------------------------
+  // The speckle walks a tile around each frame so it shimmers like film,
+  // never sits still like a dirty lens.
+  ctx.globalCompositeOperation = 'overlay';
+  const tiles = grainTiles();
+  const tile = tiles[(Math.floor(t * 18)) % tiles.length];
+  ctx.globalAlpha = 0.05;
+  const ox = (Math.floor(t * 37) % GRAIN_SIZE);
+  const oy = (Math.floor(t * 23) % GRAIN_SIZE);
+  for (let x = -ox; x < w; x += GRAIN_SIZE) {
+    for (let y = -oy; y < h; y += GRAIN_SIZE) {
+      ctx.drawImage(tile, x, y);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
 }
 
 /** Radial vignette drawn straight onto the scene. Baked once, then blitted. */

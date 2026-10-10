@@ -38,10 +38,25 @@ export const RECIPES = {
 export const RECIPE_ORDER = Object.keys(RECIPES);
 
 export class Workbench {
+  /**
+   * The bench stands in the attic at the top of the house, so the storey you
+   * are on decides whether there is one under your hands at all: the game
+   * re-points it every time you change floor, and it keeps its last position
+   * on the storeys that have no bench (nothing looks at it up there).
+   */
   constructor(spot) {
+    this.x = spot?.x ?? 0;
+    this.y = spot?.y ?? 0;
+    this.hasSpot = !!spot;
+    this.spikesRounds = 0;
+  }
+
+  /** Follow the storey you have just climbed to. */
+  useSpot(spot) {
+    this.hasSpot = !!spot;
+    if (!spot) return;
     this.x = spot.x;
     this.y = spot.y;
-    this.spikesRounds = 0;
   }
 
   /** Can the player afford this recipe right now? */

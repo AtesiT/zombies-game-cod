@@ -61,7 +61,7 @@ export const SETTING_DEFS = [
   },
   {
     id: 'dlss', label: 'DLSS5', type: 'toggle', def: false,
-    hint: 'Draws the frame larger than the screen and scales it back down \u2014 smoother edges, softer pixels, needs a faster machine',
+    hint: 'Supersamples the frame and adds a cinematic grade \u2014 smoother edges, glowing lights, film grain, deeper shadows. Needs a faster machine',
   },
   {
     id: 'autoQuality', label: 'AUTO PERFORMANCE', type: 'toggle', def: true,

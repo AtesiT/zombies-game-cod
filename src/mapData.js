@@ -151,6 +151,8 @@ export const STAIRS = [
 
 export const POWER_SWITCH = { x: 7, y: 35 };
 export const WORKBENCH = { x: 58, y: 16 };
+// the bench itself now lives in the attic at the top of the house
+export const WORKBENCH_ROOF = { x: 23, y: 26 };
 export const PAP_SPOT = { x: 53, y: 7 };
 
 export const SECRET_SWITCHES = [
@@ -320,13 +322,13 @@ export const FLOORS = [
     "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~###WW######WW######WW####WW##~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#......k#.b.....#.b...k#b...#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~~#..bb..k#..b.c..#..b..k#.b..#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~~W.....c.#.t.....D...t..#..c.W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~~W...r...D.bb....#.rb.c..bb..W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~~#...b..k#..b.c..#..b..k#.b..#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~~W.....c.#.t.........t..#..c.W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~~W...r.....bb....#.rb.c..bb..W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#k..........................#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#k.......r..#bb.............#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#.bb........#bb......r......W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~~#.bb..t..t..D.....t..t......W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~~#.bb..t..t........t..t......W~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#...........#..r............#~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#...............#############~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~~#k.............k#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
@@ -386,14 +388,27 @@ export const FLOORS = [
       // the south windows, over the stair they funnel down
       { kind: 'electric', tx: 22, ty: 29, face: 'up', zone: { x: 17, y: 27, w: 13, h: 2 } },
     ],
+    // three homes up here as well, so the teddy bear has somewhere to take it
     box: [
-      { x: 25, y: 26 }
+      { x: 25, y: 26 },
+      { x: 34, y: 15 },
+      { x: 21, y: 13 }
     ],
     crates: [
       { x: 34, y: 17 },
       { x: 21, y: 27 }
     ],
-    lamps: [{ x: 18, y: 12 },{ x: 26, y: 14 },{ x: 34, y: 12 },{ x: 40, y: 14 },{ x: 18, y: 26 },{ x: 26, y: 26 },{ x: 29, y: 14 },{ x: 20, y: 20 }],
+    // three of them run off their own battery: without them the barracks is
+    // pitch black until somebody goes downstairs and starts the generator
+    // placed inside the rooms, not buried in the partitions (four of the old
+    // ones were, which is why the barracks never looked lit)
+    lamps: [
+      { x: 17, y: 10 }, { x: 27, y: 10 }, { x: 35, y: 10 }, { x: 41, y: 10, always: true },
+      { x: 21, y: 13 }, { x: 30, y: 14 }, { x: 38, y: 14, always: true },
+      { x: 25, y: 16 }, { x: 34, y: 17 }, { x: 42, y: 17 },
+      { x: 16, y: 18 }, { x: 21, y: 19, always: true }, { x: 29, y: 19 },
+      { x: 24, y: 23 }, { x: 19, y: 25, always: true }, { x: 28, y: 27 },
+    ],
     cache: [
       { x: 20, y: 21 },
       { x: 21, y: 21 },
@@ -429,7 +444,7 @@ export const FLOORS = [
     "~~~~~~~~~~~~~~#RRRRRRRrRRRR#.....r..#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRR#........#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRR#........#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~#RRRRRRRRRRRR####D#############~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~#RRRRRRRRRRRR####.#############~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRccRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
@@ -474,7 +489,9 @@ export const FLOORS = [
     wallbuys: [],
     traps: [],
     box: [
-      { x: 25, y: 26 }
+      { x: 25, y: 26 },
+      { x: 16, y: 10 },
+      { x: 30, y: 10 }
     ],
     crates: [],
     lamps: [],

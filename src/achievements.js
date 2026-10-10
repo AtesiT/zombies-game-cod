@@ -39,6 +39,22 @@ export const ACHIEVEMENTS = [
   { id: 'upstairs', name: 'Upstairs', desc: 'Take the stairs to the second floor.', icon: '2' },
   { id: 'up_on_the_roof', name: 'Up On The Roof', desc: 'Climb the attic ladder and step out onto the roof.', icon: '3' },
   { id: 'cache_raider', name: 'Cache Raider', desc: 'Crack open the supply cache in the attic.', icon: 'C' },
+  // ---- creature shortlist --------------------------------------------------
+  { id: 'bone_collector', name: 'Bone Collector', desc: 'Put the Bonewright down before its skeletons walk.', icon: 'B' },
+  { id: 'swarm_season', name: 'Swarm Season', desc: 'Burst a Swarmling before it sheds.', icon: 'S' },
+  { id: 'off_the_air', name: 'Off The Air', desc: 'Silence a Jammer.', icon: 'J' },
+  { id: 'skeleton_key', name: 'Skeleton Key', desc: 'Break ten of the Bonewright\u2019s skeletons.', icon: 'K' },
+  // ---- the rest of the house ----------------------------------------------
+  { id: 'tourist', name: 'Grand Tour', desc: 'Set foot on all three storeys in one run.', icon: 'G' },
+  { id: 'master_crafter', name: 'Master Crafter', desc: 'Craft five things at the workbench.', icon: 'W' },
+  { id: 'field_medic', name: 'Field Medic', desc: 'Craft a medkit.', icon: '+' },
+  { id: 'big_spender', name: 'Big Spender', desc: 'Hold 10,000 points at once.', icon: '$' },
+  { id: 'marksman', name: 'Marksman', desc: 'Land half your shots over a hundred fired.', icon: '%' },
+  { id: 'knife_work', name: 'Knife Work', desc: 'Take down twenty-five with the knife.', icon: '/' },
+  { id: 'frag_out', name: 'Frag Out', desc: 'Take five with one grenade.', icon: 'G' },
+  { id: 'round_40', name: 'Forty Deep', desc: 'Reach round 40.', icon: '40' },
+  { id: 'lucky_pull', name: 'Lucky Pull', desc: 'Get a wonder weapon without ever drawing the teddy.', icon: 'L' },
+  { id: 'lights_out', name: 'Lights Out', desc: 'Fight a whole round in the dark before the power.', icon: '0' },
 ];
 
 const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));

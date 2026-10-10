@@ -20,6 +20,7 @@ g.startRound(1);
 g.update(H);
 
 let barricades = 0, doors = 0;
+const doorsOn = [0, 0, 0];
 for (let f = 0; f < 3; f++) {
   g.map.setFloor(f);
   g.useFloor(f);
@@ -50,6 +51,7 @@ for (let f = 0; f < 3; f++) {
   // ---- doors --------------------------------------------------------------
   for (const d of g.map.doors) {
     doors++;
+    doorsOn[f]++;
     const { tx, ty } = d;
     const up = hard(tx, ty - 1), dn = hard(tx, ty + 1);
     const lf = hard(tx - 1, ty), rt = hard(tx + 1, ty);
@@ -72,7 +74,14 @@ for (let f = 0; f < 3; f++) {
 }
 
 ok(barricades >= 20, `only ${barricades} boarded windows in the whole map`);
-ok(doors >= 8, `only ${doors} doors in the whole map`);
+// The doors on the two upper floors were taken out on purpose: up there you
+// are fighting in a barracks you cannot shut, and a locked door between you
+// and the stairs is not a choice, it is a trap. So every door in the map is
+// on the ground floor now, and the upper storeys must have none at all.
+ok(doors >= 7, `only ${doors} doors in the whole map`);
+ok(doorsOn[0] === doors, `${doors - doorsOn[0]} of the doors are not on the ground floor`);
+ok(doorsOn[1] === 0 && doorsOn[2] === 0,
+  `the upper floors still charge for doors: ${doorsOn[1]} and ${doorsOn[2]}`);
 
 // ---- and nothing boards up a tile it cannot be reached from ----------------
 // A window nobody can reach is a window nobody repairs, and it looks like a
