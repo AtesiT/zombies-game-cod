@@ -1541,13 +1541,11 @@ export function drawDebug(ctx, game, w, h) {
   ctx.restore();
 }
 
-export function drawSettings(ctx, game, w, h) {
-  ctx.save();
-  ctx.fillStyle = 'rgba(6,7,10,0.86)';
-  ctx.fillRect(0, 0, w, h);
-
-  // the list scrolls now: there are more knobs than there is screen, and a
-  // panel that runs off the top is a setting you cannot reach
+/**
+ * The settings panel geometry, shared by the painter and the mouse. Keeping
+ * them on one function is what lets a click land on exactly the row you see.
+ */
+export function settingsLayout(game, w, h) {
   const ROW = 24, HEAD = 52, FOOT = 46;
   const rows = SETTING_DEFS.length;
   const maxRows = Math.max(5, Math.floor((h - 40 - HEAD - FOOT) / ROW));
@@ -1558,6 +1556,32 @@ export function drawSettings(ctx, game, w, h) {
     : 0;
   const cw = 420, ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
+  return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy };
+}
+
+/** Which settings row (index into SETTING_DEFS) is under the pointer, or -1. */
+export function settingsRowAt(game, w, h, mx, my) {
+  const L = settingsLayout(game, w, h);
+  const rel = my - (L.cy + L.HEAD - 12);
+  if (rel < 0 || rel >= L.shown * L.ROW) return -1;
+  if (mx < L.cx || mx > L.cx + L.cw) return -1;
+  return Math.min(L.rows - 1, L.top + Math.floor(rel / L.ROW));
+}
+
+/** Horizontal slider rect for a range row, in the same coords as the panel. */
+export function settingsSliderRect(game, w, h) {
+  const L = settingsLayout(game, w, h);
+  return { bx: L.cx + L.cw - 148, bw: 84 };
+}
+
+export function drawSettings(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.86)';
+  ctx.fillRect(0, 0, w, h);
+
+  // the list scrolls now: there are more knobs than there is screen, and a
+  // panel that runs off the top is a setting you cannot reach
+  const { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy } = settingsLayout(game, w, h);
 
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
@@ -1570,7 +1594,7 @@ export function drawSettings(ctx, game, w, h) {
   text(ctx, 'SETTINGS', cx + 14, cy + 20, {
     font: 'bold 16px "Courier New", monospace', colour: GOLD,
   });
-  text(ctx, 'W / S — pick      A / D — change      ENTER — flip', cx + cw - 14, cy + 20, {
+  text(ctx, 'MOUSE / WHEEL or W S A D — pick, change', cx + cw - 14, cy + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
   });
 

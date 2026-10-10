@@ -253,27 +253,63 @@ export class Lighting {
 //  even when the frame underneath was supersampled.
 // ---------------------------------------------------------------------------
 
-// Film grain: three small noise tiles, baked once and cycled through, drawn
-// with 'overlay' so it sits in the mid-tones instead of washing over the top.
+// Film grain: three big sheets, each a shuffled patchwork of noise patches,
+// baked once and stamped as a single repeating pattern. That is one fill per
+// frame instead of two dozen tiled drawImage calls, which is the difference
+// between "free" and "the reason DLSS5 lagged on a phone".
 const GRAIN_N = 3;
-const GRAIN_SIZE = 96;
-let GRAIN = null;
-function grainTiles() {
-  if (GRAIN) return GRAIN;
-  GRAIN = [];
-  for (let i = 0; i < GRAIN_N; i++) {
+const GRAIN_TILE = 96;
+const GRAIN_SHEET = 288;
+let GRAIN_SHEETS = null;
+let GRAIN_PATTERNS = null;   // { ctx, pats[] } -- patterns belong to a context
+function grainSheets() {
+  if (GRAIN_SHEETS) return GRAIN_SHEETS;
+  const patches = [];
+  for (let i = 0; i < 6; i++) {
     const c = document.createElement('canvas');
-    c.width = GRAIN_SIZE; c.height = GRAIN_SIZE;
+    c.width = GRAIN_TILE; c.height = GRAIN_TILE;
     const x = c.getContext('2d');
-    const img = x.createImageData(GRAIN_SIZE, GRAIN_SIZE);
+    const img = x.createImageData(GRAIN_TILE, GRAIN_TILE);
     for (let j = 0; j < img.data.length; j += 4) {
       const v = 96 + Math.floor(Math.random() * 64);      // mid-grey speckle
       img.data[j] = v; img.data[j + 1] = v; img.data[j + 2] = v; img.data[j + 3] = 255;
     }
     x.putImageData(img, 0, 0);
-    GRAIN.push(c);
+    patches.push(c);
   }
-  return GRAIN;
+  GRAIN_SHEETS = [];
+  for (let i = 0; i < GRAIN_N; i++) {
+    const c = document.createElement('canvas');
+    c.width = GRAIN_SHEET; c.height = GRAIN_SHEET;
+    const x = c.getContext('2d');
+    for (let ty = 0; ty < 3; ty++) {
+      for (let tx = 0; tx < 3; tx++) {
+        x.drawImage(patches[(i + tx + ty * 2 + (tx * ty) % 3) % patches.length],
+                    tx * GRAIN_TILE, ty * GRAIN_TILE);
+      }
+    }
+    GRAIN_SHEETS.push(c);
+  }
+  return GRAIN_SHEETS;
+}
+
+// The warm radial grade used to be rebuilt as a gradient shader every frame;
+// it never changes for a given frame size, so bake it once and blit it.
+let WARM_LAYER = null;
+function warmLayer(w, h) {
+  if (WARM_LAYER && WARM_LAYER.w === w && WARM_LAYER.h === h) return WARM_LAYER.canvas;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, w); c.height = Math.max(1, h);
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(w / 2, h * 0.42, Math.min(w, h) * 0.1,
+                                   w / 2, h * 0.5, Math.max(w, h) * 0.75);
+  g.addColorStop(0, 'rgba(255,178,102,0.16)');
+  g.addColorStop(0.6, 'rgba(180,150,120,0.05)');
+  g.addColorStop(1, 'rgba(70,90,120,0.10)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, w, h);
+  WARM_LAYER = { w, h, canvas: c };
+  return c;
 }
 
 /**
@@ -282,39 +318,29 @@ function grainTiles() {
  */
 export function postgrade(ctx, w, h, t = 0) {
   ctx.save();
-
-  // -- the grade itself -----------------------------------------------------
-  // Warm the highlights and lift the middle of the frame, so the lamp light
-  // reads as warmth rather than a flat circle. A soft radial, added.
-  ctx.globalCompositeOperation = 'overlay';
   ctx.imageSmoothingEnabled = true;
-  const warm = ctx.createRadialGradient(w / 2, h * 0.42, Math.min(w, h) * 0.1,
-                                        w / 2, h * 0.5, Math.max(w, h) * 0.75);
-  warm.addColorStop(0, 'rgba(255,178,102,0.16)');
-  warm.addColorStop(0.6, 'rgba(180,150,120,0.05)');
-  warm.addColorStop(1, 'rgba(70,90,120,0.10)');
-  ctx.fillStyle = warm;
-  ctx.fillRect(0, 0, w, h);
+
+  // -- the grade itself: one cached blit -------------------------------------
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.drawImage(warmLayer(w, h), 0, 0);
 
   // Push the contrast a little: blacks slightly blacker, lights slightly more.
   ctx.globalCompositeOperation = 'soft-light';
   ctx.fillStyle = 'rgba(255,255,255,0.06)';
   ctx.fillRect(0, 0, w, h);
 
-  // -- film grain -----------------------------------------------------------
-  // The speckle walks a tile around each frame so it shimmers like film,
-  // never sits still like a dirty lens.
-  ctx.globalCompositeOperation = 'overlay';
-  const tiles = grainTiles();
-  const tile = tiles[(Math.floor(t * 18)) % tiles.length];
-  ctx.globalAlpha = 0.05;
-  const ox = (Math.floor(t * 37) % GRAIN_SIZE);
-  const oy = (Math.floor(t * 23) % GRAIN_SIZE);
-  for (let x = -ox; x < w; x += GRAIN_SIZE) {
-    for (let y = -oy; y < h; y += GRAIN_SIZE) {
-      ctx.drawImage(tile, x, y);
-    }
+  // -- film grain: one pattern fill, walked a few pixels each frame ----------
+  const sheets = grainSheets();
+  if (!GRAIN_PATTERNS || GRAIN_PATTERNS.ctx !== ctx) {
+    GRAIN_PATTERNS = { ctx, pats: sheets.map((sh) => ctx.createPattern(sh, 'repeat')) };
   }
+  const ox = (Math.floor(t * 37) % GRAIN_SHEET);
+  const oy = (Math.floor(t * 23) % GRAIN_SHEET);
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = 0.05;
+  ctx.fillStyle = GRAIN_PATTERNS.pats[Math.floor(t * 18) % GRAIN_N];
+  ctx.translate(-ox, -oy);
+  ctx.fillRect(0, 0, w + GRAIN_SHEET, h + GRAIN_SHEET);
   ctx.globalAlpha = 1;
 
   ctx.restore();

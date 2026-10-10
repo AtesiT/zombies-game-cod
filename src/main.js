@@ -40,9 +40,10 @@ let displayW = VW;
 //  way there is of getting rid of them. Sprites get filtered on the way up
 //  (see `game.smooth`) so the pixel art goes soft rather than blocky.
 //
-//  It costs fill rate -- 2x means four times the pixels -- so it watches the
-//  frame time and eases itself down the list rather than letting the game
-//  crawl. The setting stays on; the engine just stops being able to afford it.
+//  It costs fill rate -- 2x means four times the pixels -- so, when AUTO
+//  PERFORMANCE is on, it watches the frame time and eases itself down the list
+//  rather than letting the game crawl. With AUTO PERFORMANCE off it never
+//  eases: the backing store stays at full supersample no matter what.
 // ---------------------------------------------------------------------------
 // How far to supersample: enough to be worth it on the screen you actually
 // have, never more than 2x. A phone showing the game 320 px wide does not need
@@ -116,6 +117,9 @@ settings.onChange((id) => {
   if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch();
   if (id === 'screen') resize();
   if (id === 'dlss') { ssLevel = 0; ssSlow = 0; ssFast = 0; applyBacking(); }
+  // AUTO PERFORMANCE off means *nothing* is allowed to ease the picture back:
+  // the supersample goes to full and stays there, whatever the frame time says
+  if (id === 'autoQuality') { ssLevel = 0; ssSlow = 0; ssFast = 0; applyBacking(); }
 });
 syncTouch();
 
@@ -169,8 +173,9 @@ function frame(now) {
   game.tickPerf(workMs);
 
   // the supersample watch: too slow for long enough and it steps down, fast
-  // for long enough and it climbs back up
-  if (settings.get('dlss')) {
+  // for long enough and it climbs back up. Only when AUTO PERFORMANCE is on --
+  // a player who switched that off asked for the full picture, lag and all
+  if (settings.get('dlss') && settings.get('autoQuality')) {
     if (workMs > 20) { ssSlow++; ssFast = 0; } else if (workMs < 11) { ssFast++; ssSlow = 0; } else { ssSlow = 0; ssFast = 0; }
     if (ssSlow >= 90 && ssLevel < SS_STEPS.length - 1) { ssLevel++; ssSlow = 0; applyBacking(); } else if (ssFast >= 600 && ssLevel > 0) { ssLevel--; ssFast = 0; applyBacking(); }
   }

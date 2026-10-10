@@ -22,6 +22,45 @@ export class MysteryBox {
     this.movedAt = -99;         // when it last packed up and went somewhere else
   }
 
+
+  /**
+   * The glowing ? plate and the corner beacons, drawn ABOVE the darkness so
+   * the one crate that matters reads through the pre-power gloom and never
+   * gets mistaken for furniture again.
+   */
+  drawBeacon(ctx, time = 0, camX = 0, camY = 0) {
+    const s = this.spot;
+    if (!s) return;
+    const x = s.x - camX, y = s.y - camY;
+    if (x < -40 || y < -40 || x > 840 || y > 540) return;
+    ctx.save();
+    ctx.translate(x, y);
+    const blink = Math.floor(time * 2.4) % 2;
+    ctx.fillStyle = `rgba(255,200,90,${blink ? 0.95 : 0.25})`;
+    ctx.fillRect(-15, -11, 2, 2);
+    ctx.fillRect(13, 9, 2, 2);
+    ctx.fillStyle = `rgba(255,200,90,${blink ? 0.25 : 0.95})`;
+    ctx.fillRect(13, -11, 2, 2);
+    ctx.fillRect(-15, 9, 2, 2);
+    if (this.state === 'closed') {
+      const pulse = 0.7 + Math.sin(time * 3.1) * 0.3;
+      ctx.save();
+      ctx.shadowColor = `rgba(255,214,110,${0.85 * pulse})`;
+      ctx.shadowBlur = 9 * pulse;
+      ctx.fillStyle = '#171106';
+      ctx.fillRect(-7, -8, 14, 14);
+      ctx.strokeStyle = `rgba(245,215,110,${0.45 + 0.5 * pulse})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-6.5, -7.5, 13, 13);
+      ctx.fillStyle = `rgba(255,228,138,${0.7 + 0.3 * pulse})`;
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('?', 0, 3);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
   /**
    * Where the crate is standing. Guarded because the number of homes changes
    * with the storey you are on: a host on the ground floor has five, a guest
@@ -124,7 +163,7 @@ export class MysteryBox {
     return null;
   }
 
-  draw(ctx, art) {
+  draw(ctx, art, time = 0) {
     const s = this.spot;
     ctx.save();
     ctx.translate(s.x, s.y);
@@ -149,10 +188,6 @@ export class MysteryBox {
     if (this.state === 'closed') {
       ctx.fillStyle = 'rgba(0,0,0,0.4)';
       ctx.fillRect(-13, -6, 26, 12);
-      ctx.fillStyle = '#f5d76e';
-      ctx.font = 'bold 7px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('?', 0, 2);
     } else {
       // the lid is open, light pours out
       const g = ctx.createLinearGradient(0, -20, 0, 4);

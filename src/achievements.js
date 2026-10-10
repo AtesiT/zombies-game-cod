@@ -30,7 +30,7 @@ export const ACHIEVEMENTS = [
   { id: 'recluse', name: 'Locked Down', desc: 'Reach round 10 with every door still shut.', icon: 'D' },
   { id: 'monkey_business', name: 'Monkey Business', desc: 'Ten kills with a single Monkey Bomb.', icon: 'M' },
   { id: 'egg_hunter', name: 'Something on the Radio', desc: 'Complete the easter egg.', icon: 'E' },
-  { id: 'walking_armoury', name: 'Walking Armoury', desc: 'Carry six weapons at once.', icon: '6' },
+  { id: 'walking_armoury', name: 'Arms Runner', desc: 'Take 8 weapons from the mystery box in one game.', icon: '8' },
   { id: 'frostbite', name: 'Frostbite', desc: 'Freeze ten zombies at once.', icon: 'F' },
   { id: 'untouchable', name: 'Untouchable', desc: 'Clear a whole round without a scratch.', icon: 'U' },
   { id: 'packed', name: 'Punched', desc: 'Run a weapon through the Pack-a-Punch.', icon: 'P' },

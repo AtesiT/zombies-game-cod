@@ -14,7 +14,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -221,6 +221,7 @@ export class Game {
     this.arcs = [];
     this.shriekRings = [];
     this.fires = [];
+    this.rifts = [];      // Rift Splitter floor hazards
     this.gases = [];
     this.inFire = 0;
     this.inGas = 0;
@@ -284,6 +285,7 @@ export class Game {
     // --- systems ---------------------------------------------------------
     this.powerOn = false;
     this.powerSurge = 0;
+    this.powerOnAt = -99;   // when the generator caught: lamps warm up in turn
     this.box = new MysteryBox(this.map.boxSpots);
     this.box._now = () => this.time;
     this.workbench = new Workbench(this.map.workbench);
@@ -967,7 +969,6 @@ export class Game {
     // achievements
     this.achievements.unlock('first_blood');
     if (this.stats.headshots >= 100) this.achievements.unlock('headhunter');
-    if (this.player.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
     if (source === 'monkey') this._monkeyKills = (this._monkeyKills ?? 0) + 1;
     if (source === 'trap') this.traps.kills++;
     // the creature shortlist, tallied by kind
@@ -1180,7 +1181,7 @@ export class Game {
   }
 
   // -------------------------------------------------------------- shooting
-  fireHitscan(ox, oy, angle, def, muzzle, by = null) {
+  fireHitscan(ox, oy, angle, def, muzzle, by = null, doSpecial = true) {
     this.stats.shots++;
     const dx = Math.cos(angle), dy = Math.sin(angle);
     const ex = ox + dx * def.range, ey = oy + dy * def.range;
@@ -1245,8 +1246,10 @@ export class Game {
       else if (insta === 1) { endT = h.t; break; }
     }
 
-    // wonder-weapon extras fire once per shot, at the point of impact
-    if (def.special && def.special !== 'shock' && def.special !== 'lure') {
+    // wonder-weapon extras fire once per shot, at the point of impact --
+    // a multi-pellet gun only lets the first pellet carry the extra, or a
+    // rift shotgun would tear six floors open per trigger pull
+    if (doSpecial && def.special && def.special !== 'shock' && def.special !== 'lure') {
       const ix = firstHit ? firstHit.x : ox + dx * endT;
       const iy = firstHit ? firstHit.y : oy + dy * endT;
       this.applySpecial(def, ix, iy, firstHit ? firstHit.z : null, insta);
@@ -1322,6 +1325,50 @@ export class Game {
         from = { x: best.pos.x, y: best.pos.y };
       }
       audio.shot('wunderwaffe', 0);
+      return;
+    }
+
+    if (def.special === 'lob') {
+      // the launcher's round ends the way a grenade does, just ruder
+      this.explodeAt(x, y, def.lobR, def.lobDmg, { blast: true, colour: '#f0a050' });
+      return;
+    }
+
+    if (def.special === 'flame') {
+      // whatever the jet touched keeps cooking; the floor pool does the rest
+      if (source && !source.dead) {
+        source.burning = Math.max(source.burning ?? 0, def.burnTime);
+        source.burnDmg = def.burnDmg;
+      }
+      for (const z of this.zombies) {
+        if (z.dead || z === source) continue;
+        if ((z.floor ?? 0) !== sf) continue;
+        if (dist(x, y, z.pos.x, z.pos.y) > def.flameR * 1.6) continue;
+        z.burning = Math.max(z.burning ?? 0, def.burnTime * 0.7);
+        z.burnDmg = def.burnDmg;
+      }
+      // one fuel pool where the jet lands -- and only if the floor there is
+      // not already alight, or a held trigger would carpet the whole hallway
+      let near = false;
+      for (const f of this.fires) {
+        if (dist(f.x, f.y, x, y) < 24) { near = true; break; }
+      }
+      if (!near) {
+        this.fires.push({ x, y, r: def.flameR, life: 1.1, max: 1.1, tick: 0, puff: 0, f: this.fxFloor });
+        this.particles.smoke(x, y, 3);
+      }
+      return;
+    }
+
+    if (def.special === 'rift') {
+      // the floor tears open and chews on whatever stands over the crack
+      this.rifts.push({
+        x, y, r: def.riftR, dmg: def.riftDmg, life: def.riftTime, max: def.riftTime,
+        tick: 0, seed: (x * 13 + y * 7) | 0, f: sf,
+      });
+      this.explosionLights.push({ x, y, r: def.riftR * 2.4, life: 0.3, max: 0.3, colour: '#c080ff', f: sf });
+      this.particles.spark(x, y, randRange(0, TAU), 10, '#c080ff');
+      this.shake(3, 0.25);
       return;
     }
 
@@ -1475,7 +1522,6 @@ export class Game {
       const kind = p.giveWeapon(it.weapon);
       audio.buy();
       this.popups.add(p.pos.x, p.pos.y - 26, kind === 'ammo' ? 'AMMO' : def.name.toUpperCase(), '#f0d98a', 12);
-      if (p.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
       return;
     }
 
@@ -1528,7 +1574,10 @@ export class Game {
           this.achievements.unlock('wonder_seeker');
           if ((this.stats.teddyDraws ?? 0) === 0) this.achievements.unlock('lucky_pull');
         }
-        if (p.ownedWeapons().length >= 6) this.achievements.unlock('walking_armoury');
+        if (kind === 'weapon') {
+          this.stats.boxTakes = (this.stats.boxTakes ?? 0) + 1;
+          if (this.stats.boxTakes >= 8) this.achievements.unlock('walking_armoury');
+        }
         return;
       }
       if (this.box.state !== 'closed') return;
@@ -1546,6 +1595,7 @@ export class Game {
     if (it.type === 'power') {
       if (this.powerOn) return;
       this.powerOn = true;
+      this.powerOnAt = this.time;
       this.powerSurge = 1.4;
       this.shake(4, 0.5);
       audio.powerUp();
@@ -1939,7 +1989,7 @@ export class Game {
       case 'ray': p.giveWeapon('raygun'); break;
       case 'power':
         if (this.powerOn) { this.powerOn = false; }
-        else { this.powerOn = true; this.powerSurge = 1.4; audio.powerUp(); }
+        else { this.powerOn = true; this.powerOnAt = this.time; this.powerSurge = 1.4; audio.powerUp(); }
         break;
       case 'doors':
         for (const d of this.map.doors) {
@@ -2003,6 +2053,30 @@ export class Game {
 
     if (this.settingsOpen) {
       const S = settings;
+      // the mouse and the wheel are first-class citizens here too: hover
+      // picks a row, a click flips or drags it, the wheel walks the list
+      const m = this.input.mouse;
+      const wheeled = !!this.input.wheel;
+      if (wheeled) {
+        this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
+        audio.dryFire();
+      }
+      const hover = settingsRowAt(this, VW, VH, m.x, m.y);
+      // the wheel wins over the hover in the same frame, or a scroll while
+      // the pointer rests on a row would snap straight back to that row
+      if (!wheeled && hover >= 0 && hover !== this.settingsIndex) { this.settingsIndex = hover; audio.dryFire(); }
+      if (m.pressed && hover >= 0) {
+        const d = SETTING_DEFS[hover];
+        if (d.type === 'range') {
+          const { bx, bw } = settingsSliderRect(this, VW, VH);
+          if (m.x >= bx - 8 && m.x <= bx + bw + 8) {
+            const k = clamp((m.x - bx) / bw, 0, 1);
+            const raw = d.min + k * (d.max - d.min);
+            S.set(d.id, Math.round(raw / d.step) * d.step);
+          } else S.nudge(d.id, 1);
+        } else if (d.id === 'reset') S.reset();
+        else S.activate(d.id);
+      }
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
         audio.dryFire();
@@ -2336,6 +2410,23 @@ export class Game {
       if (r.life <= 0) this.shriekRings.splice(i, 1);
     }
 
+    // ---- rifts ------------------------------------------------------------
+    for (let i = this.rifts.length - 1; i >= 0; i--) {
+      const r = this.rifts[i];
+      r.life -= dt;
+      if (r.life <= 0) { this.rifts.splice(i, 1); continue; }
+      r.tick += dt;
+      if (r.tick >= 0.4) {
+        r.tick -= 0.4;
+        for (const z of this.zombies) {
+          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (dist(r.x, r.y, z.pos.x, z.pos.y) > r.r + z.r) continue;
+          const res = z.hurt(r.dmg, false, this, randRange(0, TAU));
+          if (res === 2) this.onZombieKilled(z, false);
+        }
+      }
+    }
+
     // ---- fire and gas -----------------------------------------------------
     this.inFire = 0;
     this.inGas = 0;
@@ -2565,7 +2656,13 @@ export class Game {
    * resolution down a step at a time; a long calm stretch walks it back up.
    */
   tickPerf(workMs) {
-    if (!settings.get('autoQuality')) { this._slowFrames = 0; this._fastFrames = 0; return; }
+    if (!settings.get('autoQuality')) {
+      // the player took the wheel: whatever auto had dialled back is restored
+      // at once, and nothing may be dialled back again until they hand it over
+      this._slowFrames = 0; this._fastFrames = 0;
+      if (this._perfStage !== 0) { this._perfStage = 0; this._applyLightScale(); }
+      return;
+    }
     if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
     else if (workMs < 11) { this._fastFrames++; this._slowFrames = 0; }
     else { this._slowFrames = 0; this._fastFrames = 0; }
@@ -2889,6 +2986,41 @@ export class Game {
       ctx.beginPath(); ctx.ellipse(g.x + wob, g.y, rr, rr * 0.86, 0, 0, TAU); ctx.fill();
       ctx.restore();
     }
+    for (const r of this.rifts) {
+      if ((r.f ?? 0) !== this.map.floor) continue;
+      const k = Math.min(1, r.life / r.max);
+      const open = Math.min(1, (r.max - r.life) * 6 + 0.4);   // tears open fast
+      ctx.save();
+      // the crack itself: jagged dark line with a violet throat
+      ctx.translate(r.x, r.y);
+      ctx.rotate((r.seed % 7) * 0.4);
+      ctx.fillStyle = `rgba(12,6,20,${0.8 * k + 0.2})`;
+      ctx.beginPath();
+      ctx.moveTo(-r.r * open, 0);
+      for (let i = 1; i <= 6; i++) {
+        const jx = -r.r * open + (2 * r.r * open * i) / 6;
+        const jy = ((r.seed >> i) & 1 ? -1 : 1) * (2 + (r.seed % 3));
+        ctx.lineTo(jx, jy);
+      }
+      for (let i = 6; i >= 0; i--) {
+        const jx = -r.r * open + (2 * r.r * open * i) / 6;
+        const jy = ((r.seed >> i) & 1 ? 1 : -1) * (2 + ((r.seed >> 2) % 3));
+        ctx.lineTo(jx, jy);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalCompositeOperation = 'lighter';
+      const pulse = 0.6 + Math.sin(this.time * 9 + r.seed) * 0.4;
+      ctx.strokeStyle = `rgba(192,128,255,${(0.5 + 0.4 * pulse) * k})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      const grd = ctx.createRadialGradient(0, 0, 1, 0, 0, r.r * 1.2);
+      grd.addColorStop(0, `rgba(160,90,255,${0.25 * k * pulse})`);
+      grd.addColorStop(1, 'rgba(120,60,220,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.ellipse(0, 0, r.r * 1.2, r.r, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
     for (const f of this.fires) {
       if ((f.f ?? 0) !== this.map.floor) continue;
       const k = Math.min(1, f.life / f.max);
@@ -3110,6 +3242,11 @@ export class Game {
     // 10. lighting (screen space!)
     this.drawLighting(ctx, camX, camY);
 
+    // 10a. the box beacon burns above the darkness, so the one crate that
+    // sells guns reads through the pre-power gloom and never looks like
+    // a second piece of furniture
+    this.box.drawBeacon(ctx, this.time, camX, camY);
+
     // 10b. DLSS5's grade over the lit scene: warm highlights, pushed contrast,
     // a touch of film grain. Cheap full-screen blits, only when it is switched
     // on. Run before the HUD so the text stays clean and readable.
@@ -3217,6 +3354,23 @@ export class Game {
   /** The lamps that belong to the storey you are standing on. */
   lampsHere() { return this.map.lamps ?? LAMPS; }
 
+  /**
+   * Power does not arrive everywhere at once: the generator spins up and the
+   * filaments catch one by one, each fixture flickering for a beat before it
+   * settles. The delay is hashed from the position, so every client in a co-op
+   * game sees the same lamps catch in the same order.
+   */
+  _lampWarm(l) {
+    if (!this.powerOn) return 0;
+    const delay = 0.15 + ((((l.x * 7 + l.y * 13) | 0) % 97) / 97) * 1.7;
+    const t = this.time - this.powerOnAt - delay;
+    if (t <= 0) return 0;
+    if (t >= 0.8) return 1;
+    const step = Math.floor(t * 16);
+    const r = Math.abs(Math.sin(step * 12.9898 + (l.x + l.y) * 78.233) * 43758.5453) % 1;
+    return r < 0.5 ? 0.95 : 0.15;
+  }
+
   /** All light positions are world-space; the layer itself is screen-space. */
   drawLighting(ctx, camX, camY) {
     const L = this.lighting;
@@ -3239,9 +3393,11 @@ export class Game {
     // so the barracks lamps upstairs never lit anything at all.)
     for (const l of this.lampsHere()) {
       if (l.mains && !this.powerOn) continue;
+      let warm = 1;
+      if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const x = sx(l.x), y = sy(l.y);
       if (x < -220 || y < -220 || x > VW + 220 || y > VH + 220) continue;
-      let f = l.flick;
+      let f = l.flick * warm;
       if (l.mains && this.powerSurge > 0) f *= 0.4 + Math.random() * 1.4;
       L.point(x, y, 152 * f, 1.0 * f, `rgba(255,182,96,${0.40 * f})`, 0.62 * f);
     }
@@ -3321,14 +3477,16 @@ export class Game {
     ctx.save();
     for (const l of this.lampsHere()) {
       if (l.mains && !this.powerOn) continue;
+      let warm = 1;
+      if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const lx = l.x - camX, ly = l.y - camY;
       if (lx < -20 || ly < -20 || lx > VW + 20 || ly > VH + 20) continue;
-      ctx.globalAlpha = 0.55 * l.flick;
+      ctx.globalAlpha = 0.55 * l.flick * warm;
       ctx.fillStyle = '#20211f';
       ctx.fillRect(lx - 5, ly - 2, 10, 3);
-      ctx.fillStyle = `rgba(255,205,130,${0.9 * l.flick})`;
+      ctx.fillStyle = `rgba(255,205,130,${0.9 * l.flick * warm})`;
       ctx.fillRect(lx - 3, ly - 1, 6, 2);
-      ctx.globalAlpha = 0.20 * l.flick;
+      ctx.globalAlpha = 0.20 * l.flick * warm;
       ctx.fillStyle = '#ffcf80';
       ctx.fillRect(lx - 7, ly - 5, 14, 9);
     }
@@ -3558,7 +3716,7 @@ export class Game {
   }
 
   drawMysteryBox(ctx) {
-    this.box.draw(ctx, this.art);
+    this.box.draw(ctx, this.art, this.time);
     const s = this.box.spot;
     const price = this.box.price();
     const showPrice = !this.jammed && this.box.state === 'closed'
@@ -3909,18 +4067,27 @@ export class Game {
     for (const g of this.map.grenadeCrates) {
       if (!this._vis(g.x, g.y, 50)) continue;
       ctx.save();
-      ctx.fillStyle = '#3f3a2c';
-      ctx.fillRect(g.x - 8, g.y - 6, 16, 11);
-      ctx.fillStyle = '#57503c';
-      ctx.fillRect(g.x - 8, g.y - 6, 16, 3);
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.fillRect(g.x - 8, g.y + 3, 16, 2);
-      ctx.fillStyle = '#2f3a2c';
-      for (let i = 0; i < 3; i++) ctx.fillRect(g.x - 5 + i * 4, g.y - 8, 3, 4);
+      // two stacked metal ammo cans with a stencilled band -- ammunition,
+      // not the mystery crate: the silhouette must not invite the confusion
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(g.x - 8, g.y + 4, 16, 2);
+      ctx.fillStyle = '#43503a';
+      ctx.fillRect(g.x - 8, g.y - 1, 16, 6);           // bottom can
+      ctx.fillStyle = '#4d5c42';
+      ctx.fillRect(g.x - 6, g.y - 7, 12, 6);           // top can
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(g.x - 8, g.y - 1, 16, 1);
+      ctx.fillRect(g.x - 6, g.y - 7, 12, 1);
+      ctx.fillStyle = '#2c3527';                        // handles
+      ctx.fillRect(g.x - 3, g.y - 9, 6, 2);
+      ctx.fillStyle = '#d8d4c0';                        // stencil band
+      ctx.fillRect(g.x - 8, g.y + 1, 16, 2);
+      ctx.fillStyle = '#43503a';
+      ctx.fillRect(g.x - 2, g.y + 1, 4, 2);             // stencil gap
       ctx.font = 'bold 8px "Courier New", monospace';
       ctx.textAlign = 'center';
       ctx.fillStyle = this.points >= GRENADE_PRICE ? '#f0d98a' : '#6f6a5c';
-      ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 12);
+      ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 13);
       ctx.restore();
     }
   }

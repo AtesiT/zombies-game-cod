@@ -183,6 +183,15 @@ export const GUN_SPECS = {
   sawedoff:   { len: 14, stock: 'wood', stockLen: 4, mag: 'none', magLen: 0, barrel: 'thick',  muzzle: 'none' },
   gewehr43:   { len: 25, stock: 'wood', stockLen: 6, mag: 'box',  magLen: 2, barrel: 'thin',   muzzle: 'none' },
   lewis:      { len: 26, stock: 'wood', stockLen: 5, mag: 'drum', magLen: 5, barrel: 'shroud', muzzle: 'none' },
+  // ---- the third wave ----
+  lever:      { len: 22, stock: 'wood', stockLen: 6, mag: 'none', magLen: 0, barrel: 'thick',  muzzle: 'none' },
+  bulldog:    { len: 17, stock: 'wood', stockLen: 5, mag: 'none', magLen: 0, barrel: 'thick',  muzzle: 'none' },
+  osa:        { len: 12, stock: 'none', mag: 'box',  magLen: 2, barrel: 'thin',   muzzle: 'none' },
+  molot:      { len: 19, stock: 'wood', stockLen: 4, mag: 'box',  magLen: 4, barrel: 'thick',  muzzle: 'brake' },
+  trenchpipe: { len: 24, stock: 'wood', stockLen: 5, mag: 'none', magLen: 0, barrel: 'thick',  muzzle: 'cone' },
+  flamer:     { len: 20, stock: 'tank', stockLen: 5, mag: 'tank', magLen: 4, barrel: 'thick',  muzzle: 'cone', accent: '#f08030' },
+  stormbow:   { len: 24, stock: 'wood', stockLen: 5, mag: 'none', magLen: 0, barrel: 'thin',   muzzle: 'prongs', accent: '#9fd2ff' },
+  rift:       { len: 21, stock: 'tank', stockLen: 5, mag: 'box',  magLen: 3, barrel: 'thick',  muzzle: 'prongs', accent: '#c080ff' },
   raygun:     { len: 17, stock: 'tank', stockLen: 5, mag: 'tank', magLen: 3, barrel: 'none', muzzle: 'cone', accent: '#7fd75a' },
   wunderwaffe:{ len: 23, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'coil', accent: '#8fd6ff' },
   thundergun: { len: 21, stock: 'tank', stockLen: 6, mag: 'tank', magLen: 4, barrel: 'none', muzzle: 'cone', accent: '#f0a03c' },
@@ -665,24 +674,34 @@ function paintWall(ctx, px, py, rng, n) {
 
 function paintCrate(ctx, px, py, rng, n) {
   paintFloor(ctx, px, py, rng, false);
-  const x = px + 2, y = py + 1, w = T - 4, h = T - 3;
-  ctx.fillStyle = '#4a3620';
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = '#6b5233';
-  ctx.fillRect(x, y, w, 5);
-  ctx.fillStyle = '#82653f';
-  ctx.fillRect(x, y, w, 1);
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(x, y + h - 2, w, 2);
-  ctx.fillRect(x, y, 1, h);
-  ctx.fillRect(x + w - 1, y, 1, h);
-  // plank lines on the top face
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  for (let i = 1; i < 3; i++) ctx.fillRect(x, y + i * 2, w, 1);
-  // diagonal brace on the side
-  ctx.fillStyle = 'rgba(0,0,0,0.22)';
-  for (let i = 0; i < h - 5; i++) ctx.fillRect(x + 2 + i, y + 6 + i, 2, 1);
-  speckle(ctx, x, y, 8, rng, 0.25, 0.05);
+  // A pile of sandbags, not a wooden crate: the mystery box is *the* crate on
+  // this map, and furniture that dresses like it reads as a second box.
+  // Burlap bags in three courses, olive-drab, with a rope lashing on top.
+  const x = px + 1, y = py + 2, w = T - 2, h = T - 3;
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  ctx.fillRect(x, y + h - 1, w, 2);                    // ground shadow
+  ctx.fillStyle = '#5a5a44';
+  ctx.fillRect(x, y + h - 7, w, 6);                    // bottom course
+  ctx.fillStyle = '#66654c';
+  ctx.fillRect(x + 2, y + h - 12, w - 4, 6);           // middle course
+  ctx.fillStyle = '#716f54';
+  ctx.fillRect(x + 4, y + 2, w - 8, 5);                // top bag
+  // bag seams and highlights
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.fillRect(x, y + h - 7, w, 1);
+  ctx.fillRect(x + 2, y + h - 12, w - 4, 1);
+  ctx.fillRect(x + 4, y + 6, w - 8, 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(x + 1, y + h - 6, w - 2, 1);
+  ctx.fillRect(x + 3, y + h - 11, w - 6, 1);
+  // knotted ends, offset per course so the pile reads as bags
+  ctx.fillStyle = '#4c4c39';
+  ctx.fillRect(x, y + h - 10, 2, 3);
+  ctx.fillRect(x + w - 2, y + h - 5, 2, 3);
+  // rope lashing over the top bag
+  ctx.fillStyle = '#8a7550';
+  ctx.fillRect(x + 4, y + 4, w - 8, 1);
+  speckle(ctx, x, y, 6, rng, 0.18, 0.04);
   if (n.s) {
     const g = ctx.createLinearGradient(0, py + T - 4, 0, py + T);
     g.addColorStop(0, 'rgba(0,0,0,0)');

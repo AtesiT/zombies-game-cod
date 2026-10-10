@@ -270,9 +270,8 @@ export class Player {
     const w0 = WEAPONS.m1911;
     this.loadout.m1911 = { id: 'm1911', mag: w0.mag, reserve: w0.maxReserve, owned: true };
 
-    // Two carried guns (slot 0 / slot 1). Everything you own stays in the
-    // armoury and can be pulled into the active slot with the wheel, but only
-    // the two you carry swap instantly.
+    // Two carried guns (slot 0 / slot 1), and two is the ceiling: a third
+    // weapon replaces the one in your hands instead of joining a shelf.
     this.slots = ['m1911', null];
     this.active = 0;
     this.packed = new Set();     // weapons that have been through the machine
@@ -457,16 +456,41 @@ export class Player {
     return true;
   }
 
+  /**
+   * Hand over a gun. A soldier carries two: while a slot is free the new gun
+   * fills it, but a third gun knocks whatever is in your hands out of the kit
+   * -- taking a new toy means saying goodbye to the old one, PAP and all.
+   */
   giveWeapon(id) {
     const d = WEAPONS[id], s = this.loadout[id];
     if (s.owned) {
       this.addAmmo(id, true);
       return 'ammo';
     }
+    const had = this.ownedWeapons().length;
+    if (had >= 2) {
+      const dropId = this.current;
+      const ds = this.loadout[dropId];
+      ds.owned = false;
+      ds.mag = 0;
+      ds.reserve = 0;
+      this.packed.delete(dropId);
+      this.slots[this.active] = id;
+      this.swapTimer = 0.9;
+      this.swapTotal = 0.9;
+      this.fireTimer = Math.max(this.fireTimer, 0.9);
+    } else if (!this.slots[0]) {
+      this.slots[0] = id;
+      this.active = 0;
+    } else {
+      this.slots[1] = id;
+      this.active = 1;
+    }
     s.owned = true;
     s.mag = d.mag;
     s.reserve = d.maxReserve;
-    this.autoSlot(id);
+    this.reloading = false;
+    this.reloadTimer = 0;
     return 'weapon';
   }
 
@@ -709,9 +733,10 @@ export class Player {
     if (d.special === 'shock') {
       game.fireShockwave(ox, oy, this.aim, d, this);
     } else {
+      const once = d.special === 'rift' || d.special === 'flame' || d.special === 'lob';
       for (let p = 0; p < pellets; p++) {
         const ang = this.aim + randRange(-spread, spread) + randRange(-0.006, 0.006);
-        game.fireHitscan(ox, oy, ang, d, muzzle, this);
+        game.fireHitscan(ox, oy, ang, d, muzzle, this, !(once && p > 0));
       }
     }
 

@@ -1,4 +1,4 @@
-// Weapon table. 15 distinct guns: 10 wall buys + 5 wonder weapons (box only).
+// Weapon table. 31 distinct guns across three waves; wonders are box-only.
 //
 //   dmg      base body damage per pellet/bullet
 //   headMul  headshot multiplier
@@ -137,6 +137,68 @@ export const WEAPONS = {
     desc: 'A pan on top and a barrel like a radiator. Hold the line.',
   },
 
+  // ----------------------------------------------------------- third wave
+  lever: {
+    id: 'lever', name: 'Lever-Action Shotgun', slot: 'shotgun', kind: 'semi',
+    price: 1000, ammoPrice: 300, dmg: 62, headMul: 1.6, pellets: 5, mag: 1, reserve: 48, maxReserve: 48,
+    delay: 0.85, reload: 0.80, spread: 0.10, pierce: 1, range: 400,
+    recoil: 0.09, kick: 3.6, flash: 1.6, tracer: '#e0c890', tint: '#a97e46',
+    desc: 'One shell in the chamber, one in the hand. Work the lever.',
+  },
+  bulldog: {
+    id: 'bulldog', name: 'Bulldog Scattergun', slot: 'shotgun', kind: 'pump',
+    price: 1400, ammoPrice: 350, dmg: 30, headMul: 1.5, pellets: 9, mag: 5, reserve: 60, maxReserve: 60,
+    delay: 0.95, reload: 3.30, spread: 0.20, pierce: 0, range: 300,
+    recoil: 0.11, kick: 4.4, flash: 1.9, tracer: '#e8cf9a', tint: '#b08a52',
+    desc: 'A wide cone of spite. Perfect against a packed doorway.',
+  },
+  osa: {
+    id: 'osa', name: 'Osa Machine Pistol', slot: 'smg', kind: 'auto',
+    price: 1300, ammoPrice: 300, dmg: 34, headMul: 2.1, mag: 24, reserve: 264, maxReserve: 264,
+    delay: 0.048, reload: 2.10, spread: 0.062, pierce: 0, range: 620,
+    recoil: 0.026, kick: 0.8, flash: 0.9, tracer: '#d8d2b0', tint: '#b3a884',
+    desc: 'A hornet nest with a trigger. Empty the mag before they blink.',
+  },
+  molot: {
+    id: 'molot', name: 'Molot Heavy SMG', slot: 'smg', kind: 'auto',
+    price: 2000, ammoPrice: 450, dmg: 96, headMul: 2.0, mag: 15, reserve: 150, maxReserve: 150,
+    delay: 0.17, reload: 2.60, spread: 0.020, pierce: 1, range: 900,
+    recoil: 0.050, kick: 2.2, flash: 1.3, tracer: '#d6d2c4', tint: '#8f959f',
+    desc: 'Slow, deliberate, each round hits like a rifle.',
+  },
+  trenchpipe: {
+    id: 'trenchpipe', name: 'Trench Launcher', slot: 'launcher', kind: 'semi',
+    price: 2600, ammoPrice: 500, dmg: 80, headMul: 1.0, mag: 1, reserve: 24, maxReserve: 24,
+    delay: 1.60, reload: 2.40, spread: 0.012, pierce: 0, range: 560,
+    recoil: 0.10, kick: 4.0, flash: 2.2, tracer: '#f0b060', tint: '#7a6a4a',
+    special: 'lob', lobR: 74, lobDmg: 420,
+    desc: 'A pipe, a pin, and a very bad day at the end of the hall.',
+  },
+  flamer: {
+    id: 'flamer', name: 'Flammenwerfer 41', slot: 'flamer', kind: 'auto',
+    price: 2400, ammoPrice: 500, dmg: 10, headMul: 1.0, mag: 80, reserve: 320, maxReserve: 320,
+    delay: 0.075, reload: 3.20, spread: 0.09, pierce: 0, range: 190,
+    recoil: 0.008, kick: 0.4, flash: 1.2, tracer: '#f08030', tint: '#c07030',
+    special: 'flame', flameR: 26, burnDmg: 26, burnTime: 2.6,
+    desc: 'Short reach, long grudges. Everything it touches keeps burning.',
+  },
+  stormbow: {
+    id: 'stormbow', name: 'Storm Bow', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 20,
+    price: 0, ammoPrice: 0, dmg: 260, headMul: 1.2, mag: 8, reserve: 64, maxReserve: 64,
+    delay: 0.55, reload: 2.40, spread: 0.004, pierce: 2, range: 1200,
+    recoil: 0.04, kick: 1.8, flash: 1.4, tracer: '#bfe6ff', tint: '#9fd2ff',
+    special: 'chain', chainCount: 5, chainRange: 220, chainFalloff: 0.8, chainColor: '#bfe6ff',
+    desc: 'Loose an arrow; harvest a storm.',
+  },
+  rift: {
+    id: 'rift', name: 'Rift Splitter', slot: 'wonder', kind: 'pump', wonder: true, boxTier: 20,
+    price: 0, ammoPrice: 0, dmg: 70, headMul: 1.5, pellets: 6, mag: 4, reserve: 40, maxReserve: 40,
+    delay: 1.10, reload: 2.80, spread: 0.14, pierce: 1, range: 420,
+    recoil: 0.12, kick: 4.6, flash: 2.0, tracer: '#d9a0ff', tint: '#c080ff',
+    special: 'rift', riftR: 34, riftDmg: 130, riftTime: 3.0,
+    desc: 'Where the shot lands, the floor forgets it was ever solid.',
+  },
+
   // ---------------------------------------------------------- wonder weapons
   raygun: {
     id: 'raygun', name: 'Ray Gun', slot: 'wonder', kind: 'semi', wonder: true, boxTier: 34,
@@ -186,7 +248,9 @@ export const WEAPON_ORDER = [
   'm1911', 'mp40', 'thompson', 'trenchgun', 'ppsh',
   'kar98k', 'fg42', 'bar', 'mg42', 'ptrs41',
   'python', 'sten', 'greasegun', 'garand', 'stg44', 'sawedoff', 'gewehr43', 'lewis',
+  'lever', 'bulldog', 'osa', 'molot', 'trenchpipe', 'flamer',
   'raygun', 'wunderwaffe', 'thundergun', 'winterhowl', 'monkeybomb',
+  'stormbow', 'rift',
 ];
 
 /** Wonder weapons occupy the whole kit: they replace nothing, they join it. */
@@ -201,6 +265,7 @@ export function isAuto(w) { return w.kind === 'auto'; }
 const SLOT_SOUND = {
   pistol: 'pistol', smg: 'smg', shotgun: 'shotgun',
   sniper: 'sniper', rifle: 'rifle', lmg: 'rifle', wonder: 'raygun',
+  launcher: 'launcher', flamer: 'flamer',
 };
 
 export function shotSound(w) {
@@ -247,6 +312,14 @@ export const PAP_NAMES = {
   sawedoff: 'Short Temper',
   gewehr43: 'Longshot 43',
   lewis: 'Pan Handler',
+  lever: 'Long Arm of the Law',
+  bulldog: 'Junkyard Dog',
+  osa: 'Angry Hornet',
+  molot: 'Sledgehammer',
+  trenchpipe: 'The Negotiator',
+  flamer: "Dragon's Breath",
+  stormbow: 'Tempest Longbow',
+  rift: 'Earthbreaker',
   raygun: "Porter's X2 Ray Gun",
   wunderwaffe: 'Wunderwaffe DG-3 JZ',
   thundergun: 'Zeus Cannon',
@@ -279,6 +352,12 @@ for (const w of Object.values(WEAPONS)) {
   if (w.boomDmg) p.boomDmg = Math.round(w.boomDmg * 2);
   if (w.boomR) p.boomR = Math.round(w.boomR * 1.35);
   if (w.chainCount) p.chainCount = w.chainCount + 2;
+  if (w.lobDmg) p.lobDmg = Math.round(w.lobDmg * 2);
+  if (w.lobR) p.lobR = Math.round(w.lobR * 1.3);
+  if (w.burnDmg) p.burnDmg = Math.round(w.burnDmg * 1.5);
+  if (w.flameR) p.flameR = Math.round(w.flameR * 1.25);
+  if (w.riftDmg) p.riftDmg = Math.round(w.riftDmg * 1.6);
+  if (w.riftTime) p.riftTime = w.riftTime * 1.3;
   PACKED[w.id] = p;
 }
 

@@ -502,10 +502,13 @@ export class AudioEngine {
       shotgun: { dur: 0.34, crack: 1500, body: 120, peak: 0.75, tail: 0.28 },
       rifle: { dur: 0.42, crack: 3400, body: 130, peak: 0.8, tail: 0.4 },
       sniper: { dur: 0.52, crack: 3800, body: 105, peak: 0.9, tail: 0.55 },
+      launcher: { dur: 0.30, crack: 700, body: 90, peak: 0.7, tail: 0.3 },
+      flamer: { dur: 0.16, crack: 1100, body: 140, peak: 0.22, tail: 0.12 },
     }[kind] || { dur: 0.16, crack: 2400, body: 190, peak: 0.5, tail: 0.1 };
 
     if (kind === 'raygun' || kind === 'wunderwaffe' || kind === 'thundergun'
-      || kind === 'winterhowl' || kind === 'throw') { this.wonder(kind); return; }
+      || kind === 'winterhowl' || kind === 'throw' || kind === 'stormbow'
+      || kind === 'rift') { this.wonder(kind); return; }
 
     // bright transient
     const n = this._noiseSrc();
@@ -804,6 +807,32 @@ export class AudioEngine {
       n.connect(hp).connect(g).connect(this.bus);
       n.start(t); n.stop(t + 0.7);
       this._tone('triangle', 2600, 900, t, 0.4, 0.18);
+      return;
+    }
+    if (kind === 'stormbow') {
+      // bowstring snap, then the air itself discharging
+      const n = this._noiseSrc(0.3, 0.9);
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(900, t);
+      bp.frequency.exponentialRampToValueAtTime(4200, t + 0.12);
+      bp.Q.value = 2.5;
+      const g = this._env(bp, t, 0.3, 0.002, 0.16);
+      n.connect(bp).connect(g).connect(this.bus);
+      n.start(t); n.stop(t + 0.2);
+      this._tone('sawtooth', 2200, 300, t + 0.02, 0.3, 0.22);
+      return;
+    }
+    if (kind === 'rift') {
+      const n = this._noiseSrc();
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(2600, t);
+      lp.frequency.exponentialRampToValueAtTime(120, t + 0.5);
+      const g = this._env(lp, t, 0.8, 0.004, 0.55);
+      n.connect(lp).connect(g).connect(this.bus);
+      n.start(t); n.stop(t + 0.65);
+      this._tone('sine', 140, 40, t, 0.5, 0.5);
       return;
     }
     // monkey bomb throw
