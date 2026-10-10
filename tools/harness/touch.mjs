@@ -196,8 +196,17 @@ for (const [sw, sh, wantCompact] of [[800, 500, false], [480, 300, true], [1600,
   touch.layout(sw, sh);
   const boxes = { move: boxOf(touch.left.base), aim: boxOf(touch.right.base) };
   for (const [id, el] of Object.entries(touch.buttons)) boxes[id] = boxOf(el);
-  const compact = touch._geo.S < 132 * (touch._size ?? 1);
-  ok(compact === wantCompact, `a ${sw}x${sh} stage picked the ${compact ? 'compact' : 'full'} layout`);
+  ok(touch._tier === (wantCompact ? 'compact' : 'normal'),
+    `a ${sw}x${sh} stage picked the ${touch._tier} layout, not ${wantCompact ? 'compact' : 'normal'}`);
+  // whatever the stage does to the scale, a button has to stay thumb-sized in
+  // REAL pixels -- on a four-inch phone the panel is scaled to 0.56, which
+  // used to turn a 46-unit button into 26 pixels of nothing
+  const realB = touch._geo.B * (sw / 800);
+  ok(realB >= 36, `a button is only ${realB.toFixed(0)} real pixels on a ${sw}x${sh} stage`);
+  const realS = touch._geo.S * (sw / 800);
+  ok(realS >= 60, `the walking stick is only ${realS.toFixed(0)} real pixels on a ${sw}x${sh} stage`);
+  // and a stage that is big enough must not be inflated for no reason
+  if (sw >= 800) ok(touch._geo.bump === 1, `a ${sw}x${sh} stage inflated its buttons by ${touch._geo.bump}`);
   for (const [id, b] of Object.entries(boxes)) {
     ok(b.x0 >= -1 && b.y0 >= -1 && b.x1 <= 801 && b.y1 <= 501,
       `${id} hangs off a ${sw}x${sh} stage: ${JSON.stringify(b)}`);

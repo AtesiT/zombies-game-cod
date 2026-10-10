@@ -17,6 +17,12 @@ const GEO = {
   compact: { stick: 100, knob: 42, fire: 74, small: 46, gap: 6 },
 };
 
+// A thumb needs about this many REAL pixels, whatever the screen is. The panel
+// is drawn in virtual units and scaled down with the stage, so on a four-inch
+// phone the buttons were shrinking to a quarter of an inch: the layout gives
+// them back the size the stage took away.
+const THUMB = 40;
+
 const hex = (n) => `#${n.toString(16).padStart(6, '0')}`;
 
 /** Everything on the right-hand side: name, key it stands for, label, colour. */
@@ -138,12 +144,17 @@ export class TouchControls {
 
   /** Sizes and positions everything, in virtual 800x500 units. */
   _measure() {
-    const k = this._size;
     const small = this._compact();
     const g = small ? GEO.compact : GEO.normal;
+    const scale = (this._stageW || 800) / 800;
+    // grow the virtual sizes by however much the stage shrank them, so the
+    // thing you press is the same size on a phone as it is on a laptop
+    const bump = Math.min(1.8, Math.max(1, THUMB / (g.small * scale)));
+    const k = this._size * bump;
+    this._tier = small ? 'compact' : 'normal';
     const S = g.stick * k, K = g.knob * k, F = g.fire * k, B = g.small * k;
     const gap = g.gap * k, pad = GEO.pad;
-    this._geo = { S, K, F, B, gap, pad };
+    this._geo = { S, K, F, B, gap, pad, bump };
 
     const place = (el, w, h, right, bottom) => {
       el.style.width = `${w}px`;
@@ -201,8 +212,14 @@ export class TouchControls {
     if (!this.panel) return;
     const k = this._stageW / 800;
     this.panel.style.transform = `scale(${k})`;
-    const wasCompact = this._geo && this._geo.S === GEO.compact.stick * this._size;
-    if (this._compact() !== !!wasCompact) this._measure();
+    if (this._compact() !== (this._tier === 'compact')) this._measure();
+    else if (this._geo) {
+      // the stage changed size without crossing the tier: the thumb bump did
+      const scale = this._stageW / 800;
+      const g = this._tier === 'compact' ? GEO.compact : GEO.normal;
+      const want = Math.min(1.8, Math.max(1, THUMB / (g.small * scale)));
+      if (Math.abs(want - (this._geo.bump ?? 1)) > 0.02) this._measure();
+    }
   }
 
   // ------------------------------------------------------------------ input --

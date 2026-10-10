@@ -292,6 +292,31 @@ for (let i = 0; i < 60 * 8; i++) step(host, 1);
 ok(host.players.length === 1, 'a peer who stopped answering was never dropped');
 ok(host.net.peers.size === 0, 'the peer list kept a ghost');
 
+// ----------------------------------------------------------- 8. envelopes --
+// The snapshot carries the game clock under `t`. The envelope used to be
+// spread in FIRST, so the clock overwrote the routing type: every snapshot
+// left the host as {t: 12.34, m: 'snap'}, which the relay does not recognise
+// and dropped in silence. The guest lived on the one snapshot riding inside
+// `welcome` and froze on the spot -- a still picture with no hands.
+{
+  const spy = [];
+  const real = host.net.transport;
+  host.net.transport = { send: (o) => spy.push(o), close() {} };
+  host.net.send(null, { t: 12.34, m: 'snap', n: 1 });
+  host.net.send(7, { t: 99, to: 5, m: 'in' });
+  host.net.transport = real;
+  ok(spy[0]?.t === 'b' && spy[0]?.m === 'snap',
+    `a payload rewrote its own envelope: ${JSON.stringify(spy[0])}`);
+  ok(spy[1]?.t === 'to' && spy[1]?.to === 7 && spy[1]?.m === 'in',
+    `a payload rewrote a directed envelope: ${JSON.stringify(spy[1])}`);
+
+  // and the snapshot does not carry a field called t in the first place
+  const shape = host.net.snapshot();
+  ok(shape.t === undefined, 'the snapshot still ships a field named t -- that is the envelope');
+  ok(typeof shape.tm === 'number', 'the snapshot lost its clock');
+  ok(shape.z.length === host.zombies.filter((z) => !z.remove).length, 'the snapshot is missing walkers');
+}
+
 // ------------------------------------------------------------------ part B --
 // The relay itself: two real sockets through server.mjs.
 const PORT = 8137;

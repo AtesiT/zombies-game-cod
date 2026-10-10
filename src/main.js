@@ -19,14 +19,20 @@ const game = new Game(input);
 //  to fill the window while keeping the pixel grid as clean as possible.
 // ---------------------------------------------------------------------------
 const wrap = document.getElementById('stage');
+const frameEl = document.getElementById('frame');
 const touch = new TouchControls(input, { mount: wrap });
 
 const SIZE_MULTS = [0.82, 1, 1.18];
 
 function resize() {
-  const availW = window.innerWidth;
-  const availH = window.innerHeight;
-  const scale = Math.max(1, Math.min(availW / VW, availH / VH));
+  // measured off the padded frame, so the safe areas are already excluded
+  const availW = frameEl?.clientWidth || window.innerWidth;
+  const availH = frameEl?.clientHeight || window.innerHeight;
+  // The stage used to refuse to go below 800x500, which on a four-inch phone
+  // is larger than the screen: it got centred, clipped, and the bottom of it
+  // -- the walking stick -- simply was not there. It shrinks to fit instead.
+  const fit = Math.min(availW / VW, availH / VH);
+  const scale = Math.max(0.2, fit);
   const snap = scale >= 2 ? Math.floor(scale * 2) / 2 : scale;   // half steps above 2x
   const w = Math.round(VW * snap);
   const h = Math.round(VH * snap);

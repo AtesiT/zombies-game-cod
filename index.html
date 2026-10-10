@@ -2,14 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>NACHT DER UNTOTEN — top-down zombies</title>
 <link rel="stylesheet" href="styles.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230b0c10'/><circle cx='8' cy='7' r='4' fill='%237f8d68'/><rect x='5' y='6' width='2' height='1' fill='%23cbe07a'/><rect x='9' y='6' width='2' height='1' fill='%23cbe07a'/><rect x='6' y='9' width='4' height='1' fill='%237c1f22'/></svg>" />
 </head>
 <body>
-  <div id="stage">
-    <canvas id="game" width="800" height="500"></canvas>
+  <div id="frame">
+    <div id="stage">
+      <canvas id="game" width="800" height="500"></canvas>
+    </div>
   </div>
   <noscript>This game needs JavaScript.</noscript>
   <script type="module" src="src/main.js"></script>

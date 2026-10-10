@@ -31,6 +31,10 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+// envelope types the relay understands; anything else is somebody's mistake
+const KNOWN = new Set(['rooms', 'hello', 'state', 'to', 'b', 'ping', 'pong', 'bye']);
+const warned = new Set();
+
 const server = http.createServer((req, res) => {
   let url = decodeURIComponent((req.url || '/').split('?')[0]);
   if (url === '/') url = '/index.html';
@@ -236,6 +240,14 @@ server.on('upgrade', (req, socket) => {
     if (msg.t === 'b') {                        // broadcast to the rest of the room
       const { t, ...rest } = msg;
       broadcast(s.room, { ...rest, from: s.id });
+      return;
+    }
+    // An unknown envelope is a bug on the far side, and silence about it is
+    // how a whole game state went missing once: say so instead of eating it.
+    if (!KNOWN.has(msg.t) && !warned.has(msg.t)) {
+      warned.add(msg.t);
+      console.log(`relay: dropped a frame of unknown type ${JSON.stringify(msg.t)} `
+        + '-- a message is overwriting its own envelope');
     }
   };
 

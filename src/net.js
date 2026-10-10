@@ -246,8 +246,10 @@ export class Net {
 
   send(to, msg) {
     if (!this.transport) return;
-    if (to == null) this.transport.send({ t: 'b', ...msg });
-    else this.transport.send({ t: 'to', to, ...msg });
+    // the envelope goes LAST: nothing inside a message may rewrite how it is
+    // routed, whatever it happens to be called
+    if (to == null) this.transport.send({ ...msg, t: 'b' });
+    else this.transport.send({ ...msg, to, t: 'to' });
   }
 
   // -------------------------------------------------------------- messages --
@@ -583,7 +585,7 @@ export class Net {
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
     const doors = g.map.floors.map((F) => F.doors.map((d) => (d.open ? 1 : 0)));
     return {
-      t: r2(g.time), r: g.round, ra: g.roundActive ? 1 : 0, im: r2(g.intermission ?? 0),
+      tm: r2(g.time), r: g.round, ra: g.roundActive ? 1 : 0, im: r2(g.intermission ?? 0),
       zk: g.zombiesKilled, zt: g.zombiesTotal, pw: g.powerOn ? 1 : 0, dg: g.dogRound ? 1 : 0,
       sd: g.map.secretDoorOpen ? 1 : 0,
       ti: r2(g.timers?.instakill ?? 0), tp: r2(g.timers?.doublepoints ?? 0),
