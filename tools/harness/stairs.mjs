@@ -19,24 +19,46 @@ g.player.hurt = () => false;
 // stair tile's centre in both axes, which is inside the trigger box, so the
 // old version of this test was quietly carried upstairs on its first frame
 // and spent the whole time measuring the second floor.
-const ink = () => {
-  const d = cx.getImageData(0, 0, M.VW, M.VH).data;
+//
+// We count warm pixels inside a small crop over the stair's label band, not
+// across the whole frame: the lamps flicker (and a dimming event shifts the
+// full-screen count by hundreds of pixels), so a whole-frame census was
+// failing by luck about one run in four.
+const warmIn = (x0, y0, w, h) => {
+  x0 = Math.max(0, Math.round(x0)); y0 = Math.max(0, Math.round(y0));
+  w = Math.min(w, M.VW - x0); h = Math.min(h, M.VH - y0);
+  if (w <= 0 || h <= 0) return 0;
+  const d = cx.getImageData(x0, y0, w, h).data;
   let warm = 0;
   for (let i = 0; i < d.length; i += 4) if (d[i] > 110 && d[i] - d[i + 2] > 45) warm++;
   return warm;
 };
 const centre = (tx, ty) => { g.player.pos.x = (tx + 0.5) * T; g.player.pos.y = (ty + 0.5) * T; };
+// the west stair: whichever floor-0 end of a link sits nearest (20,13)
+let stair = null, best = 1e9;
+for (const l of g.map.linksOn(0)) {
+  const here = l.a.floor === 0 ? l.a : l.b;
+  const d = (here.tx - 20) ** 2 + (here.ty - 13) ** 2;
+  if (d < best) { best = d; stair = here; }
+}
+ok(!!stair, 'the west stair exists to point at');
+const labelBand = () => {
+  const wx = (stair.tx + 0.5) * T, wy = (stair.ty + 0.5) * T;
+  return { x: wx - g.cam.x - 70, y: wy - g.cam.y - 44, w: 140, h: 34 };
+};
 centre(20, 13);                                        // beside the west stair
 for (let f = 0; f < 40; f++) { g.player.hp = 100; g.update(H); }
 ok(g.map.floor === 0, 'standing beside the stair carried the player upstairs anyway');
 g.draw(cx);
-const near = ink();
+let band = labelBand();
+const near = warmIn(band.x, band.y, band.w, band.h);
 centre(30, 24);                                        // far away, down the room
 for (let f = 0; f < 40; f++) { g.player.hp = 100; g.update(H); }
 ok(g.map.floor === 0, 'walking away from the stair changed storey');
 g.draw(cx);
-const far = ink();
-ok(near > far + 200, 'the stair draws a marker and label when you stand by it', `${near} vs ${far} warm px`);
+band = labelBand();
+const far = warmIn(band.x, band.y, band.w, band.h);
+ok(near > far + 60, 'the stair draws a marker and label when you stand by it', `${near} vs ${far} warm px in the label band`);
 
 // every storey's links are marked, pointing the right way
 for (const f of [0, 1, 2]) {

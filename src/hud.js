@@ -577,6 +577,14 @@ export class HUD {
 
   _round(ctx, game, w, h) {
     const y = h - 16;
+    if (game.rangeMode) {
+      // the polygon has no rounds to survive: show what is actually true
+      const loose = game.zombies.filter((z) => !z.dead).length;
+      text(ctx, 'TEST RANGE', w / 2, y - 26, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+      text(ctx, 'FREE PLAY', w / 2, y, { font: 'bold 16px "Courier New", monospace', colour: INK, align: 'center' });
+      text(ctx, `${loose} LOOSE`, w / 2, y + 13, { font: 'bold 10px "Courier New", monospace', colour: 'rgba(200,190,160,0.6)', align: 'center' });
+      return;
+    }
     text(ctx, 'ROUND', w / 2, y - 26, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     text(ctx, String(game.round), w / 2, y, { font: 'bold 26px "Courier New", monospace', colour: INK, align: 'center' });
     if (game.zombiesLeft > 0 && game.started) {

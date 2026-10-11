@@ -5,6 +5,9 @@ import {
   PERK_SPOTS, BOX_SPOTS, STAIRS, POWER_SWITCH, WORKBENCH, WORKBENCH_ROOF, SECRET_SWITCHES,
   SECRET_DOOR, SECRET_LOOT, DOOR_PRICES, PAP_SPOT,
 } from './mapData.js';
+import { ENEMY_TYPES } from './entities.js';
+import { PERKS } from './perks.js';
+import { WEAPONS, WEAPON_ORDER } from './weapons.js';
 import { MinHeap } from './util.js';
 
 const INF = 0x3fffffff;
@@ -65,7 +68,13 @@ function wallFacing(b) {
 }
 
 export class GameMap {
-  constructor() {
+  /**
+   * `mode` 'range' builds the synthetic shooting gallery instead of the
+   * campaign building: one hall, every gun on the walls, a button per
+   * creature, the perk row, the machines and a box -- nothing else.
+   */
+  constructor(mode = 'campaign') {
+    this.mode = mode;
     this.w = MAP_W;
     this.h = MAP_H;
     this.n = MAP_W * MAP_H;
@@ -78,24 +87,28 @@ export class GameMap {
     // --- vertical links ----------------------------------------------------
     // `a` and `b` deliberately share tile coordinates, so climbing the west
     // stair leaves you standing directly above where you were.
-    this.links = LEVEL_LINKS.map((l, i) => ({
+    this.links = mode === 'range' ? [] : LEVEL_LINKS.map((l, i) => ({
       id: i, kind: l.kind, name: l.name,
       a: { floor: l.a.floor, tx: l.a.x, ty: l.a.y },
       b: { floor: l.b.floor, tx: l.b.x, ty: l.b.y },
       cx: (l.a.x + 0.5) * T, cy: (l.a.y + 0.5) * T,
     }));
     // floor -> links that touch it, for the cross-floor pathing search
-    this.linksByFloor = FLOORS.map(() => []);
+    this.linksByFloor = mode === 'range' ? [[]] : FLOORS.map(() => []);
     for (const l of this.links) {
       this.linksByFloor[l.a.floor].push(l);
       this.linksByFloor[l.b.floor].push(l);
     }
 
     // --- one parsed storey each --------------------------------------------
-    this.floors = FLOORS.map((def, i) => this._parseFloor(def, i));
+    this.floors = mode === 'range'
+      ? [this._buildRangeFloor()]
+      : FLOORS.map((def, i) => this._parseFloor(def, i));
 
     this.floor = -1;
-    this.playerStart = { x: (PLAYER_START.x + 0.5) * T, y: (PLAYER_START.y + 0.5) * T };
+    this.playerStart = mode === 'range'
+      ? { x: 36.5 * T, y: 26 * T }
+      : { x: (PLAYER_START.x + 0.5) * T, y: (PLAYER_START.y + 0.5) * T };
     this.setFloor(0);
   }
 
@@ -123,6 +136,8 @@ export class GameMap {
     this.grenadeCrates = F.grenadeCrates;
     this.boxSpots = F.boxSpots;
     this.cacheSpots = F.cacheSpots;
+    this.solidProps = F.solidProps ?? [];
+    this.rangePads = F.rangePads ?? null;
     this.lamps = F.lamps;
     this.floorDef = F.def;
     this.staticCanvas = F.staticCanvas;
@@ -185,6 +200,76 @@ export class GameMap {
   tileIdxAt(x, y) {
     const tx = Math.floor(x / T), ty = Math.floor(y / T);
     return this.inside(tx, ty) ? this.idx(tx, ty) : -1;
+  }
+
+
+  /** The test polygon: a walled hall with a rack for every gun in the game
+   *  and a button for every creature, so behaviour can be watched without
+   *  waiting for round nine to be polite about it. */
+  _buildRangeFloor() {
+    const F = {
+      def: { key: 'range', name: 'TEST RANGE', short: 'R' }, index: 0,
+      tiles: new Uint8Array(this.n).fill(TILE.WALL),
+      barricadeOf: new Int16Array(this.n).fill(-1),
+      doorOf: new Int16Array(this.n).fill(-1),
+      stairOf: new Int16Array(this.n).fill(-1),
+      seen: new Uint8Array(this.n),
+      barricades: [], doors: [], stairs: [], spawnPoints: [],
+      wallBuys: [], grenadeCrates: [], boxSpots: [], cacheSpots: [],
+      solidProps: [],
+      secretDoorIdx: -1,
+      dist: new Int32Array(this.n), next: new Int32Array(this.n),
+    };
+    F._heap = new MinHeap(this.n);
+    for (let y = 3; y < this.h - 3; y++) {
+      for (let x = 3; x < this.w - 3; x++) F.tiles[y * this.w + x] = TILE.FLOOR;
+    }
+
+    // every common gun on the north wall, two tiles apart, facing the hall
+    WEAPON_ORDER.filter((id) => !WEAPONS[id].wonder).forEach((id, i) => {
+      const x = 4 + i * 2;
+      F.wallBuys.push({
+        x: (x + 0.5) * T, y: 4.5 * T, wx: x, wy: 3, weapon: id,
+        wallCX: (x + 0.5) * T, wallCY: 3.5 * T, facing: 'up',
+      });
+    });
+    // wonder weapons get the south wall, roomier, like a museum case
+    WEAPON_ORDER.filter((id) => WEAPONS[id].wonder).forEach((id, i) => {
+      const x = 20 + i * 4;
+      F.wallBuys.push({
+        x: (x + 0.5) * T, y: (this.h - 5.5) * T, wx: x, wy: this.h - 4, weapon: id,
+        wallCX: (x + 0.5) * T, wallCY: (this.h - 4 + 0.5) * T, facing: 'down',
+      });
+    });
+
+    // one button per creature down the west side, controls on the east
+    F.rangePads = Object.keys(ENEMY_TYPES).map((t, i) => ({
+      x: 6.5 * T, y: (8 + i * 2 + 0.5) * T, type: t,
+    }));
+    F.rangePads.push({ x: 65.5 * T, y: 8.5 * T, pad: 'clear' });
+    F.rangePads.push({ x: 65.5 * T, y: 10.5 * T, pad: 'freeze' });
+
+    // the perk row, the machines, a box, grenades: the whole toy box
+    F.perkSpots = Object.keys(PERKS).slice(0, 8).map((id, i) => ({
+      id, x: 65.5 * T, y: (16 + i * 4 + 0.5) * T,
+    }));
+    F.papSpot = { x: 56.5 * T, y: 44.5 * T };
+    F.workbench = { x: 50.5 * T, y: 44.5 * T };
+    F.powerSwitch = null;
+    F.secretSwitches = [];
+    F.secretLoot = [];
+    F.boxSpots = [{ x: 12.5 * T, y: 44.5 * T, tx: 12, ty: 44 }];
+    F.grenadeCrates = [{ x: 62.5 * T, y: 6.5 * T }];
+    F.lamps = [];
+    for (const ly of [10, 20, 30, 40]) {
+      for (let lx = 12; lx <= 60; lx += 12) {
+        F.lamps.push({ x: (lx + 0.5) * T, y: (ly + 0.5) * T, mains: false,
+          phase: (lx * 7 + ly * 13) % 6.283, flick: 1 });
+      }
+    }
+
+    F.staticCanvas = paintLevel(F.tiles, MAP_W, MAP_H, 20260101, 0);
+    return F;
   }
 
   /** Parses one storey out of the generated ASCII + object tables. */

@@ -627,7 +627,9 @@ export class Net {
     g.intermission = s.im ?? 0;
     g.zombiesKilled = s.zk ?? 0;
     g.zombiesTotal = s.zt ?? 0;
+    const wasOn = g.powerOn;
     g.powerOn = !!s.pw;
+    if (g.powerOn && !wasOn) g.powerOnAt = g.time;   // lamps warm up over here as well
     g.dogRound = !!s.dg;
     g.gameOver = !!s.go;
     if (g.timers) { g.timers.instakill = s.ti ?? 0; g.timers.doublepoints = s.tp ?? 0; g.timers.deathmachine = s.dm ?? 0; }
@@ -712,6 +714,8 @@ export class Net {
     g.powerups = (s.pu ?? []).map((e) => ({ x: e[0], y: e[1], id: e[2], life: e[3], dead: false, update(dt) { this.life -= dt; } }));
     g.grenades = (s.gr ?? []).map((e) => ({ x: e[0], y: e[1], floor: e[2], remove: false, update() {}, draw: null }));
     g.monkeys = (s.mk ?? []).map((e) => ({ pos: { x: e[0], y: e[1] }, floor: e[2], remove: false, update() {}, luring: false }));
+    g.fires = (s.fi ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], life: e[3], max: e[4] || e[3], tick: 0, puff: 0, f: e[5] }));
+    g.rifts = (s.rf ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], dmg: e[3], life: e[4], max: e[5] || e[4], seed: e[6], f: e[7], tick: 0 }));
     this._snapT = 0;
   }
 

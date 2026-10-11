@@ -655,7 +655,8 @@ export class Game {
     }
     const plan = this.roundPlan(n);
     this.dogRound = plan.dog;
-    this.zombiesTotal = plan.total;
+    // the range never "finishes" a round: there is nothing to finish
+    this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
     this.zombiesSpawned = 0;
     this.zombiesKilled = 0;
     this.roundDamageTaken = 0;
@@ -912,7 +913,10 @@ export class Game {
       cands.push({ s, d, floor });
     }
     if (!cands.length) {
+      // a map with no spawn points at all (the test range) must not
+      // conjure a body out of thin air -- return nothing instead
       const fb = this.map.spawnPoints;
+      if (!fb.length) return null;
       return { s: fb[randInt(0, fb.length - 1)], floor: this.map.floor };
     }
     cands.sort((a, b) => a.d - b.d);
@@ -926,8 +930,9 @@ export class Game {
 
   spawnZombie() {
     const pick = this.pickSpawn();
+    if (!pick) return;
     const sp = pick.s ?? pick;
-    if (!sp) return;
+    if (!sp || sp.x == null) return;
     this.zombies.push(this.makeZombie({ x: sp.x, y: sp.y, floor: pick.floor }));
     this.zombiesSpawned++;
   }
@@ -1406,6 +1411,13 @@ export class Game {
       offer({ type: 'wallbuy', weapon: wb.weapon, price, affordable: p.points >= price, d, wb });
     }
 
+    for (const pd of this.map.rangePads ?? []) {
+      const d = dist(p.pos.x, p.pos.y, pd.x, pd.y);
+      if (d < 30) {
+        offer({ type: 'pad', pad: pd, d, price: 0, affordable: true });
+      }
+    }
+
     for (const g of this.map.grenadeCrates) {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
@@ -1537,6 +1549,29 @@ export class Game {
       // not buildFlow: whoever opened it may not be on the storey the map is
       // currently showing, and a co-op door opens the route for everybody
       this.rebuildFlow();
+      return;
+    }
+
+    if (it.type === 'pad') {
+      const pd = it.pad;
+      if (pd.pad === 'clear') {
+        this.zombies = [];
+        this.arcs = [];
+        this.bannerShow('RANGE CLEAR', 'the hall is yours again', { dur: 1.6, colour: '#8fa0b0' });
+        audio.door();
+        return;
+      }
+      if (pd.pad === 'freeze') {
+        this._dbgFreeze = !this._dbgFreeze;
+        for (const z of this.zombies) z.frozen = this._dbgFreeze ? 9999 : 0;
+        this.popups.add(p.pos.x, p.pos.y - 26, this._dbgFreeze ? 'HELD' : 'GO', '#8fa0b0', 11);
+        audio.dryFire();
+        return;
+      }
+      const ax = 36 * T + randRange(-70, 70), ay = 16 * T + randRange(-50, 50);
+      this.zombies.push(this.makeZombie({ x: ax, y: ay, floor: this.map.floor }, pd.type));
+      this.popups.add(p.pos.x, p.pos.y - 26, (ENEMY_TYPES[pd.type]?.name ?? pd.type).toUpperCase(), '#c46a4a', 11);
+      audio.door();
       return;
     }
 
@@ -2676,6 +2711,82 @@ export class Game {
     }
   }
 
+  /**
+   * Swap the world under the player: campaign building <-> test polygon.
+   * Everything downstream reads through this.map, so one fresh GameMap is
+   * the whole trick; the box and the player just need to be told.
+   */
+  _loadMap(range) {
+    this.rangeMode = range;
+    this.map = new GameMap(range ? 'range' : 'campaign');
+
+    // map-bound systems are rebuilt exactly the way the constructor builds
+    // them, so switching worlds never drags state across with it
+    this.box = new MysteryBox(this.map.boxSpots ?? []);
+    this.box._now = () => this.time;
+    this.workbench = new Workbench(this.map.workbench);
+    this.egg = new EasterEgg(this.map.secretSwitches ?? []);
+    this.traps = new Traps();
+
+    // a brand new body: the range must not lend its racks, perks or god-mode
+    // to a campaign run, nor the campaign its wounds to the range
+    const fresh = new Player(this.map, this.map.playerStart.x, this.map.playerStart.y);
+    fresh.points = 500;
+    this.player = fresh;
+    this.players = [fresh];
+
+    this.zombies = [];
+    this.fires = [];
+    this.rifts = [];
+    this.grenades = [];
+    this.monkeys = [];
+    this.gases = [];
+    this.powerups = [];
+    this.tracers = [];
+    this.decals = this._decalFor(0);
+    this.stats = {
+      round: 0, kills: 0, headshots: 0, points: 0, shots: 0, hits: 0, planks: 0, doors: 0,
+      crafted: 0, knifeKills: 0, skeletonKills: 0, grenadeBest: 0,
+      teddyDraws: 0, darkKills: 0, darkRound: true,
+    };
+    this.floorsVisited = new Set();
+    this.timers = { instakill: 0, doublepoints: 0, firesale: 0, deathmachine: 0 };
+    this.dogRound = false;
+    this.intermission = 0;
+    this.round = 0;
+    this.roundActive = false;
+
+    if (range) {
+      this._savedUnlock ??= this.achievements.unlock;
+    } else {
+      // everything the range borrowed is handed back
+      if (this._savedUnlock) { this.achievements.unlock = this._savedUnlock; this._savedUnlock = null; }
+      this.debug.god = false;
+      this.debug.ammo = false;
+      this._dbgFreeze = false;
+      this.powerOn = false;
+      this.powerSurge = 0;
+      this.powerOnAt = -99;
+    }
+
+    this.cam.x = clamp(fresh.pos.x - VW / 2, 0, this.map.w * T - VW);
+    this.cam.y = clamp(fresh.pos.y - VH / 2, 0, this.map.h * T - VH);
+    this.rebuildFlow();
+    if (this.hud) this.hud._miniDirty = true;
+  }
+
+  /** The polygon is a sandbox: power on, pockets full, no dying, no scores. */
+  _rangeSetup() {
+    this.powerOn = true;
+    this.powerOnAt = -99;
+    this.player.points = 1000000;
+    this.debug.god = true;
+    this.debug.ammo = true;
+    this.achievements.unlock = () => {};   // sandbox kills earn nothing
+    this.bannerShow('TEST RANGE', 'every gun on the walls, a button per creature',
+      { dur: 3.2, colour: '#9fd0f0' });
+  }
+
   begin() {
     this.started = true;
     this.scene = null;
@@ -2730,7 +2841,17 @@ export class Game {
     if (!row) return;
     audio.reload(2);
     switch (row.id) {
-      case 'solo': this.net.role = 'off'; this.begin(); break;
+      case 'solo':
+        this.net.role = 'off';
+        if (this.rangeMode) this._loadMap(false);
+        this.begin();
+        break;
+      case 'range':
+        this.net.role = 'off';
+        this._loadMap(true);
+        this.begin();
+        this._rangeSetup();
+        break;
       case 'mp':
         this.scene = 'mp'; this.menuIndex = 0; this._roomT = 0;
         this._ensureRelay();
@@ -3048,6 +3169,7 @@ export class Game {
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
+    if (this.map.rangePads) this.drawRangePads(ctx);
     this.drawMysteryBox(ctx);
     this.drawPowerSwitch(ctx);
     this.drawWorkbench(ctx);
@@ -4062,6 +4184,27 @@ export class Game {
       ctx.restore();
     }
     ctx.restore();
+  }
+
+  drawRangePads(ctx) {
+    for (const pd of this.map.rangePads) {
+      if (!this._vis(pd.x, pd.y, 60)) continue;
+      const name = pd.pad
+        ? (pd.pad === 'clear' ? 'CLEAR' : 'HOLD')
+        : (ENEMY_TYPES[pd.type]?.name ?? pd.type);
+      const col = pd.pad ? '#8fa0b0' : (ENEMY_TYPES[pd.type]?.colour ?? '#c46a4a');
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,10,14,0.55)';
+      ctx.fillRect(pd.x - 11, pd.y - 8, 22, 16);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pd.x - 10.5, pd.y - 7.5, 21, 15);
+      ctx.fillStyle = col;
+      ctx.font = 'bold 6px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(name.slice(0, 8).toUpperCase(), pd.x, pd.y + 2);
+      ctx.restore();
+    }
   }
 
   drawGrenadeCrates(ctx) {
