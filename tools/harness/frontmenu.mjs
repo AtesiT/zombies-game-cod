@@ -43,8 +43,10 @@ g.scene = 'menu';
 g.menuIndex = 0;
 
 // ---- MULTIPLAYER ----------------------------------------------------------
-press('ArrowDown');
-ok(g.menuIndex === 1, `ArrowDown landed on ${g.menuIndex}, expected 1`);
+// walk with the keyboard exactly as far as the list says the row sits
+const mpIdx = M.menuRows('menu', g).findIndex((r) => r.id === 'mp');
+for (let i = 0; i < mpIdx; i++) press('ArrowDown');
+ok(g.menuIndex === mpIdx, `ArrowDown landed on ${g.menuIndex}, expected ${mpIdx}`);
 press('Enter');
 ok(g.scene === 'mp', `Enter on MULTIPLAYER went to "${g.scene}"`);
 ok(M.menuRows('mp', g).map((r) => r.id).join(',') === 'host,join,name,addr,back',
@@ -111,7 +113,9 @@ const click2 = (i) => {
   g2.update(H);
   g2.input.endFrame();
 };
-press2('ArrowDown'); press2('Enter');
+const mpIdx2 = M.menuRows('menu', g2).findIndex((r) => r.id === 'mp');
+for (let i = 0; i < mpIdx2; i++) press2('ArrowDown');
+press2('Enter');
 ok(g2.scene === 'mp', 'MULTIPLAYER did not open on the second game');
 ok(typeof g2.netMsg === 'string' && g2.netMsg.includes('node server.mjs'),
   `no relay here, but the screen said: ${JSON.stringify(g2.netMsg)}`);

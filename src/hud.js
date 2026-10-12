@@ -1288,6 +1288,7 @@ export function menuRows(scene, game) {
   }
   return [
     { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
+    { id: 'range', label: 'TEST RANGE', hint: 'every gun on the walls, a button per creature' },
     { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
     { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
     { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
