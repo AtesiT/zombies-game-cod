@@ -76,6 +76,9 @@ export class Powerup {
   /** Draw the floating glowing rune. */
   draw(ctx) {
     const def = this.def;
+    // an id that is not in POWERUPS must never reach the renderer: one
+    // undefined def is a dead frame loop (this is the guest-freeze class)
+    if (!def) return;
     const bobY = Math.sin(this.bob) * 2.5;
     const left = this.maxLife - this.life;
     // blink out over the last 3 seconds

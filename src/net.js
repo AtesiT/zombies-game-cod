@@ -13,6 +13,8 @@
 // standing guest is handed the room by the relay.
 import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
+import { Powerup } from './powerups.js';
+import { applyShutters } from './crafting.js';
 import { audio } from './audio.js';
 import { clamp, damp, dist } from './util.js';
 import { T } from './art.js';
@@ -227,11 +229,25 @@ export class Net {
 
   askForRooms() { this.transport?.send({ t: 'rooms' }); }
 
+  /**
+   * Guest: ask the host to build something. The bench menu itself is local --
+   * it opens the instant E goes down, with no round trip -- but the scrap, the
+   * points and the goods all live in the host's world, so the hammer falls
+   * there. Bounded on purpose: it is a key into RECIPES and nothing else.
+   */
+  requestCraft(id) {
+    const s = String(id ?? '').slice(0, 24);
+    if (!s || !this.active || this.isHost) return;
+    this.send(this.hostId, { m: 'craft', id: s });
+  }
+
   close() {
     if (this.transport) { try { this.transport.send({ t: 'b', m: 'bye' }); } catch { /* gone */ } this.transport.close(); }
     this.transport = null;
     clearInterval(this._ping);
     clearTimeout(this._openT);
+    clearTimeout(this._hiT);
+    clearTimeout(this._joinT);
     this._closed('CLOSED');
   }
 
@@ -270,6 +286,26 @@ export class Net {
       // whatever the round counter says
       if (!this.isHost && this.role === 'guest') {
         this.log('asking the host in');
+        // flag and timers go up BEFORE the 'hi' goes out: on a transport that
+        // delivers synchronously the welcome can arrive inside send(), and a
+        // later _welcomed = false would wipe it -- the retry would fire and the
+        // host would admit the same guest twice
+        this._welcomed = false;
+        clearTimeout(this._hiT);
+        this._hiT = setTimeout(() => {
+          if (!this._welcomed && !this.isHost && this.state === 'open') {
+            this.log('no welcome yet, asking again');
+            this.send(this.hostId, { m: 'hi', name: this.name });
+          }
+        }, 2500);
+        clearTimeout(this._joinT);
+        this._joinT = setTimeout(() => {
+          if (!this._welcomed && !this.isHost && this.state === 'open') {
+            this.log('the host never answered');
+            this.error = 'HOST DID NOT LET YOU IN';
+            this.close();
+          }
+        }, 9000);
         this.send(this.hostId, { m: 'hi', name: this.name });
       }
       this._status();
@@ -295,6 +331,9 @@ export class Net {
         // the old host vanished: keep the world, become the authority for it
         this.role = 'host';
         this.isHost = true;
+        this._welcomed = true;
+        clearTimeout(this._hiT);
+        clearTimeout(this._joinT);
         this.peers.clear();
         this.game?.bannerShow?.('HOST LEFT', 'you are running the round now', { dur: 3, colour: '#9fd0e0' });
       }
@@ -319,6 +358,10 @@ export class Net {
     const peer = this.peers.get(from);
     if (!peer) return;
     if (m.m === 'in') { peer.input.apply(m); peer.seen = 0; return; }
+    // a guest at the bench: it chose locally, the host builds and pays for it.
+    // tryCraft looks the id up in RECIPES and refuses anything it does not
+    // know, so this is not a way to reach any other code with a string.
+    if (m.m === 'craft') { this.game?.tryCraft?.(String(m.id ?? '').slice(0, 24), peer.player); return; }
     if (m.m === 'bye') { this._dropPeer(from); return; }
   }
 
@@ -329,6 +372,19 @@ export class Net {
     // a room only exists once somebody has opened one, which starts a game --
     // but if the host is somehow still on the menu, get him moving
     if (!g.started) g.begin();
+    // The guest retries his 'hi' when the first welcome never reached him. If
+    // he is already in the room, resend the welcome -- a second body for the
+    // same player is exactly the kind of thing that ends a run.
+    const again = this.peers.get(id);
+    if (again) {
+      this.send(id, {
+        m: 'welcome', you: id, host: this.you, round: g.round,
+        names: this.roster.map((r) => ({ id: r.id, name: r.name })),
+        snap: this.snapshot(),
+      });
+      this._status();
+      return;
+    }
     if (this.peers.size >= MAX_PLAYERS - 1) { this.send(id, { m: 'full' }); return; }
     const name = String(rawName || 'PLAYER').slice(0, 10).toUpperCase() || 'PLAYER';
     const spot = this._spawnSpot();
@@ -412,6 +468,9 @@ export class Net {
     if (m.m === 'welcome') {
       this.you = m.you;
       this.hostId = m.host ?? this.hostId;
+      this._welcomed = true;
+      clearTimeout(this._hiT);
+      clearTimeout(this._joinT);
       this.log('you are in');
       this._names = m.names ?? [];
       this._apply(m.snap, true);
@@ -545,12 +604,16 @@ export class Net {
           ? Math.atan2(mw.y - p.pos.y, mw.x - p.pos.x)
           : (p?.aim ?? 0);
         this._localAim = aim;
+        // At the bench the pointer is the menu's: a tap on a blueprint must
+        // not also arrive as a trigger pull. Walking is already locked out
+        // locally (input.menuLock), so the vector goes over as zeros.
+        const atBench = !!g.craftOpen;
         this.send(this.hostId, {
           m: 'in',
           mx: r2(walk.x ?? 0), my: r2(walk.y ?? 0),
           a: r2(aim),
-          f: inp.mouse?.down ? 1 : 0,
-          fp: this._fireEdge ? 1 : 0,
+          f: atBench ? 0 : (inp.mouse?.down ? 1 : 0),
+          fp: atBench ? 0 : (this._fireEdge ? 1 : 0),
           k: NET_KEYS.filter((k) => inp.keys?.has(k)),
           kp: [...this._edge],
           w: inp.wheel ?? 0,
@@ -610,9 +673,32 @@ export class Net {
         ? ['closed', 'spinning', 'offering', 'leaving', 'gone'].indexOf(g.box.state) : 0,
       r2(g.box.timer ?? 0), g.box.weapon ?? ''],
       z, p, b: floors, d: doors,
-      pu: g.powerups.map((u) => [r0(u.x), r0(u.y), u.id, r2(u.life ?? 0)]),
-      gr: g.grenades.map((n) => [r0(n.x ?? n.pos?.x ?? 0), r0(n.y ?? n.pos?.y ?? 0), n.floor ?? 0]),
-      mk: g.monkeys.map((n) => [r0(n.pos?.x ?? 0), r0(n.pos?.y ?? 0), n.floor ?? 0]),
+      pu: g.powerups.map((u) => [r0(u.x), r0(u.y), u.id, r2(u.life ?? 0), u.f ?? 0]),
+      // A guest draws whatever arrives here, so whatever arrives here must be
+      // drawable. Grenades used to come over as bare {x, y} and the renderer
+      // reads pos/rot/fuse: the first frag anybody threw froze every guest on
+      // the spot, which is exactly what "the picture hung and then it died"
+      // looked like from the couch.
+      gr: g.grenades.map((n) => [
+        r0(n.pos?.x ?? n.x ?? 0), r0(n.pos?.y ?? n.y ?? 0), n.floor ?? 0,
+        r2(n.rot ?? 0), r2(n.fuse ?? 0),
+      ]),
+      mk: g.monkeys.map((n) => [r0(n.pos?.x ?? 0), r0(n.pos?.y ?? 0), n.floor ?? 0, r2(n.fuse ?? 0)]),
+      // Hazards a guest must be able to SEE, or the damage they do is magic on
+      // an empty floor. Capped: a flamethrower leaves forty pools behind and
+      // this rides along at twenty a second.
+      fi: g.fires.slice(0, 40).map((n) => [r0(n.x), r0(n.y), r0(n.r), r2(n.life), r2(n.max), n.f ?? 0]),
+      rf: g.rifts.slice(0, 24).map((n) => [
+        r0(n.x), r0(n.y), r0(n.r), r0(n.dmg), r2(n.life), r2(n.max), n.seed ?? 0, n.f ?? 0,
+      ]),
+      ga: g.gases.slice(0, 24).map((n) => [
+        r0(n.x), r0(n.y), r0(n.r), r2(n.life), r2(n.max), n.f ?? 0, r2(n.drift ?? 0),
+      ]),
+      // how deep each window is: steel shutters deepen every window in the
+      // house at once, and a guest whose ceiling stayed at six would draw a
+      // barricade bar past its own end
+      bm: g.map.floors.map((F) => F.barricades.map((b) => b.maxPlanks)),
+      sh: g.workbench?.shuttersUp ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
     };
@@ -711,11 +797,54 @@ export class Net {
     }
 
     // ---- loose objects -----------------------------------------------------
-    g.powerups = (s.pu ?? []).map((e) => ({ x: e[0], y: e[1], id: e[2], life: e[3], dead: false, update(dt) { this.life -= dt; } }));
-    g.grenades = (s.gr ?? []).map((e) => ({ x: e[0], y: e[1], floor: e[2], remove: false, update() {}, draw: null }));
-    g.monkeys = (s.mk ?? []).map((e) => ({ pos: { x: e[0], y: e[1] }, floor: e[2], remove: false, update() {}, luring: false }));
+    // Everything below is rebuilt into the shape the *renderer* expects, not
+    // into something merely small on the wire. A stub without a pos, a fuse or
+    // a draw() is an exception waiting for the first frame that looks at it --
+    // and an exception inside the frame loop is a frozen picture.
+    g.powerups = (s.pu ?? []).map((e) => {
+      const pu = new Powerup(e[0], e[1], e[2], e[4] ?? 0);
+      pu.life = e[3] ?? 0;
+      return pu;
+    }).filter((u) => u.def);   // an unknown id off the wire must not freeze the frame loop
+    g.grenades = (s.gr ?? []).map((e) => ({
+      pos: { x: e[0], y: e[1] }, floor: e[2], rot: e[3] ?? 0, fuse: e[4] ?? 1.2,
+      remove: false, update() {},
+    }));
+    g.monkeys = (s.mk ?? []).map((e) => ({
+      pos: { x: e[0], y: e[1] }, floor: e[2], fuse: e[3] ?? 3, r: 4,
+      remove: false, luring: false, update() {},
+      // the guest owns no MonkeyBomb: paint the host's sprite, wobbling on the
+      // fuse the host reports, so the lure is visible where it was thrown
+      draw(ctx, art) {
+        const px = Math.round(this.pos.x), py = Math.round(this.pos.y);
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(px, py + 8, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        const wob = Math.sin(this.fuse * 22) * (this.fuse < 1.6 ? 2.2 : 0.9);
+        ctx.save();
+        ctx.translate(px, py + Math.abs(Math.sin(this.fuse * 9)) * -2);
+        ctx.rotate(wob * 0.08);
+        if (art?.monkeybomb) ctx.drawImage(art.monkeybomb, -5, -7);
+        ctx.restore();
+      },
+    }));
     g.fires = (s.fi ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], life: e[3], max: e[4] || e[3], tick: 0, puff: 0, f: e[5] }));
     g.rifts = (s.rf ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], dmg: e[3], life: e[4], max: e[5] || e[4], seed: e[6], f: e[7], tick: 0 }));
+    g.gases = (s.ga ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], life: e[3], max: e[4] || e[3], f: e[5], drift: e[6] ?? 0, puff: 0 }));
+    if (s.bm) {
+      for (let f = 0; f < g.map.floors.length && f < s.bm.length; f++) {
+        const F = g.map.floors[f], caps = s.bm[f] ?? [];
+        for (let i = 0; i < F.barricades.length && i < caps.length; i++) {
+          F.barricades[i].maxPlanks = caps[i];
+        }
+      }
+    }
+    // shutters bought before this guest arrived, or while his tab was looking
+    // away: deepen the caps without touching the plank counts, which arrived
+    // deepened already
+    if (s.sh && !g.workbench?.shuttersUp) applyShutters(g, false);
     this._snapT = 0;
   }
 
@@ -839,6 +968,12 @@ export class Net {
         break;
       case 'door': audio.door?.(); break;
       case 'perk': audio.perk?.(); break;
+      case 'craft':
+        // somebody's hammer, everybody's news: the name goes over the body
+        // that built it, and the guest that asked hears the answer
+        g.popups?.add?.(m.x, m.y - 26, m.name ?? '', m.c ?? '#f0d98a', 12);
+        audio.buy?.();
+        break;
       case 'power': audio.powerUp?.(); break;
       case 'down':
         g.bannerShow?.(`${m.name} IS DOWN`, 'get to him', { dur: 2.6, colour: '#c4463a' });

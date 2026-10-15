@@ -46,6 +46,7 @@ export const ACHIEVEMENTS = [
   { id: 'skeleton_key', name: 'Skeleton Key', desc: 'Break ten of the Bonewright\u2019s skeletons.', icon: 'K' },
   // ---- the rest of the house ----------------------------------------------
   { id: 'tourist', name: 'Grand Tour', desc: 'Set foot on all three storeys in one run.', icon: 'G' },
+  // Back with the bench: it went bare for a while and took these two with it.
   { id: 'master_crafter', name: 'Master Crafter', desc: 'Craft five things at the workbench.', icon: 'W' },
   { id: 'field_medic', name: 'Field Medic', desc: 'Craft a medkit.', icon: '+' },
   { id: 'big_spender', name: 'Big Spender', desc: 'Hold 10,000 points at once.', icon: '$' },
@@ -61,7 +62,11 @@ const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));
 
 export class Achievements {
   constructor() {
-    this.unlocked = new Set(safeGet(ACH_KEY, []));
+    // Anything on disk that is no longer on the list gets dropped here: a
+    // badge that was retired mid-life would otherwise sit in the set forever
+    // and make the screen read "34 / 33".
+    const saved = safeGet(ACH_KEY, []);
+    this.unlocked = new Set(Array.isArray(saved) ? saved.filter((id) => BY_ID.has(id)) : []);
     this.pending = [];      // queued toasts
     this.banner = null;
     this.bannerT = 0;

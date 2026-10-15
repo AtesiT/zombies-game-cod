@@ -2,7 +2,7 @@
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
-import { RECIPES, RECIPE_ORDER } from './crafting.js';
+import { recipe, recipeIds, craftRowNote } from './crafting.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
@@ -476,53 +476,108 @@ export class HUD {
   }
 
   // ----------------------------------------------------------- craft menu --
+  /**
+   * The bench. A card can be picked three ways: the number printed on it, the
+   * arrows, or the pointer -- and the pointer is the only one of the three a
+   * phone has, which is why the menu used to be openable and then unusable on
+   * one. The geometry lives in craftLayout/craftRowAt, so what the pointer
+   * hits is exactly what got painted.
+   */
   _craftMenu(ctx, game, w, h) {
+    const p = game.player;
+    const L = craftLayout(game, w, h);
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.88)';
     ctx.fillRect(0, 0, w, h);
     text(ctx, 'WORKBENCH', w / 2, 78, {
       font: 'bold 26px "Courier New", monospace', colour: GOLD, align: 'center',
     });
-    text(ctx, `SCRAP: ${game.player.salvage}     POINTS: ${game.points}`, w / 2, 98, {
+    text(ctx, `SCRAP: ${p.salvage ?? 0}     POINTS: ${game.points}`, w / 2, 98, {
       font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
 
-    const cols = 2, cw = 330, ch = 62, gap = 12;
-    const totalW = cols * cw + gap;
-    const x0 = w / 2 - totalW / 2;
-    let y0 = 122;
-    RECIPE_ORDER.forEach((id, i) => {
-      const r = RECIPES[id];
-      const col = i % cols, row = (i / cols) | 0;
-      const x = x0 + col * (cw + gap);
-      const y = y0 + row * (ch + gap);
-      const why = game.workbench.canCraft(game, id);
-      const ok = why === 'ok';
-      ctx.globalAlpha = ok ? 1 : 0.5;
+    if (!L.ids.length) {
+      // A bare bench still tells you what you are carrying: the scrap is real
+      // and it banks, it just has nothing to buy today.
+      const bw = 420, bh = 96;
+      const bx = Math.round((w - bw) / 2), by = L.y0;
       ctx.fillStyle = 'rgba(18,20,26,0.95)';
-      ctx.fillRect(x, y, cw, ch);
-      ctx.strokeStyle = ok ? 'rgba(240,217,138,0.55)' : 'rgba(120,115,100,0.35)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = 'rgba(120,115,100,0.35)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+      ctx.fillStyle = '#6a5c3a';
+      ctx.fillRect(bx, by, 3, bh);
+      text(ctx, 'THE BENCH IS BARE', w / 2, by + 30, {
+        font: 'bold 16px "Courier New", monospace', colour: INK, align: 'center',
+      });
+      text(ctx, 'No blueprints on it. What you carry stays in your pocket.', w / 2, by + 52, {
+        font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      });
+      text(ctx, `SCRAP BANKED  ${p.salvage ?? 0}`, w / 2, by + 76, {
+        font: 'bold 13px "Courier New", monospace', colour: GOLD, align: 'center',
+      });
+      text(ctx, '[E] or [ESC] to step away', w / 2, h - 40, {
+        font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      });
+      ctx.restore();
+      return;
+    }
+
+    L.ids.forEach((id, i) => {
+      const r = recipe(id);
+      const col = i % L.cols, row = (i / L.cols) | 0;
+      const x = L.x0 + col * (L.cw + L.gap);
+      const y = L.y0 + row * (L.ch + L.gap);
+      const why = game.workbench.canCraft(game, id, p);
+      const ok = why === 'ok';
+      const sel = i === p.craftRow;
+      ctx.globalAlpha = ok ? 1 : 0.55;
+      ctx.fillStyle = sel ? 'rgba(38,36,26,0.97)' : 'rgba(18,20,26,0.95)';
+      ctx.fillRect(x, y, L.cw, L.ch);
+      ctx.strokeStyle = sel
+        ? 'rgba(240,217,138,0.95)'
+        : (ok ? 'rgba(240,217,138,0.55)' : 'rgba(120,115,100,0.35)');
+      ctx.lineWidth = sel ? 2 : 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, L.cw - 1, L.ch - 1);
+      ctx.lineWidth = 1;
       ctx.fillStyle = r.colour;
-      ctx.fillRect(x, y, 3, ch);
+      ctx.fillRect(x, y, 3, L.ch);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.textAlign = 'left';
       ctx.fillStyle = r.colour;
-      ctx.fillText(`[${i + 1}] ${r.name.toUpperCase()}`, x + 12, y + 22);
+      const tag = i < 9 ? `[${i + 1}] ` : '';
+      ctx.fillText(`${tag}${(r.name ?? id).toUpperCase()}`, x + 12, y + 22);
       ctx.font = 'bold 10px "Courier New", monospace';
       ctx.fillStyle = INK_DIM;
-      ctx.fillText(r.desc, x + 12, y + 38);
+      ctx.fillText(r.desc ?? '', x + 12, y + 38);
+      // why not, if not: on the row itself, so the answer is where the eye is
+      if (!ok) {
+        ctx.fillStyle = RED;
+        ctx.fillText(craftRowNote(game, id, why), x + 12, y + 54);
+      }
       ctx.fillStyle = ok ? GOLD : RED;
       ctx.textAlign = 'right';
-      const cost = `${r.salvage} SCRAP` + (r.points ? `  ${r.points} PTS` : '');
-      ctx.fillText(cost, x + cw - 12, y + 54);
+      const cost = `${r.salvage ?? 0} SCRAP` + (r.points ? `  ${r.points} PTS` : '');
+      ctx.fillText(cost, x + L.cw - 12, y + 54);
+      if (r.glyph) {
+        ctx.font = 'bold 22px "Courier New", monospace';
+        ctx.fillStyle = 'rgba(230,220,194,0.14)';
+        ctx.fillText(String(r.glyph), x + L.cw - 14, y + 26);
+      }
       ctx.globalAlpha = 1;
     });
 
-    text(ctx, '[E] or [ESC] to step away', w / 2, h - 40, {
-      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    const selId = L.ids[clamp(p.craftRow ?? 0, 0, L.ids.length - 1)];
+    const hint = selId ? recipe(selId)?.hint : null;
+    if (hint) {
+      text(ctx, hint, w / 2, h - 58, {
+        font: 'bold 11px "Courier New", monospace', colour: INK, align: 'center',
+      });
+    }
+    text(ctx, 'ARROWS PICK · ENTER BUILDS · CLICK OR TAP WORKS · [E] STEPS AWAY', w / 2, h - 40, {
+      font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
     ctx.restore();
   }
@@ -759,7 +814,11 @@ export class HUD {
     } else if (it.type === 'power') {
       lines.push(game.powerOn ? 'GENERATOR RUNNING' : '[E] THROW THE SWITCH');
     } else if (it.type === 'workbench') {
-      lines.push('[E] OPEN WORKBENCH');
+      // what you are carrying is the reason to climb up here at all
+      const scrap = game.player.salvage ?? 0;
+      lines.push(recipeIds().length
+        ? `[E] OPEN WORKBENCH   SCRAP ${scrap}`
+        : `WORKBENCH — NOTHING TO BUILD   SCRAP ${scrap}`);
     } else if (it.type === 'pap') {
       if (it.already) lines.push('ALREADY PACK-A-PUNCHED');
       else if (!game.powerOn) lines.push('PACK-A-PUNCH — NO POWER');
@@ -1108,7 +1167,7 @@ export const CONTROL_ROWS = [
   ['RELOAD', 'R   RLD'],
   ['USE  BUY  REVIVE', 'F   F'],
   ['REPAIR A WINDOW', 'HOLD F   HOLD F'],
-  ['CRAFT AT THE BENCH', 'HOLD E'],
+  ['WORKBENCH MENU', 'E OPENS  ARROWS PICK  ENTER BUILDS'],
   ['KNIFE', 'V   KNIFE'],
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
@@ -1554,6 +1613,39 @@ export function drawDebug(ctx, game, w, h) {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   ctx.restore();
+}
+
+/**
+ * The bench geometry, shared by the painter and the pointer -- the same trick
+ * the settings panel uses, so a click lands on the card you can see. Cards are
+ * 330x62 in two columns once there are more than four of them, one wider
+ * column while the bench is nearly bare.
+ */
+export function craftLayout(game, w, h) {
+  const ids = recipeIds();
+  const cols = ids.length > 4 ? 2 : 1;
+  const cw = cols === 2 ? 330 : 420;
+  const ch = 62, gap = 12;
+  const rows = Math.max(1, Math.ceil(ids.length / cols));
+  const totalW = cols * cw + (cols - 1) * gap;
+  const x0 = Math.round((w - totalW) / 2);
+  return { ids, cols, rows, cw, ch, gap, x0, y0: 122, totalW };
+}
+
+/** Which blueprint (index into recipeIds()) is under the pointer, or -1. */
+export function craftRowAt(game, w, h, mx, my) {
+  const L = craftLayout(game, w, h);
+  if (!L.ids.length) return -1;
+  if (mx < L.x0 || mx > L.x0 + L.totalW) return -1;
+  const rel = my - L.y0;
+  if (rel < 0 || rel >= L.rows * (L.ch + L.gap) - L.gap) return -1;
+  const row = Math.floor(rel / (L.ch + L.gap));
+  if (rel - row * (L.ch + L.gap) > L.ch) return -1;      // the gutter between rows
+  const col = Math.floor((mx - L.x0) / (L.cw + L.gap));
+  if (col >= L.cols) return -1;
+  if (mx - L.x0 - col * (L.cw + L.gap) > L.cw) return -1; // the gutter between columns
+  const i = row * L.cols + col;
+  return i < L.ids.length ? i : -1;
 }
 
 /**

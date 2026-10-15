@@ -287,6 +287,12 @@ export class Player {
     this.walkPhase = 0;
     this.facing = 1;
     this.grenades = 0;
+    // Whether *this body* has the bench menu open. It used to be one flag on
+    // the game, which works for one player and is a lie for four: a guest at
+    // the workbench had no menu of its own to open. Each body keeps its own,
+    // and `game.craftOpen` is a proxy for "mine" (see game.js).
+    this.craftOpen = false;
+    this.craftRow = 0;        // which blueprint the pointer or the arrows are on
     this.dead = false;
     this.downed = false;      // on the floor, but not out of it yet
     this.bleedT = 0;          // seconds left before a downed body is finished
@@ -661,7 +667,11 @@ export class Player {
 
     // -------------------------------------------------------------- fire ---
     if (this.downed) { this.reloading = false; this.recoil = 0; return; }
-    const wantFire = isAuto(d) ? input.mouse.down : input.mouse.pressed;
+    // At the bench the pointer belongs to the list: without this, every click
+    // on a blueprint is also a shot, and on a phone every tap is. Only this
+    // body's own menu counts -- the host never opens one for anybody else.
+    const atBench = !!this.craftOpen;
+    const wantFire = !atBench && (isAuto(d) ? input.mouse.down : input.mouse.pressed);
     if (wantFire && !this.reloading && !game.paused && this.swapTimer <= 0) {
       if (this.slot.mag > 0) {
         if (this.fireTimer <= 0) this.fire(game);
@@ -673,10 +683,12 @@ export class Player {
         }
       }
     }
-    if (this.reloading && this.slot.mag <= 0 && input.mouse.pressed) this.reloadTimer = Math.min(this.reloadTimer, 0.12);
+    if (this.reloading && this.slot.mag <= 0 && input.mouse.pressed && !atBench) {
+      this.reloadTimer = Math.min(this.reloadTimer, 0.12);
+    }
 
     // -------------------------------------------------------------- knife --
-    if (input.wasPressed('KeyV') && !game.paused) this.knife(game);
+    if (input.wasPressed('KeyV') && !game.paused && !atBench) this.knife(game);
   }
 
   /** Classic CoD melee: short reach, big points, never runs dry. */

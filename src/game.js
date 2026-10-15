@@ -8,13 +8,13 @@ import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, p
 import { PERKS } from './perks.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
-import { Workbench, RECIPES, RECIPE_ORDER } from './crafting.js';
+import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -290,7 +290,7 @@ export class Game {
     this.box._now = () => this.time;
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches);
-    this.craftOpen = false;
+    // (the bench menu lives on each body now -- see the craftOpen proxy below)
     this.dogRound = false;
     this.timers = { instakill: 0, doublepoints: 0, firesale: 0, deathmachine: 0 };
     this.jamT = 0;            // seconds of radio silence a Jammer has bought
@@ -459,6 +459,16 @@ export class Game {
   /** Points belong to a body, not to the match -- four of you, four wallets. */
   get points() { return this.player ? this.player.points : 0; }
   set points(v) { if (this.player) this.player.points = v; }
+
+  /**
+   * Same story for the bench menu: it used to be one flag on the game, so the
+   * workbench belonged to whoever the game was -- the host. A guest pressing E
+   * at the bench was told no, and had no menu of its own to open anyway. Each
+   * body keeps its own flag; `game.craftOpen` means "mine", which is what the
+   * HUD, the touch panel and the cursor have always wanted.
+   */
+  get craftOpen() { return !!(this.player && this.player.craftOpen); }
+  set craftOpen(v) { if (this.player) this.player.craftOpen = !!v; }
 
   addPoints(n, x, y, colour, who) {
     const t = who ?? this.player;
@@ -1641,8 +1651,16 @@ export class Game {
     }
 
     if (it.type === 'workbench') {
-      if (p !== this.player) { audio.deny(); return; }
-      this.craftOpen = !this.craftOpen;
+      // Every body gets its own bench. It used to be the host's alone: a guest
+      // who climbed to the roof and pressed E was told "no" for no reason at
+      // all. The menu is now each client's own business -- a guest opens its
+      // copy in _guestUpdate and sends what it wants built (net.js, m:'craft')
+      // -- so the host deliberately keeps no copy of a remote body's flag.
+      // Nothing to fall out of sync, and no body left unable to fire because
+      // somebody else's menu went stale.
+      if (p !== this.player) return;
+      p.craftOpen = !p.craftOpen;
+      p.craftRow = clamp(p.craftRow ?? 0, 0, Math.max(0, recipeIds().length - 1));
       audio.reload(2);
       return;
     }
@@ -1905,22 +1923,120 @@ export class Game {
     }
   }
 
-  tryCraft(id) {
-    const r = RECIPES[id];
-    const why = this.workbench.canCraft(this, id);
+  /**
+   * Build something at the bench.
+   *
+   * `p` is the body doing the building, which in co-op is not necessarily the
+   * host's: a guest picks a card on its own screen and the host runs this for
+   * it (net.js, `m:'craft'`). Everything here -- the purse, the popup, the
+   * tally -- belongs to that body.
+   */
+  tryCraft(id, p = this.player) {
+    const r = recipe(id);
+    if (!r || !p || p.dead || p.downed) return false;
+    const why = this.workbench.canCraft(this, id, p);
     if (why !== 'ok') {
+      // the reason goes over the head of whoever asked, not over the host's
       audio.deny();
-      this.popups.add(this.player.pos.x, this.player.pos.y - 28,
-        why === 'salvage' ? 'NOT ENOUGH SCRAP' : 'NOT ENOUGH POINTS', '#c4463a', 10);
+      this.popups.add(p.pos.x, p.pos.y - 28, craftRefusal(id, why), '#c4463a', 10);
       return false;
     }
-    this.workbench.craft(this, id);
-    this.stats.crafted++;
-    if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
-    if (id === 'medkit') this.achievements.unlock('field_medic');
+    this.workbench.craft(this, id, p);
+    if (p === this.player) {
+      this.stats.crafted++;
+      if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
+      if (id === 'medkit') this.achievements.unlock('field_medic');
+    }
     audio.buy();
-    this.popups.add(this.player.pos.x, this.player.pos.y - 26, r.name.toUpperCase(), r.colour, 12);
+    const name = (r.name ?? id).toUpperCase();
+    this.popups.add(p.pos.x, p.pos.y - 26, name, r.colour ?? '#f0d98a', 12);
+    // and the rest of the house hears the hammer: what one body builds at the
+    // bench is team news, the same way a bought perk is
+    this.netEmit('craft', {
+      x: Math.round(p.pos.x), y: Math.round(p.pos.y), name, c: r.colour ?? '#f0d98a',
+      by: p.netId ?? 0,
+    });
     return true;
+  }
+
+  /**
+   * The bench menu's own input, for one body. The host path and the guest path
+   * both run it, because a guest has a menu too -- only the building itself
+   * travels over the wire (`remote`).
+   *
+   * Returns true when this step consumed the menu: built something, or shut
+   * it. The caller keeps `craftWasOpen` from the top of the frame and leaves E
+   * and F alone if it was set -- without that, the same press that stepped
+   * away from the bench is read again by the interaction code underneath and
+   * the menu snaps straight back open. It used to, which is why the only way
+   * out of the bench was Q or walking off.
+   */
+  _craftInput(dt, p, remote) {
+    if (!p) return false;
+    if (!p.craftOpen) return false;
+    const inp = this.input;
+    const ids = recipeIds();
+    let touched = false;
+
+    const build = (id) => {
+      if (!id) return;
+      if (remote) { this.net?.requestCraft?.(id); return; }
+      this.tryCraft(id, p);
+    };
+
+    // numbers still work, for as many cards as there are digits
+    for (let i = 0; i < ids.length && i < 9; i++) {
+      if (inp?.wasPressed(`Digit${i + 1}`)) { build(ids[i]); return true; }
+    }
+
+    // The pointer: hover picks a card, a click builds it. On a phone this is
+    // not a convenience, it is the entire menu -- a touchscreen has no digits.
+    // A key pressed in the same frame wins over a pointer that is merely
+    // resting on a card, or the arrows cannot move away from wherever the
+    // mouse happens to be parked (the settings panel has the same rule for
+    // its wheel).
+    const m = inp?.mouse;
+    const keyed = !!inp && inp.wasPressed(
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
+    );
+    if (m && ids.length) {
+      const hover = craftRowAt(this, VW, VH, m.x, m.y);
+      if (!keyed && hover >= 0 && hover !== p.craftRow) { p.craftRow = hover; audio.dryFire(); }
+      if (m.pressed && hover >= 0) { build(ids[hover]); return true; }
+    }
+
+    // arrows and WASD walk the grid, Enter builds what is lit
+    if (ids.length) {
+      const n = ids.length;
+      const cols = craftLayout(this, VW, VH).cols;
+      const move = (d) => {
+        p.craftRow = clamp(((p.craftRow ?? 0) + d + n) % n, 0, n - 1);
+        audio.dryFire();
+      };
+      if (inp?.wasPressed('ArrowUp', 'KeyW')) move(-cols);
+      if (inp?.wasPressed('ArrowDown', 'KeyS')) move(cols);
+      if (inp?.wasPressed('ArrowLeft', 'KeyA')) move(-1);
+      if (inp?.wasPressed('ArrowRight', 'KeyD')) move(1);
+      if (inp?.wasPressed('Enter', 'Space')) { build(ids[clamp(p.craftRow ?? 0, 0, n - 1)]); return true; }
+    }
+
+    // stepping away: E is what the world uses for the bench and F is what a
+    // phone has instead. Q used to be one of these, but Q also swaps guns and
+    // a guest's Q travels, so closing the menu changed your weapon.
+    if (inp?.wasPressed('Escape', 'KeyE', 'KeyF')) {
+      p.craftOpen = false;
+      audio.dryFire();
+      return true;
+    }
+    // ...as is walking off, or taking the stairs: the bench is on one storey
+    // and the menu must not follow you down it
+    if (!this.map.workbench
+      || dist(p.pos.x, p.pos.y, this.workbench.x, this.workbench.y) > 56
+      || (p.floor ?? this.map.floor) !== this.map.floor) {
+      p.craftOpen = false;
+      return true;
+    }
+    return false;
   }
 
   /** The debug panel as data, so the HUD can draw it and the mouse can hit it. */
@@ -2223,7 +2339,12 @@ export class Game {
       return;
     }
 
-    if (this.input.wasPressed('KeyP', 'Escape')) this.paused = !this.paused;
+    // Escape belongs to whatever full-screen list is up: at the bench it steps
+    // away from the bench, and only then -- on the next press -- does it pause.
+    // It used to pause straight through the menu, so the one key the footer
+    // advertised never did what it said.
+    if (this.input.wasPressed('KeyP')) this.paused = !this.paused;
+    else if (this.input.wasPressed('Escape') && !this.craftOpen) this.paused = !this.paused;
     if (this.paused) {
       if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
       // the controls are worth looking up in the middle of a round too, not
@@ -2247,6 +2368,9 @@ export class Game {
     this._refreshProps();
 
     // ---- player ------------------------------------------------------------
+    // The bench menu owns the movement keys while it is up: you navigate
+    // blueprints, you do not wander off the roof in the middle of choosing.
+    if (this.input) this.input.menuLock = this.craftOpen;
     this._fxOn(this.player);
     this.player.update(dt, this, this.input);
     if (this.debug.ammo) {
@@ -2263,17 +2387,15 @@ export class Game {
     this._fxOn(this.player);
     if (this.net?.active) this.net.step(dt);
 
-    // ---- workbench craft menu (swallows the number keys while open) --------
-    if (this.craftOpen) {
-      for (let i = 0; i < RECIPE_ORDER.length; i++) {
-        if (this.input.wasPressed(`Digit${i + 1}`)) this.tryCraft(RECIPE_ORDER[i]);
-      }
-      if (this.input.wasPressed('Escape', 'KeyE', 'KeyQ')) this.craftOpen = false;
-      if (!this.map.workbench
-        || dist(this.player.pos.x, this.player.pos.y, this.workbench.x, this.workbench.y) > 56) {
-        this.craftOpen = false;
-      }
-    } else {
+    // ---- workbench craft menu ---------------------------------------------
+    // While it is up it swallows the digits, the arrows and the pointer, so
+    // the weapon slots and the wheel below wait their turn. `craftWasOpen` is
+    // what the interaction code further down needs: an E that closed the menu
+    // must not be read a second time by the bench itself, or the menu you just
+    // stepped away from is open again before you can see it close.
+    const craftWasOpen = this.craftOpen;
+    if (craftWasOpen) this._craftInput(dt, this.player, false);
+    if (!craftWasOpen) {
       // 1 / 2 pick a carried slot, Q flips between them; the wheel and the
       // square brackets dig through the whole armoury (that takes a moment)
       if (this.input.wasPressed('Digit1')) this.player.setSlot(0);
@@ -2312,7 +2434,10 @@ export class Game {
       if (this._reviveT >= 1.3) { this._reviveT = 0; this.revive(fallen, this.player); }
     } else {
       this._reviveT = 0;
-      if (!this.craftOpen) {
+      // not "is the menu shut" but "was it shut when the frame started": the
+      // E that shut it is still held in `pressed`, and reading it again here
+      // is what used to open the bench straight back up
+      if (!this.craftOpen && !craftWasOpen) {
         if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
         if (this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
       } else this._rebuildT = 0;
@@ -3032,11 +3157,29 @@ export class Game {
   /** No simulation at all: interpolate what the host sent and draw it. */
   _guestUpdate(dt) {
     const net = this.net;
-    net.step(dt);
     const pl = this.player;
+    // the bench menu owns the movement keys here too, exactly as it does for
+    // the host's own body: nobody drifts off the roof in the middle of a choice
+    if (this.input) this.input.menuLock = this.craftOpen;
+    net.step(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
       this.map.setFloor(pl.floor);
       this.useFloor(pl.floor);
+    }
+    // What is under hand. Without this a guest gets no prompt at all -- no
+    // price on a door, no "the box is spinning", no bench -- and presses E on
+    // faith while the host does the work somewhere off screen.
+    this.updateInteraction();
+    // The bench is the one thing a guest drives for itself: the menu is local,
+    // so it opens the instant E goes down with no round trip, and only the
+    // building travels (net.js, `m:'craft'`).
+    const craftWasOpen = this.craftOpen;
+    if (craftWasOpen) this._craftInput(dt, pl, true);
+    if (!craftWasOpen && pl && !pl.dead && !pl.downed
+      && this.input?.wasPressed('KeyE', 'KeyF')
+      && this.interaction?.type === 'workbench') {
+      pl.craftOpen = true;
+      audio.reload(2);
     }
     this.particles.update(dt, this.map);
     this.popups.update(dt);

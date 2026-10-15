@@ -24,6 +24,16 @@ Legend used in the emitted ASCII:
   'V' wrecked vehicle      'S' stairwell (teleport pair, walkable)
   '*' secret door (solid until the three fuses are found)
   '@' player start
+
+!! READ THIS BEFORE YOU RUN IT !!
+src/mapData.js has drifted away from this script: the traps on the ground and
+second floors, the hand-placed second-floor lamps, the extra box spots upstairs
+and a few 'D'/'k' tiles on the upper storeys were edited into the emitted file
+directly. Regenerating today drops all of them -- the game loses its flame
+trap, its electric barrier and its steam vent, and the barracks goes dark.
+Port those tables in here (a TRAPS list per storey, the upper LAMPS, the extra
+BOX spots) before running `npm run map`, or diff the output against the old
+file and keep it. `git diff src/mapData.js` after a run is the check.
 """
 import collections
 import os
@@ -469,11 +479,22 @@ def build_roof():
         'lamps': [],
         # one-per-run cache: worth the climb
         'cache': [(18, 12), (19, 12), (18, 13)],
+        # the workbench. It lives up here and nowhere else, which is the whole
+        # point of the roof: anything you want built, you carry scrap up three
+        # storeys for. It is a generated constant on purpose -- it was hand-added
+        # to mapData.js once, and the next regeneration dropped it, leaving
+        # map.js importing undefined and the top floor with no bench at all.
+        'bench': (23, 26),
     }
 
 
 UPPER, UPPER_OBJ = build_upper()
 ROOF, ROOF_OBJ = build_roof()
+
+# Where the bench stands, and on which storey: the roof. The ground-floor
+# WORKBENCH below is the shed it used to live in -- the generator keeps it
+# because the reachability check still wants that room walkable.
+WORKBENCH_ROOF = ROOF_OBJ['bench']
 
 # vertical links. `a`/`b` are [floor, x, y]; same coordinates on both sides
 # so "up" really means "up".
@@ -531,6 +552,11 @@ for f in FLOORS[1:]:
     if f['obj'].get('cache'):
         for c in f['obj']['cache']:
             assert tuple(c) in reach, f"{f['key']}: cache {c} unreachable"
+    if f['obj'].get('bench'):
+        # a bench you cannot walk to is a bench that does not exist: the whole
+        # crafting layer hangs off this one tile
+        assert tuple(f['obj']['bench']) in reach, \
+            f"{f['key']}: workbench {tuple(f['obj']['bench'])} unreachable"
 
     # A spawn the horde cannot walk out of is a zombie that just stands there.
     # So check the route a zombie would really take: boards get chewed through,
@@ -649,6 +675,8 @@ export const STAIRS = [
 
 export const POWER_SWITCH = {{ x: {POWER_SWITCH[0]}, y: {POWER_SWITCH[1]} }};
 export const WORKBENCH = {{ x: {WORKBENCH[0]}, y: {WORKBENCH[1]} }};
+// the bench itself stands on the roof; the spot above is the shed it left
+export const WORKBENCH_ROOF = {{ x: {WORKBENCH_ROOF[0]}, y: {WORKBENCH_ROOF[1]} }};
 export const PAP_SPOT = {{ x: {PAP_SPOT[0]}, y: {PAP_SPOT[1]} }};
 
 export const SECRET_SWITCHES = [

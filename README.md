@@ -47,6 +47,14 @@ them and hold `F` for 1.3 s. Points are per player, rounds are shared, and the
 horde grows by 32 % for every extra body in the building. If the host quits, the
 relay hands the room to the longest-standing guest.
 
+Joining is watched from the guest's side: it asks the host in, retries once after
+2.5 s if the welcome never comes, and after 9 s says **HOST DID NOT LET YOU IN**
+plainly and returns to the room list instead of spinning forever. A repeated ask
+makes the host resend the welcome, never build a second body. And everything the
+snapshot carries — grenades, power-ups, monkey bombs, fires, rifts, gas — is
+rebuilt on the guest into the exact shape its renderer reads: one wrong shape off
+the wire is not a cosmetic bug, it is a frozen picture.
+
 ## Phone / touch controls
 
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
@@ -105,9 +113,10 @@ One big level instead of a second map:
 - **Bunker** — four rooms (A/B up, C/D down) split by a central cross-wall, 20 barricaded
   windows, six buyable doors including two that let you **walk outside**.
 - **Radio room** (north-east) — reached by a stairwell from room B. Holds the **Pack-a-Punch**.
-- **Shed** (east) — holds the **workbench**.
-- **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.
-- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
+- **Shed** (east) — tools and sandbags; the workbench it used to hold moved upstairs.
+- **Roof** — the **workbench** stands on the open deck: anything you want built,
+  you carry the scrap up three storeys for.
+- **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
   You can leave the bunker and fight in the open; zombies spawn out here and path in.
 
@@ -137,9 +146,18 @@ cluster solid) · Monkey Bomb (wind it up, throw it, watch the horde pile on, th
 **Wall buys.** M1911 (start) · MP40 · Thompson · M1897 Trench Gun · PPSh-41 · Kar98k · FG 42 ·
 M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 
-**Workbench.** Kills drop **scrap**. Spend it at the shed: Medkit (+55 HP, stackable, `H`),
-Plank Bundle (two planks on every window at once), Frag Bundle, Ammo Crate (refills everything),
-Armour Plate (+60 absorb), Barricade Spikes (windows bite back for three rounds).
+**Workbench.** Kills drop **scrap**, and the bench on the roof spends it. On the bench today:
+**Medkit** (8 scrap, +55 HP, up to three carried), **Armour Plate** (14 scrap + 1500 points,
+absorbs the next 60 damage, up to 120) and **Steel Shutters** (30 scrap + 2500 points, once per
+house: every window on every floor takes two more planks — the cap itself rises, and the boards
+come with it). The original six recipes were flat vending-machine buttons with nothing behind
+them; they were rewritten onto a new recipe contract, and the four not on the bench yet (Plank
+Bundle, Frag Bundle, Ammo Crate, Barricade Spikes) live in `src/crafting.js` as
+`SHELVED_RECIPES` — hanging one back on is one line. Every recipe owes the bench a `useful()`
+check: a purchase that would change nothing is refused with the reason on the row, so nobody
+ever pays for air again. In co-op every body has its own bench and its own purse; a guest
+builds with its own scrap over the wire, and house-wide buys (the shutters) are shared — the
+deepened caps ride along in the snapshot, so a guest who joins later sees them too.
 
 **Pack-a-Punch.** 5000 points, needs the generator on, one upgrade per weapon per run. It more
 than doubles the damage (×2.2), gives +50 % magazine, double the reserve ammo, an extra point of
@@ -220,7 +238,7 @@ src/
   perks.js          perk definitions and derived stat effects
   powerups.js       power-up table, drop roll, floating pickup
   mysterybox.js     the box: spin, teddy bear, relocation, fire sale
-  crafting.js       workbench recipes
+  crafting.js       the workbench: recipe contract, three shipped recipes, four shelved
   achievements.js   achievements, localStorage leaderboard, easter-egg state machine
   art.js            sprite baking, parametric gun builder, procedural level painting
   spriteData.js     ASCII pixel art + palette (pure data)
@@ -246,7 +264,14 @@ tools/
 
 To change the level, edit the room/window/door/object tables at the top of `tools/genmap.py` and
 run `python3 tools/genmap.py` — it validates connectivity (nothing solid spawns inside a wall,
-everything is reachable from the player start) and rewrites `src/mapData.js`.
+everything is reachable from the player start, the roof bench included) and rewrites `src/mapData.js`.
+
+> **Before you run it:** `src/mapData.js` has drifted from the generator. The traps, the
+> hand-placed second-floor lamps, the extra box spots upstairs and a few upper-floor doors
+> were edited into the emitted file directly, so regenerating today drops them and the game
+> loses its flame trap, its electric barrier, its steam vent and half the barracks lighting.
+> Port those tables into `genmap.py` first (the warning at the top of the file lists them),
+> or diff and keep them: `git diff src/mapData.js` right after a run is the check.
 
 ## Roadmap
 
