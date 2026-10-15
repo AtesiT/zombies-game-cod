@@ -279,8 +279,11 @@ export class Player {
     this.swapTotal = 0;
     this.fireTimer = 0;
     this.reloadTimer = 0;
+    this.reloadTotal = 0;     // what this reload started at: dry ones are longer
     this.reloading = false;
     this.reloadStage = 0;
+    this.chillT = 0;          // snowman: legs in slush, 62 % speed
+    this.stunT = 0;           // shocker: hands forget how to work
     this.triggerHeld = false;
     this.recoil = 0;
     this.kickVis = 0;          // visual kick: 1 is a pistol shove, 1.7 a shotgun
@@ -432,7 +435,13 @@ export class Player {
     if (this.reloading || s.mag >= d.mag || s.reserve <= 0) return;
     if (this.dmTimer > 0 || this.swapTimer > 0) return;
     this.reloading = true;
-    this.reloadTimer = d.reload * this.perkFx.reloadMul;
+    // An empty gun is a longer job: the bolt is back, the first round has to
+    // be chambered by hand. It used to be the opposite -- holding the trigger
+    // on an empty mag snapped the reload to 0.12 s, which read as a bug and
+    // played as a free perk. Dry is honestly slower now, and nothing skips it.
+    const dry = s.mag === 0 ? 0.3 : 0;
+    this.reloadTotal = (d.reload + dry) * this.perkFx.reloadMul;
+    this.reloadTimer = this.reloadTotal;
     this.reloadStage = 0;
     audio.reload(0);
   }
@@ -604,6 +613,23 @@ export class Player {
     // --------------------------------------------------------- timers ------
     this.dmTimer = Math.max(0, this.dmTimer - dt);
     this.portalCd = Math.max(0, this.portalCd - dt);
+    this.chillT = Math.max(0, (this.chillT ?? 0) - dt);
+
+    // A Shocker's bolt: for most of a second nothing works -- no legs, no
+    // trigger, no reload, no knife. It is short on purpose: long enough to be
+    // bitten, not long enough to be a free kill.
+    if (this.stunT > 0) {
+      this.stunT -= dt;
+      this.reloading = false;
+      this.reloadTimer = 0;
+      this.vel.x *= 0.8; this.vel.y *= 0.8;
+      this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
+      if (Math.random() < dt * 22) {
+        game.particles.spark(this.pos.x + randRange(-9, 9), this.pos.y - randRange(2, 18),
+          randRange(0, TAU), 1, '#bfe0ff');
+      }
+      return;
+    }
 
     // ---------------------------------------------------------- movement ---
     const mv = game.paused ? { x: 0, y: 0 } : input.moveVector();
@@ -611,7 +637,7 @@ export class Player {
     this.sprinting = moving && !game.paused && !this.downed
       && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
     this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
-      * (this.downed ? 0.34 : 1);
+      * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1);
     const targetVx = mv.x * this.speed;
     const targetVy = mv.y * this.speed;
     const a = (moving ? this.accel : this.accel * 1.6) * dt;
@@ -657,7 +683,8 @@ export class Player {
     // ------------------------------------------------------------ reload ---
     if (this.reloading) {
       this.reloadTimer -= dt;
-      const k = 1 - this.reloadTimer / (d.reload * this.perkFx.reloadMul);
+      const total = this.reloadTotal || d.reload * this.perkFx.reloadMul;
+      const k = 1 - this.reloadTimer / total;
       const stage = k > 0.75 ? 2 : k > 0.35 ? 1 : 0;
       if (stage !== this.reloadStage) { this.reloadStage = stage; audio.reload(stage); }
       if (this.reloadTimer <= 0) this.finishReload();
@@ -677,14 +704,11 @@ export class Player {
         if (this.fireTimer <= 0) this.fire(game);
       } else if (input.mouse.pressed || (isAuto(d) && this.fireTimer <= 0)) {
         if (this.fireTimer <= 0) {
-          audio.dryFire();
+          audio.gunDry();       // louder than the menu tick: this one matters
           this.fireTimer = 0.25;
           if (this.slot.reserve > 0) this.startReload();
         }
       }
-    }
-    if (this.reloading && this.slot.mag <= 0 && input.mouse.pressed && !atBench) {
-      this.reloadTimer = Math.min(this.reloadTimer, 0.12);
     }
 
     // -------------------------------------------------------------- knife --
@@ -743,6 +767,8 @@ export class Player {
 
     const lastRound = this.dmTimer <= 0 && s.mag === 1;   // this shot empties it
     if (this.dmTimer <= 0) s.mag--;
+    // the click you hear even in the meat: the gun telling you it is now empty
+    if (lastRound) audio.lastClick();
     this.fireTimer = d.delay * this.perkFx.fireDelayMul * (this.dmTimer > 0 ? 0.62 : 1);
     this.recoil = d.recoil;
     // A shot you cannot feel is a shot that did not happen: the bigger the
@@ -977,6 +1003,73 @@ export const ENEMY_TYPES = {
     id: 'jammer', name: 'Jammer', hp: 1.15, speed: 0.95, dmg: 0.9, r: 6.8,
     scale: 1.04, chew: 1.1, points: 3.0, set: 'jammer', headOff: 1, jams: true,
   },
+  // ---- the haunt round: seven new bodies and what they leave behind -------
+  bearer: {
+    // Keeps its distance like the Bonewright and, once per life, kneels and
+    // stands a totem up. While that totem hums the whole house goes to dusk
+    // and the horde gets bolder. Shoot the totem -- it has 140 hp of its own
+    // and 50 seconds of life even if nobody does.
+    id: 'bearer', name: 'Totem Bearer', hp: 1.05, speed: 0.88, dmg: 0.9, r: 6.8,
+    scale: 1.06, chew: 0.9, points: 3.2, set: 'bearer', headOff: 1,
+    places: 'totem', standoff: 300,
+  },
+  mourner: {
+    // Digs one grave and keens over it. The grave rings a bell every few
+    // seconds and lets half-seen wraiths out to walk; kill the grave or wait
+    // it out (45 s) and whatever walked out fades with it.
+    id: 'mourner', name: 'Mourner', hp: 1.0, speed: 0.8, dmg: 0.8, r: 6.8,
+    scale: 1.04, chew: 0.8, points: 3.0, set: 'mourner', headOff: 1,
+    places: 'grave', standoff: 280,
+  },
+  wraith: {
+    // never rolled: the grave lets these out. Half-seen, quick, a sabre of
+    // cold iron, and cheap to put down -- but they do not count towards the
+    // round, and they keep coming while the headstone stands.
+    id: 'wraith', name: 'Wraith', hp: 0.3, speed: 1.55, dmg: 1.15, r: 6.0,
+    scale: 1.02, chew: 0.5, points: 0.7, set: 'wraith', headOff: 1,
+    summoned: true, ghostly: true, flatHp: 46, sprinty: true,
+  },
+  snowman: {
+    // Lobs snowballs from a distance and is not good at it -- the scatter is
+    // enormous. But one that lands on you leaves your legs in a bucket of
+    // slush for three seconds, and three seconds is a long time in a doorway.
+    id: 'snowman', name: 'Snowman', hp: 1.3, speed: 0.7, dmg: 0.8, r: 7.6,
+    scale: 1.14, chew: 1.2, points: 2.6, set: 'snowman', headOff: 1.1,
+    throws: 'snow', standoff: 260,
+  },
+  arsonist: {
+    // Fire bottles, thrown at where you are standing. The bottle breaks and
+    // the floor burns -- the same burn as a Napalm's death, but delivered to
+    // your favourite camping spot on purpose.
+    id: 'arsonist', name: 'Arsonist', hp: 0.95, speed: 0.95, dmg: 0.9, r: 6.6,
+    scale: 1.04, chew: 0.9, points: 2.8, set: 'arsonist', headOff: 1,
+    throws: 'bottle', standoff: 240,
+  },
+  witch: {
+    // The same arm, the other bottle: a stink potion that bursts into a
+    // Gasbag's cloud and holds the hallway for six and a half seconds.
+    id: 'witch', name: 'Witch', hp: 0.9, speed: 1.0, dmg: 0.7, r: 6.4,
+    scale: 1.0, chew: 0.7, points: 2.9, set: 'witch', headOff: 1,
+    throws: 'potion', standoff: 250,
+  },
+  shocker: {
+    // Carries the storm on a rod. It stands off, gathers for three quarters
+    // of a second -- you can see the light climbing the wire -- and then puts
+    // a bolt into you: little damage, but your hands forget how to work for
+    // most of a second. Walls do stop the bolt. So does shooting it mid-gather.
+    id: 'shocker', name: 'Shocker', hp: 1.05, speed: 0.98, dmg: 0.8, r: 6.6,
+    scale: 1.04, chew: 0.9, points: 3.1, set: 'shocker', headOff: 1,
+    zaps: true, standoff: 380,
+  },
+  knight: {
+    // A slab of a thing in plate: slower than a Brute, tankier than one too.
+    // Body shots ring off the steel for half damage -- the head is the only
+    // honest way in, five full-damage headshots at round twenty, or a great
+    // many more of anything else.
+    id: 'knight', name: 'Knight', hp: 3.6, speed: 0.52, dmg: 1.9, r: 10,
+    scale: 1.42, chew: 3.2, points: 3.6, set: 'knight', headOff: 1.2,
+    plate: true,
+  },
 };
 
 export class Zombie {
@@ -1051,6 +1144,17 @@ export class Zombie {
     this.summonedBy = opts.summonedBy ?? null;            // skeleton: whose work you are
     this.summoned = !!opts.summoned || !!d.summoned;      // made during the round, not of it
     this.jamCd = 0;
+    // ---- the haunt round ---------------------------------------------------
+    this.placeT = d.places ? randRange(5, 11) : 0;        // bearer/mourner: until it kneels
+    this.placed = false;                                  // ...once per life, and only once
+    this.channelT = 0;                                    // the kneeling itself
+    this.throwCd = d.throws ? randRange(2, 4.5) : 0;      // snowman/arsonist/witch
+    this.throwAnim = 0;                                   // the arm swing you can see coming
+    this.zapCd = d.zaps ? randRange(4, 7) : 0;            // shocker
+    this.zapping = 0;                                     // gathering: the bolt is coming
+    this.dyingT = 0;                                      // wraith: its grave died, fade out
+    this.graveUid = opts.graveUid ?? 0;                   // wraith: whose bell rang it out
+    this._clangCd = 0;                                    // knight: how often the steel may ring
     if (this.hidden) this.state = ZSTATE.HIDDEN;   // a mimic starts out on the floor
   }
 
@@ -1063,6 +1167,16 @@ export class Zombie {
     if (this.state === ZSTATE.BURIED) {
       game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 2);
       return 0;
+    }
+    // A knight is a wall of plate from the neck down: body shots ring and do
+    // half. The head is the only honest way in.
+    if (this.def.plate && !head) {
+      amount *= 0.5;
+      if ((this._clangCd ?? 0) <= 0) {
+        this._clangCd = 0.22;
+        audio.clang();
+        game.particles.spark(this.pos.x, this.pos.y - 9, dirAngle ?? 0, 5, '#cfe0ee');
+      }
     }
     // A Stahlhelm eats headshots first: three of them and it is gone. Until
     // then the shot still lands, it just lands on steel.
@@ -1234,9 +1348,10 @@ export class Zombie {
       if (this.state === ZSTATE.BURIED) {
         this.vel.x = 0; this.vel.y = 0;
         this.stuck = 0;
-        // near enough to feel your steps -- or the round is nearly over and
-        // the last of the horde is not allowed to sulk underground
-        if (pd < 58 || game.lastCall) {
+        // near enough to feel your steps -- or the round is thinning out:
+        // once half the horde is gone nobody is allowed to sulk underground,
+        // and the last few are not allowed to stall the round either
+        if (pd < 58 || game.lastCall || game.hordeThin) {
           this.state = ZSTATE.EMERGE;
           this.emergeT = 0.5;
           game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 10);
@@ -1407,6 +1522,77 @@ export class Zombie {
       if (sameFloor && pd < JAM_RADIUS && this.state !== ZSTATE.CLIMB) game.jam?.(10, this);
     }
 
+    // ------------------------------------------- the haunt round: seven of them
+    // A wraith whose grave is gone loses its shape and stops being a problem.
+    if (this.dyingT > 0) {
+      this.dyingT -= dt;
+      this.vel.x *= 0.86; this.vel.y *= 0.86;
+      if (Math.random() < dt * 5) game.particles.spark(this.pos.x, this.pos.y - 8, randRange(0, TAU), 1, '#cfe0ee');
+      if (this.dyingT <= 0) { this.hp = 0; this.die(game, randRange(0, TAU)); }
+      return;
+    }
+    this._clangCd = Math.max(0, (this._clangCd ?? 0) - dt);
+
+    // Bearer / Mourner: keeps its distance (the standoff vantage code above),
+    // and once in its life it stops, kneels for a second and a half, and
+    // leaves something behind that has to be shot.
+    if (this.def.places && !this.placed) {
+      if (this.channelT > 0) {
+        this.channelT -= dt;
+        this.vel.x = 0; this.vel.y = 0;
+        if (Math.random() < dt * 10) {
+          game.particles.spark(this.pos.x + randRange(-9, 9), this.pos.y - 2,
+            -Math.PI / 2, 1, this.def.places === 'totem' ? '#b07ae0' : '#8a8371');
+        }
+        if (this.channelT <= 0) {
+          // placeHaunt says false when the house already has one of these:
+          // the bundle goes back on its shoulder and it tries again later
+          this.placed = game.placeHaunt(this) !== false;
+          if (!this.placed) this.placeT = randRange(8, 14);
+        }
+        return;
+      }
+      this.placeT -= dt;
+      if (this.placeT <= 0 && sameFloor && pd > 150 && pd < 480 && this.state === ZSTATE.HUNT) {
+        this.channelT = 1.5;
+        audio.growl(0.58, this._muffled(game) ? 0.3 : 0.9);
+        game.popups?.add?.(this.pos.x, this.pos.y - 36,
+          this.def.places === 'totem' ? 'IT KNEELS' : 'IT DIGS', '#b07ae0', 11);
+        return;
+      }
+    }
+
+    // Snowman / Arsonist / Witch: the arm comes back, then something flies.
+    if (this.def.throws) {
+      this.throwAnim = Math.max(0, this.throwAnim - dt);
+      this.throwCd -= dt;
+      if (this.throwCd <= 0 && sameFloor && pd > 70 && pd < 520 && this.state !== ZSTATE.CLIMB) {
+        const snow = this.def.throws === 'snow';
+        this.throwCd = randRange(snow ? 2.8 : 3.6, snow ? 5 : 6.4);
+        this.throwAnim = 0.4;
+        game.throwZombieProjectile(this, p, this.def.throws);
+      }
+    }
+
+    // Shocker: it stops dead, the light climbs the rod for three quarters of
+    // a second -- that is your window to shoot it -- and then the bolt goes.
+    if (this.def.zaps) {
+      if (this.zapping > 0) {
+        this.zapping -= dt;
+        this.vel.x = 0; this.vel.y = 0;
+        if (this.zapping <= 0) {
+          this.zapCd = randRange(9, 14);
+          if (sameFloor && pd < 470) game.zapPlayer(this, p);
+        }
+        return;
+      }
+      this.zapCd -= dt;
+      if (this.zapCd <= 0 && sameFloor && pd > 90 && pd < 430 && this.state !== ZSTATE.CLIMB) {
+        this.zapping = 0.75;
+        audio.zapCharge?.(this._muffled(game) ? 0.3 : 0.8);
+      }
+    }
+
     // ------------------------------------------------- attack the player ---
     if (pd < 20 && !p.dead) {
       this.state = ZSTATE.ATTACK;
@@ -1530,6 +1716,9 @@ export class Zombie {
     }
     if (this.webbed > 0) speed *= 0.45;
     if (this.rally > 0) { speed *= 1.35; this.dmgMul = 1.25; } else this.dmgMul = 1;
+    // while a totem hums, the whole horde's hair stands up: faster, bolder,
+    // and the windows come apart a third quicker
+    if (game.totemPower) { speed *= 1.18; this.dmgMul *= 1.15; }
 
     // --------------------------------------------------- stairwell portal --
     if (step && step.portal >= 0 && this.portalCd <= 0) {
@@ -1691,7 +1880,7 @@ export class Zombie {
   }
 
   _chew(dt, game, b) {
-    b.hurt += dt * this.chewMul;
+    b.hurt += dt * this.chewMul * (game.totemPower ? 1.3 : 1);
     const perPlank = 0.55;
     if (b.hurt >= perPlank) {
       b.hurt -= perPlank;
@@ -1741,7 +1930,9 @@ export class Zombie {
     }
     if (s === 'helmet' || s === 'napalm' || s === 'gasbag'
       || s === 'miner' || s === 'medic' || s === 'fusion'
-      || s === 'bonewright' || s === 'skeleton' || s === 'jammer' || s === 'swarmlet') {
+      || s === 'bonewright' || s === 'skeleton' || s === 'jammer' || s === 'swarmlet'
+      || s === 'bearer' || s === 'mourner' || s === 'wraith' || s === 'snowman'
+      || s === 'arsonist' || s === 'witch' || s === 'shocker' || s === 'knight') {
       const set = attacking
         ? (flip ? art[`${s}AtkFlip`] : art[`${s}Atk`])
         : (flip ? art[`${s}Flip`] : art[s]);
@@ -1926,6 +2117,22 @@ export class Zombie {
   }
 
   draw(ctx, art, t = 0) {
+    // A wraith is a rumour of a body: everything it draws goes through one
+    // alpha, and as its grave's death fades it, the rumour fades with it.
+    if (this.def.ghostly) {
+      const a = this.dyingT > 0
+        ? Math.min(0.42, (this.dyingT / 2.6) * 0.42)
+        : 0.34 + Math.sin(t * 2.4 + this.id) * 0.08;
+      ctx.save();
+      ctx.globalAlpha = a;
+      this._drawBody(ctx, art, t);
+      ctx.restore();
+      return;
+    }
+    this._drawBody(ctx, art, t);
+  }
+
+  _drawBody(ctx, art, t = 0) {
     const px = Math.round(this.pos.x);
     const py = Math.round(this.pos.y);
     const flip = this.facing < 0;
@@ -2099,6 +2306,134 @@ export class Zombie {
       ctx.restore();
     }
 
+    // ---- the haunt round: what each of them carries ------------------------
+    if (this.def.places && !this.placed) {
+      // the bundle on its back: a totem wrapped in rope, or a spade
+      ctx.save();
+      const bx = px + (flip ? 5 : -5), by = py - 16 * sc;
+      ctx.translate(bx, by);
+      ctx.rotate(flip ? 0.5 : -0.5);
+      ctx.fillStyle = '#4a3a28';
+      ctx.fillRect(-1.2, -11, 2.4, 15);
+      if (this.def.places === 'totem') {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55 + Math.sin(t * 3 + this.id) * 0.25;
+        ctx.fillStyle = '#b07ae0';
+        ctx.beginPath(); ctx.arc(0, -12, 3.1, 0, TAU); ctx.fill();
+      } else {
+        ctx.fillStyle = '#8a8f98';
+        ctx.fillRect(-3.4, -13, 6.8, 3.4);
+      }
+      ctx.restore();
+    }
+    if (this.channelT > 0) {
+      // kneeling: a ring of intent on the floor, colour of what is coming
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.4 + Math.sin(t * 9) * 0.2;
+      ctx.strokeStyle = this.def.places === 'totem' ? '#b07ae0' : '#9fb4c8';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.ellipse(px, py + 2, 13, 6, 0, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+    if (this.def.throws) {
+      const snow = this.def.throws === 'snow';
+      const ready = snow ? this.throwCd < 1.2 : this.throwCd < 1.0;
+      const hx = px + (flip ? -7 : 7), hy = py - 11 * sc;
+      if (ready || this.throwAnim > 0) {
+        ctx.save();
+        if (snow) {
+          ctx.fillStyle = '#f2f8fc';
+          ctx.beginPath(); ctx.arc(hx, hy - (this.throwAnim > 0 ? 3 : 0), 2.6, 0, TAU); ctx.fill();
+        } else {
+          ctx.fillStyle = this.def.throws === 'bottle' ? '#5a3a20' : '#2e4a2a';
+          ctx.fillRect(hx - 1.2, hy - 3.4, 2.4, 5.4);
+          ctx.fillStyle = this.def.throws === 'bottle' ? '#d0703a' : '#7ac050';
+          ctx.fillRect(hx - 1.2, hy - 1.4, 2.4, 2.4);
+          if (this.def.throws === 'bottle') {
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = '#f0a040';
+            ctx.globalAlpha = 0.7 + Math.sin(t * 24) * 0.3;
+            ctx.beginPath(); ctx.arc(hx, hy - 4.6, 1.8, 0, TAU); ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+      if (snow) {
+        // it is cold standing next to it: a faint rime on the floor
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.10 + Math.sin(t * 2 + this.id) * 0.04;
+        ctx.fillStyle = '#9fd0f0';
+        ctx.beginPath(); ctx.ellipse(px, py + 2, 12, 5, 0, 0, TAU); ctx.fill();
+        ctx.restore();
+      }
+    }
+    if (this.def.zaps) {
+      const hx = px + (flip ? -6 : 6), hy = py - 13 * sc;
+      // the rod: always there, and during the gather the light climbs it
+      ctx.save();
+      ctx.strokeStyle = '#6a7a88';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(hx, hy + 9); ctx.lineTo(hx, hy - 8); ctx.stroke();
+      if (this.zapping > 0) {
+        const k = 1 - this.zapping / 0.75;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = '#bfe0ff';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 3; i++) {
+          const a = t * 22 + i * 2.1;
+          ctx.globalAlpha = 0.45 + k * 0.45;
+          ctx.beginPath();
+          ctx.moveTo(hx, hy - 8);
+          ctx.lineTo(hx + Math.cos(a) * (3 + k * 5), hy - 8 + Math.sin(a) * (3 + k * 5));
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 0.35 + k * 0.5;
+        ctx.fillStyle = '#dff0ff';
+        ctx.beginPath(); ctx.arc(hx, hy - 9, 1.6 + k * 2.4, 0, TAU); ctx.fill();
+      } else {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.25 + Math.sin(t * 5 + this.id) * 0.12;
+        ctx.fillStyle = '#9fd0ff';
+        ctx.beginPath(); ctx.arc(hx, hy - 9, 1.6, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+    if (this.def.plate) {
+      // the breastplate: a slab of old steel with a dint for every fight
+      ctx.save();
+      const cy2 = py - 9 * sc;
+      ctx.fillStyle = '#5d6a72';
+      ctx.beginPath(); ctx.ellipse(px, cy2, 6.4 * sc, 8 * sc, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#78868f';
+      ctx.beginPath(); ctx.ellipse(px + (flip ? -1.4 : 1.4), cy2 - 1, 4.6 * sc, 6 * sc, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#aebcc6';
+      ctx.fillRect(px + (flip ? -4 : 1), cy2 - 5 * sc, 3, 1.4);
+      // pauldrons
+      ctx.fillStyle = '#4d5a62';
+      ctx.beginPath(); ctx.ellipse(px - 6.4 * sc, cy2 - 5, 2.8, 2.2, 0, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(px + 6.4 * sc, cy2 - 5, 2.8, 2.2, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+    if (this.type === 'wraith') {
+      // the sabre: a line of cold light in the hand, and a wisp trailing
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const hx = px + (flip ? -8 : 8), hy = py - 10;
+      ctx.strokeStyle = '#dff0ff';
+      ctx.lineWidth = 1.6;
+      ctx.globalAlpha = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(hx, hy + 4);
+      ctx.quadraticCurveTo(hx + (flip ? -5 : 5), hy - 4, hx + (flip ? -3 : 3), hy - 11);
+      ctx.stroke();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = '#cfe0ee';
+      ctx.beginPath(); ctx.ellipse(px - (flip ? -1 : -1) * 4, py + 1, 7, 3, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+
     if (this.helmet > 0) {
       const hy = py - HEAD_OFF_Y * (this.def.headOff ?? 1) - 1;
       ctx.save();
@@ -2263,6 +2598,7 @@ export class Grenade {
     const { x, y } = this.pos;
     const R = 96;
     game.explosion(x, y, R);
+    game.hurtHaunts?.(x, y, R, 300, this.floor ?? 0);
     let killed = 0;
     for (const z of game.zombies) {
       if (z.dead || (z.floor ?? 0) !== (this.floor ?? 0)) continue;

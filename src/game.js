@@ -8,6 +8,7 @@ import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, p
 import { PERKS } from './perks.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
+import { Totem, Grave, ZThrow } from './haunts.js';
 import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
@@ -136,19 +137,75 @@ let settingsHooked = false;
 // --- the loudspeaker -------------------------------------------------------
 // Somebody else is in this building, and from round ten they say so. Short,
 // dry, and always about what just happened rather than about the plot.
-const VOICE_LINES = {
+export const VOICE_LINES = {
   round: [
     'You are still here. They have noticed.',
     'They learn where you stand. Stop standing there.',
     'The generator will not hold forever.',
     'Something on the roof is walking about.',
     'Do not let them pile up in a doorway.',
+    'Between us: I stopped counting the rounds. You should too.',
+    'The east wall is thinner than it looks. So is the west. That is the joke.',
   ],
   medic: ['That one was putting them back together.', 'Leave it dead this time.'],
   amalgam: ['Three of them went in. One came out. That is worse.'],
   breach: ['They are inside. That window is gone.'],
-  hurt: ['Get up. Get up.'],
+  hurt: ['Get up. Get up.', 'Breathe. You have done this eleven times already.',
+    'That was closer than the last one. Do not make it a habit.'],
+  // ---- the haunt round: what he says when the house changes shape ----------
+  door: [
+    'I would not open that door.',
+    'Every door you buy, they can use too. Sit with that.',
+    'That one leads nowhere good. Nowhere with fewer of them, I mean.',
+  ],
+  totem: [
+    'That thing is drinking the light. Put it down.',
+    'Do not let it hum. Shoot the humming.',
+    'It is darker because of that stick. That is not weather.',
+  ],
+  totemdown: ['Better. The house exhales.', 'Light comes back. So do they, eventually.'],
+  grave: [
+    'Somebody is being buried out there. That is not a funeral, it is a door.',
+    'Bells. I hate the bells. Shoot the headstone.',
+    'What walks out of that grave is not counted. Shoot the grave.',
+  ],
+  gravedown: ['The bells stop. Walkers fade. Someone had a proper funeral once, probably not that one.'],
+  storm: [
+    'Sky is going green. That is not rain, that is a mood.',
+    'Storm covers the sound of them digging. Stay sharp.',
+  ],
+  fog: [
+    'Fog. Do not shoot what you cannot see. Do not let it touch you, either.',
+    'The house is breathing out. Walk inside the breath, not outside it.',
+  ],
+  witch: ['That one throws bottles. Do not breathe what comes out.', 'Green glass. It was green glass.'],
+  snowman: ['Is that thing making snowballs?', 'It is cold all of a sudden, and it is not the weather.'],
+  arsonist: ['Fire in a bottle. Somebody taught them that. Run.', 'The floor remembers every bottle. So will your boots.'],
+  knight: ['Big one. Armour. Aim for the head like it owes you money.', 'That is not a zombie, that is a monument. Chip the monument.'],
+  shocker: ['Something out there is carrying lightning. Keep moving or keep smoking.', 'Blue one on a rod. Shoot it while it winds up.'],
+  bearer: ['Purple one with a bundle. It is going to plant something. Do not let it.', 'That one kneels. When it kneels, the house changes. Interrupt the kneeling.'],
+  mourner: ['Grey one with a spade. It digs, and then the bells start.', 'Do not let it finish the hole. Nobody should be buried here tonight.'],
 };
+
+// The droplets on the glass after a storm: one baked sheet per frame size,
+// blitted while the screen dries. Baked because ninety little arcs a frame is
+// ninety little arcs too many.
+let WET_SHEET = null;
+function wetSheet(w, h) {
+  if (WET_SHEET && WET_SHEET.w === w && WET_SHEET.h === h) return WET_SHEET.canvas;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, w); c.height = Math.max(1, h);
+  const x = c.getContext('2d');
+  for (let i = 0; i < 90; i++) {
+    const dx = Math.random() * w, dy = Math.random() * h, r = 1 + Math.random() * 2.4;
+    x.fillStyle = 'rgba(210,228,244,0.5)';
+    x.beginPath(); x.arc(dx, dy, r, 0, Math.PI * 2); x.fill();
+    x.fillStyle = 'rgba(120,140,160,0.35)';
+    x.beginPath(); x.arc(dx + r * 0.3, dy + r * 0.35, r * 0.6, 0, Math.PI * 2); x.fill();
+  }
+  WET_SHEET = { w, h, canvas: c };
+  return c;
+}
 
 const DECAL_SCALE = 0.5;
 const DECAL_MAX = 260;
@@ -221,6 +278,16 @@ export class Game {
     this.arcs = [];
     this.shriekRings = [];
     this.fires = [];
+    // ---- the haunt round: what the new creatures leave behind and throw ----
+    this.totems = [];       // dusk on a stick: shoot it or the house stays bold
+    this.graves = [];       // bells, and the wraiths that answer them
+    this.zThrows = [];      // snowballs, fire bottles, stink potions in flight
+    this.bolts = [];        // the Shocker's lightning, purely to look at
+    this._hauntId = 0;
+    this.hordeThin = false; // half the round is gone: nobody hides any more
+    // ---- weather: a roll of the sky, once per round ------------------------
+    this.wx = { kind: null, t: 0, flash: 0, strikeT: 4, thunderAt: -1, wet: 0, drops: [] };
+    this._storySaid = {};   // the survivors outside say each thing only once
     this.rifts = [];      // Rift Splitter floor hazards
     this.gases = [];
     this.inFire = 0;
@@ -585,28 +652,31 @@ export class Game {
     if (this.dogRound) return 'dog';
     const r = this.round;
     // The plain walker has to stay the majority all the way to the cap --
-    // specials are seasoning, not the meal. Everything together tops out at
-    // about 70 %, and each type arrives on its own round so the escalation
-    // is something you can feel happening.
-    // Room was made for the item-B types by trimming the others. Everything
-    // together tops out at about 60 %, so the plain walker stays the single
-    // biggest group at every round, and each type arrives on its own round
-    // so the escalation is something you can feel happening.
-    const runnerChance = Math.min(0.17, Math.max(0, (r - 5) * 0.021));
-    const bruteChance = Math.min(0.09, Math.max(0, (r - 9) * 0.012));
-    const shriekChance = Math.min(0.045, Math.max(0, (r - 11) * 0.008));
-    const helmetChance = Math.min(0.065, Math.max(0, (r - 11) * 0.011));
-    const gasChance = Math.min(0.035, Math.max(0, (r - 13) * 0.007));
-    const napalmChance = Math.min(0.04, Math.max(0, (r - 14) * 0.008));
-    const minerChance = Math.min(0.065, Math.max(0, (r - 11) * 0.010));
-    const medicChance = Math.min(0.05, Math.max(0, (r - 12) * 0.009));
-    const mimicChance = Math.min(0.04, Math.max(0, (r - 14) * 0.007));
-    // the first three of the creature shortlist. The Bonewright is rare and
-    // early -- one of it changes a round from a shooting gallery into a job --
-    // while the swarm and the jammer belong to the late game.
-    const boneChance = Math.min(0.05, Math.max(0, (r - 5) * 0.006));
-    const swarmChance = Math.min(0.07, Math.max(0, (r - 17) * 0.010));
-    const jammerChance = Math.min(0.05, Math.max(0, (r - 24) * 0.008));
+    // specials are seasoning, not the meal. The haunt round made room for
+    // itself by shaving every older cap a little: everything together still
+    // tops out near four walkers in five... no -- near one special in five at
+    // mid rounds, and the walker stays the single biggest group at every one.
+    const runnerChance = Math.min(0.135, Math.max(0, (r - 5) * 0.020));
+    const bruteChance = Math.min(0.070, Math.max(0, (r - 9) * 0.011));
+    const shriekChance = Math.min(0.039, Math.max(0, (r - 11) * 0.007));
+    const helmetChance = Math.min(0.050, Math.max(0, (r - 11) * 0.010));
+    const gasChance = Math.min(0.030, Math.max(0, (r - 13) * 0.006));
+    const napalmChance = Math.min(0.034, Math.max(0, (r - 14) * 0.007));
+    const minerChance = Math.min(0.050, Math.max(0, (r - 11) * 0.009));
+    const medicChance = Math.min(0.043, Math.max(0, (r - 12) * 0.008));
+    const mimicChance = Math.min(0.034, Math.max(0, (r - 14) * 0.006));
+    const boneChance = Math.min(0.043, Math.max(0, (r - 5) * 0.006));
+    const swarmChance = Math.min(0.055, Math.max(0, (r - 17) * 0.009));
+    const jammerChance = Math.min(0.043, Math.max(0, (r - 24) * 0.007));
+    // ---- the haunt round: each arrives on its own round, all of them rare --
+    // the snowman likes a storm and comes twice as often in one
+    const snowChance = Math.min(0.022, Math.max(0, (r - 11) * 0.004)) * (this.wx?.kind === 'storm' ? 2 : 1);
+    const arsonChance = Math.min(0.017, Math.max(0, (r - 12) * 0.004));
+    const witchChance = Math.min(0.015, Math.max(0, (r - 13) * 0.004));
+    const bearerChance = Math.min(0.011, Math.max(0, (r - 14) * 0.003));
+    const mournerChance = Math.min(0.011, Math.max(0, (r - 15) * 0.003));
+    const shockChance = Math.min(0.015, Math.max(0, (r - 17) * 0.0035));
+    const knightChance = Math.min(0.013, Math.max(0, (r - 19) * 0.0035));
     const x = Math.random();
     let acc = 0;
     for (const [type, chance] of [
@@ -614,6 +684,9 @@ export class Game {
       ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
       ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
       ['bonewright', boneChance], ['swarmling', swarmChance], ['jammer', jammerChance],
+      ['snowman', snowChance], ['arsonist', arsonChance], ['witch', witchChance],
+      ['bearer', bearerChance], ['mourner', mournerChance], ['shocker', shockChance],
+      ['knight', knightChance],
     ]) {
       acc += chance;
       if (x < acc) return type;
@@ -634,6 +707,9 @@ export class Game {
       type,
     });
     z.floor = floor;
+    // the loudspeaker notices the new arrivals once each (round ten onwards,
+    // its own cooldown -- sometimes the house just does not comment)
+    if (!forceType && VOICE_LINES[type]) this.say(type);
     return z;
   }
 
@@ -669,6 +745,7 @@ export class Game {
     this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
     this.zombiesSpawned = 0;
     this.zombiesKilled = 0;
+    this.hordeThin = false;
     this.roundDamageTaken = 0;
     if (n >= 10) this.say('round');
     this.roundActive = true;
@@ -683,6 +760,9 @@ export class Game {
       this.bannerShow(`ROUND ${n}`, n === 1 ? 'they are coming' : null, { dur: 2.4, big: true });
       audio.roundSting(true);
     }
+    this.rollWeather(n);
+    // the survivors outside: the loudspeaker stops being a stranger
+    if (n === 25 || n === 30 || n === 35) this.sayStory(n);
     if (n >= 10) this.achievements.unlock('round_10');
     if (n >= 20) this.achievements.unlock('round_20');
     if (n >= 30) this.achievements.unlock('round_30');
@@ -694,6 +774,7 @@ export class Game {
     this.roundActive = false;
     this.intermission = 6;
     this.respawnQueue = 0;
+    this.setWeatherKind(null);   // the sky clears while you catch your breath
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
     this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
     audio.roundSting(false);
@@ -701,6 +782,12 @@ export class Game {
 
   get zombiesLeft() {
     return Math.max(0, this.zombiesTotal - this.zombiesKilled);
+  }
+
+  /** Is a totem humming anywhere in the house? The horde can feel it. */
+  get totemPower() {
+    for (const t of this.totems) if (!t.dead) return 1;
+    return 0;
   }
 
   /**
@@ -789,11 +876,14 @@ export class Game {
       const fighting = alive > 0 && this.roundActive;
       audio.setMusic({
         // the drone ducks out of the way while the fight layer comes up
-        calm: fighting ? 0.4 : 0.7,
+        calm: fighting ? 0.4 : 0.45,
         combat: fighting ? this._combatLevel() : 0,
         // `tension` is the last-couple-of-zombies breath, not the fight; the
         // high scrape belongs to it and nothing else
         last: this.tension ?? 0,
+        // the piano and the violin own the quiet: full between rounds, and a
+        // thin thread under a storm so the weather has a soundtrack too
+        elegy: fighting ? (this.wx?.kind === 'storm' ? 0.18 : 0) : 0.55,
       });
     }
 
@@ -1020,6 +1110,195 @@ export class Game {
     this.particles.smoke(x, y, 16);
   }
 
+  // ------------------------------------------------------- the haunt round --
+  /**
+   * Timers and flight paths only. Called from the host's update *and* from
+   * _guestUpdate: everything inside is safe to run twice over the wire, and
+   * anything with consequences checks isAuth() on its own.
+   */
+  _stepHaunts(dt) {
+    for (let i = this.totems.length - 1; i >= 0; i--) {
+      this.totems[i].update(dt, this);
+      if (this.totems[i].dead) this.totems.splice(i, 1);
+    }
+    for (let i = this.graves.length - 1; i >= 0; i--) {
+      this.graves[i].update(dt, this);
+      if (this.graves[i].dead) this.graves.splice(i, 1);
+    }
+    for (let i = this.zThrows.length - 1; i >= 0; i--) {
+      this.zThrows[i].update(dt, this);
+      if (this.zThrows[i].dead) this.zThrows.splice(i, 1);
+    }
+    for (let i = this.bolts.length - 1; i >= 0; i--) {
+      this.bolts[i].life -= dt;
+      if (this.bolts[i].life <= 0) this.bolts.splice(i, 1);
+    }
+    this._updateWeather(dt);
+  }
+
+  /** A Bearer or a Mourner kneels and leaves something behind. False = house full. */
+  placeHaunt(z) {
+    const floor = z.floor ?? this.map.floor;
+    if (z.def.places === 'totem') {
+      if (this.totems.some((t) => !t.dead)) return false;   // one dusk at a time
+      const tt = new Totem(z.pos.x, z.pos.y, floor, ++this._hauntId);
+      this.totems.push(tt);
+      audio.totemRaise();
+      this.shake(2.2, 0.3);
+      this.explosionLights.push({ x: tt.x, y: tt.y - 10, r: 170, life: 0.6, max: 0.6, colour: '#8a4ad0', f: floor });
+      this.bannerShow('A TOTEM RISES', 'the dusk is theirs now -- shoot it', { dur: 3, colour: '#b07ae0' });
+      this.say('totem');
+      return true;
+    }
+    if (this.graves.filter((g) => !g.dead).length >= 2) return false;
+    const gv = new Grave(z.pos.x, z.pos.y, floor, ++this._hauntId);
+    this.graves.push(gv);
+    audio.graveDug();
+    this.bannerShow('A GRAVE IS DUG', 'the bells and the walkers belong to it', { dur: 3, colour: '#9fb4c8' });
+    this.say('grave');
+    return true;
+  }
+
+  /** Snowman / Arsonist / Witch: the arm comes back and something flies. */
+  throwZombieProjectile(z, target, kind) {
+    const p = target ?? this.player;
+    if (!p) return;
+    const scatter = kind === 'snow' ? 96 : kind === 'bottle' ? 44 : 50;
+    const a = randRange(0, TAU), r = Math.sqrt(Math.random()) * scatter;
+    const tx = p.pos.x + Math.cos(a) * r, ty = p.pos.y + Math.sin(a) * r;
+    this.zThrows.push(new ZThrow(z.pos.x, z.pos.y - 10, tx, ty, kind, z.floor ?? this.map.floor));
+    audio.growl(kind === 'snow' ? 1.3 : 0.95, (z.floor ?? 0) === this.map.floor ? 0.8 : 0.3);
+  }
+
+  /** The Shocker's bolt. Walls eat it; you do not. */
+  zapPlayer(z, p) {
+    if (!p) return;
+    const tx = p.pos.x, ty = p.pos.y - 6;
+    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty);
+    const ex = wall ? wall.x : tx, ey = wall ? wall.y : ty;
+    const floor = z.floor ?? this.map.floor;
+    this.bolts.push({
+      x0: z.pos.x, y0: z.pos.y - 14, x1: ex, y1: ey,
+      life: 0.22, max: 0.22, f: floor, seed: Math.random() * 100,
+    });
+    audio.zap(wall ? 0.6 : 1);
+    this.particles.spark(ex, ey, randRange(0, TAU), 12, '#bfe0ff');
+    this.explosionLights.push({ x: ex, y: ey, r: 150, life: 0.18, max: 0.18, colour: '#9fd0ff', f: floor });
+    if (!wall && !p.dead) {
+      this.shake(3, 0.25);
+      if (p.hurt(12, z.pos.x, z.pos.y, this)) {
+        p.stunT = Math.max(p.stunT ?? 0, 0.75);
+        this.popups.add(p.pos.x, p.pos.y - 40, 'SHOCKED', '#bfe0ff', 12);
+      }
+    }
+  }
+
+  /** The grave lets one out: half-seen, quick, and not part of the round's tally. */
+  spawnWraith(x, y, floor, uid) {
+    const a = randRange(0, TAU), r = randRange(26, 52);
+    const z = this.makeZombie({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r, floor }, 'wraith');
+    z.graveUid = uid;
+    z.summoned = true;
+    this.zombies.push(z);
+    this.particles.smoke(z.pos.x, z.pos.y, 8);
+    audio.whimper();
+  }
+
+  /** Grenades, monkey bombs and traps are allowed to break the furniture too. */
+  hurtHaunts(x, y, R, dmg, floor) {
+    for (const tt of this.totems) {
+      if (tt.dead || (tt.f ?? 0) !== floor) continue;
+      const d = dist(x, y, tt.x, tt.y);
+      if (d < R) tt.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const gv of this.graves) {
+      if (gv.dead || (gv.f ?? 0) !== floor) continue;
+      const d = dist(x, y, gv.x, gv.y);
+      if (d < R) gv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+  }
+
+  // ---------------------------------------------------------------- weather --
+  /** Once per round the sky is rolled: storm, fog, or business as usual. */
+  rollWeather(n) {
+    if (this.rangeMode || !settings.get('weather') || n < 3) { this.setWeatherKind(null); return; }
+    const stormP = Math.min(0.26, 0.14 + n * 0.003);
+    const r = Math.random();
+    if (r < stormP) this.setWeatherKind('storm');
+    else if (r < stormP + 0.13) this.setWeatherKind('fog');
+    else this.setWeatherKind(null);
+  }
+
+  setWeatherKind(kind) {
+    const W = this.wx;
+    if (W.kind === kind) return;
+    W.kind = kind;
+    W.t = 0; W.flash = 0; W.strikeT = randRange(2.5, 6); W.thunderAt = -1;
+    audio.rain(kind === 'storm');
+    if (kind === 'storm') {
+      W.drops = [];
+      for (let i = 0; i < 110; i++) {
+        W.drops.push({ x: Math.random() * VW, y: Math.random() * VH, s: randRange(340, 620), l: randRange(7, 16) });
+      }
+      this.say('storm');
+    }
+    if (kind === 'fog') this.say('fog');
+  }
+
+  _updateWeather(dt) {
+    const W = this.wx;
+    if (!W) return;
+    if (W.kind === 'storm') {
+      W.t += dt;
+      W.flash = Math.max(0, W.flash - dt * 2.6);
+      W.wet = Math.min(1, W.wet + dt * 0.25);
+      W.strikeT -= dt;
+      if (W.strikeT <= 0) {
+        W.strikeT = randRange(3.5, 8.5);
+        W.flash = 1;
+        W.thunderAt = W.t + randRange(0.3, 1.1);
+        this.shake(1.6, 0.3);
+      }
+      if (W.thunderAt > 0 && W.t >= W.thunderAt) { W.thunderAt = -1; audio.thunder(0.9); }
+      for (const d of W.drops) {
+        d.y += d.s * dt;
+        d.x -= 160 * dt;                      // the rain comes in slanted
+        if (d.y > VH) { d.y = -12; d.x = Math.random() * (VW + 80); }
+        if (d.x < -20) d.x += VW + 40;
+      }
+    } else if (W.wet > 0) {
+      W.wet = Math.max(0, W.wet - dt * 0.05); // the glass dries slowly
+    }
+  }
+
+  /** The loudspeaker is not a stranger any more. */
+  sayStory(n) {
+    if (this._storySaid[n]) return;
+    this._storySaid[n] = true;
+    const lines = {
+      25: 'This is not the loudspeaker. We are outside the wire, and we can see your roof. Keep going.',
+      30: 'Copy that, survivor. The bird wants twenty quiet minutes after this. Give us thirty, and be on the roof.',
+      35: 'We are circling. When the roof is clear, look up. Do not make us come back for you.',
+    };
+    const line = lines[n];
+    if (!line) return;
+    const hold = audio.voice(line, { pitch: 0.9 });
+    this.voice = { text: line, left: hold };
+  }
+
+  /** Debug: drop whatever is happening and stand in round n instead. */
+  jumpToRound(n) {
+    n = clamp(Math.round(n) || 1, 1, 99);
+    for (const z of this.zombies) { z.dead = true; z.remove = true; }
+    this.zombies = [];
+    this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
+    this.fires = []; this.gases = []; this.rifts = [];
+    this.respawnQueue = 0;
+    this.intermission = 0;
+    this.startRound(n);
+    this.bannerShow('DEBUG', `jumped to round ${n}`, { dur: 1.6, colour: '#8fa8bd' });
+  }
+
   /**
    * Damage over time that is not a hit: no knockback, no shake, no i-frames.
    * It does hold the regen timer open, which is the point -- you cannot stand
@@ -1230,6 +1509,18 @@ export class Game {
       if (t > wallT) continue;
       hits.push({ z, t, head, x: res.cx, y: res.cy });
     }
+    // the planted haunts take bullets too -- shooting the totem or the
+    // headstone is the whole point of them
+    for (const arr of [this.totems, this.graves]) {
+      for (const st of arr) {
+        if (st.dead || (st.f ?? 0) !== this.map.floor) continue;
+        const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
+        if (res.d2 > 13 * 13) continue;
+        const t = Math.hypot(res.cx - ox, res.cy - oy);
+        if (t > wallT) continue;
+        hits.push({ st, t, head: false, x: res.cx, y: res.cy });
+      }
+    }
     hits.sort((a, b) => a.t - b.t);
 
     const insta = this.timers.instakill > 0 ? 9999 : 1;
@@ -1238,6 +1529,24 @@ export class Game {
     let anyHit = false;
     let firstHit = null;
     for (const h of hits) {
+      if (h.st) {
+        // furniture: pays like a body, breaks like a promise
+        this.stats.hits++;
+        this.addPoints(POINTS_HIT, h.x, h.y - 8, 'rgba(230,220,194,0.9)', by ?? this.player);
+        if (!by || by === this.player) this.hud.hit(false);
+        this.net?.emit('hit', {
+          x: Math.round(h.x), y: Math.round(h.y), a: Math.round(angle * 100) / 100,
+          head: false, by: by?.netId ?? 0,
+        });
+        const broke = h.st.hurt(def.dmg * insta, this);
+        if (broke) {
+          this.addPoints(h.st.kind === 'totem' ? 250 : 200, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
+        }
+        anyHit = true;
+        if (!firstHit) firstHit = { x: h.x, y: h.y, z: null };
+        endT = h.t;
+        break;
+      }
       const wasAlive = !h.z.dead;
       const mul = (h.head ? def.headMul : 1) * insta;
       const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
@@ -1553,6 +1862,7 @@ export class Game {
       p.points -= it.price;
       it.door.open = true;
       this.stats.doors++;
+      this.say('door');   // round ten onwards, on its own cooldown: sometimes he begs
       audio.buy();
       audio.door();
       this.popups.add(p.pos.x, p.pos.y - 26, 'DOOR OPEN', '#f0d98a', 12);
@@ -1914,6 +2224,10 @@ export class Game {
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
     }
 
+    // the furniture takes its share: a totem or a headstone near a blast
+    // does not get to sit it out
+    this.hurtHaunts(x, y, r, Math.min(dmg, 320), this.map.floor);
+
     // self-damage: normal grenades hurt you, PhD Flopper says otherwise
     const pd = dist(x, y, p.pos.x, p.pos.y);
     if (pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
@@ -2103,6 +2417,8 @@ export class Game {
       { id: 'drop', label: 'DROP A POWER-UP', value: 'GO' },
       { id: 'kill', label: 'KILL EVERYTHING HERE', value: 'GO' },
       { id: 'round', label: 'END THE ROUND', value: 'GO' },
+      { id: 'roundpick', label: 'PICK A ROUND (enter: +1)', value: String(this._dbgRound ?? this.round) },
+      { id: 'roundgo', label: 'JUMP TO THE PICKED ROUND', value: 'GO' },
     ];
   }
 
@@ -2121,6 +2437,12 @@ export class Game {
       case 'clear':
         for (const z of this.zombies) { z.dead = true; z.remove = true; }
         this.zombies = [];
+        break;
+      case 'roundpick':
+        this._dbgRound = ((this._dbgRound ?? this.round) % 60) + 1;
+        break;
+      case 'roundgo':
+        this.jumpToRound(this._dbgRound ?? this.round);
         break;
       case 'god': this.debug.god = !this.debug.god; break;
       case 'ammo': this.debug.ammo = !this.debug.ammo; break;
@@ -2470,6 +2792,10 @@ export class Game {
     const standing = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
     this.lastCall = this.roundActive && this.zombiesTotal > 0
       && standing <= Math.max(1, Math.ceil(this.zombiesTotal * 0.10));
+    // half the round already in the ground: whatever is sulking under the
+    // soil comes up now -- you have earned an honest fight
+    this.hordeThin = this.roundActive && this.zombiesTotal > 0
+      && this.zombiesKilled >= this.zombiesTotal * 0.5;
     if (this.lastCall && !this._lastCallPing) {
       const hiding = this.zombies.some((z) => !z.dead
         && (z.state === ZSTATE.BURIED || z.state === ZSTATE.HIDDEN || z.hidden));
@@ -2644,6 +2970,8 @@ export class Game {
         this.particles.smoke(g.x + Math.cos(a) * d, g.y + Math.sin(a) * d, 1);
       }
     }
+
+    this._stepHaunts(dt);
 
     // ---- the last few: the map goes quiet and starts breathing -------------
     const aliveNow = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
@@ -2820,20 +3148,25 @@ export class Game {
     if (!settings.get('autoQuality')) {
       // the player took the wheel: whatever auto had dialled back is restored
       // at once, and nothing may be dialled back again until they hand it over
-      this._slowFrames = 0; this._fastFrames = 0;
+      this._slowFrames = 0; this._fastFrames = 0; this._grainOff = false;
       if (this._perfStage !== 0) { this._perfStage = 0; this._applyLightScale(); }
       return;
     }
-    if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
+    if (workMs > 33) { this._slowFrames += 3; this._fastFrames = 0; }
+    else if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
     else if (workMs < 11) { this._fastFrames++; this._slowFrames = 0; }
     else { this._slowFrames = 0; this._fastFrames = 0; }
 
     const ceil = this._userLighting ?? 2;
-    if (this._slowFrames >= 90 && this._perfStage < ceil) {
+    if (this._slowFrames >= 45 && this._perfStage < ceil) {
       this._perfStage++; this._slowFrames = 0; this._applyLightScale();
-    } else if (this._fastFrames >= 900 && this._perfStage > 0) {
+    } else if (this._fastFrames >= 600 && this._perfStage > 0) {
       this._perfStage--; this._fastFrames = 0; this._applyLightScale();
     }
+    // once the governor has had to step the lights down, the machine is not
+    // happy: the film grain goes too (see postgrade), unless the player
+    // switched AUTO PERFORMANCE off and asked for the full picture
+    this._grainOff = settings.get('autoQuality') && this._perfStage > 0;
   }
 
   /**
@@ -2868,6 +3201,14 @@ export class Game {
     this.gases = [];
     this.powerups = [];
     this.tracers = [];
+    this.totems = [];
+    this.graves = [];
+    this.zThrows = [];
+    this.bolts = [];
+    this.hordeThin = false;
+    this.setWeatherKind(null);
+    this.wx.wet = 0;
+    this._storySaid = {};
     this.decals = this._decalFor(0);
     this.stats = {
       round: 0, kills: 0, headshots: 0, points: 0, shots: 0, hits: 0, planks: 0, doors: 0,
@@ -3162,6 +3503,9 @@ export class Game {
     // the host's own body: nobody drifts off the roof in the middle of a choice
     if (this.input) this.input.menuLock = this.craftOpen;
     net.step(dt);
+    // bells, hums, snowballs and the rain on the glass: the timers and the
+    // kinematics are the guest's to run, the consequences are not (isAuth)
+    this._stepHaunts(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
       this.map.setFloor(pl.floor);
       this.useFloor(pl.floor);
@@ -3306,6 +3650,41 @@ export class Game {
       ctx.strokeStyle = '#2a1a12';
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.ellipse(f.x, f.y, Math.max(2, f.r * 0.8), Math.max(2, f.r * 0.64), 0, 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+    // 2c. the planted haunts, what flies through the air, and the lightning
+    for (const gv of this.graves) {
+      if (!gv.dead && (gv.f ?? 0) === this.map.floor) gv.draw(ctx, this.art, this.time);
+    }
+    for (const tt of this.totems) {
+      if (!tt.dead && (tt.f ?? 0) === this.map.floor) tt.draw(ctx, this.art, this.time);
+    }
+    for (const th of this.zThrows) {
+      if (!th.dead && (th.f ?? 0) === this.map.floor) th.draw(ctx, this.art, this.time);
+    }
+    for (const b of this.bolts) {
+      if ((b.f ?? 0) !== this.map.floor) continue;
+      const k = Math.max(0, b.life / b.max);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = '#dff0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.x0, b.y0);
+      const segs = 5;
+      for (let i = 1; i < segs; i++) {
+        const kk = i / segs;
+        const jx = Math.sin(b.seed + i * 12.9) * 9 * (1 - Math.abs(kk - 0.5) * 1.4);
+        const jy = Math.cos(b.seed + i * 7.7) * 7;
+        ctx.lineTo(b.x0 + (b.x1 - b.x0) * kk + jx, b.y0 + (b.y1 - b.y0) * kk + jy);
+      }
+      ctx.lineTo(b.x1, b.y1);
+      ctx.stroke();
+      ctx.globalAlpha = k * 0.4;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(140,190,255,0.5)';
+      ctx.stroke();
       ctx.restore();
     }
     this.traps.draw(ctx, this.time, this.map.floor);
@@ -3516,11 +3895,53 @@ export class Game {
     // 10b. DLSS5's grade over the lit scene: warm highlights, pushed contrast,
     // a touch of film grain. Cheap full-screen blits, only when it is switched
     // on. Run before the HUD so the text stays clean and readable.
-    if (this._dlss) postgrade(ctx, vw, vh, this.time);
+    if (this._dlss) postgrade(ctx, vw, vh, this.time, !this._grainOff);
 
     // 11. vignette + HUD
     // a slightly deeper vignette when the grade is on, so the edges fall away
     drawVignette(ctx, vw, vh, this._dlss ? 0.5 : 0.38);
+
+    // 11a. the dusk a totem brings: a purple weight over the whole picture
+    if (this.totemPower) {
+      ctx.save();
+      ctx.fillStyle = `rgba(38,16,64,${0.26 + Math.sin(this.time * 1.7) * 0.05})`;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.05 + Math.sin(this.time * 2.3) * 0.02;
+      ctx.fillStyle = '#7a3ac0';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+
+    // 11b. weather on the glass: the flash, the streaks, the fog, the wet
+    this.drawWeatherFx(ctx, vw, vh);
+
+    // 11c. what a snowball or a bolt left on you
+    if (this.player.chillT > 0 && !this.player.dead) {
+      const a = Math.min(0.5, (this.player.chillT / 3.2) * 0.5);
+      const grd = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.3, vw / 2, vh / 2, vh * 0.75);
+      grd.addColorStop(0, 'rgba(160,210,240,0)');
+      grd.addColorStop(1, `rgba(160,210,240,${a})`);
+      ctx.save(); ctx.fillStyle = grd; ctx.fillRect(0, 0, vw, vh); ctx.restore();
+    }
+    if (this.player.stunT > 0 && !this.player.dead) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.3 + Math.random() * 0.2;
+      ctx.strokeStyle = '#dff0ff';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 4; i++) {
+        const x = Math.random() * vw;
+        const y = Math.random() < 0.5 ? Math.random() * 34 : vh - Math.random() * 34;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + randRange(-24, 24), y + randRange(-14, 14));
+        ctx.lineTo(x + randRange(-30, 30), y + randRange(-18, 18));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     if (this.inFire) {
       ctx.save();
       const a = 0.16 + Math.sin(this.time * 14) * 0.05;
@@ -3701,6 +4122,18 @@ export class Game {
       const k = Math.min(1, f.life / f.max);
       const flick = 0.8 + Math.sin(this.time * 15 + f.x) * 0.2;
       L.point(sx(f.x), sy(f.y), f.r * 2.6, 0.85 * k * flick, hexA('#f0913a', 0.5), 0.55 * k);
+    }
+
+    // the haunts light their own corners: dusk-purple totem, one small candle
+    for (const tt of this.totems) {
+      if (tt.dead || (tt.f ?? 0) !== this.map.floor) continue;
+      const pulse = 0.7 + Math.sin(this.time * 2.2) * 0.3;
+      L.point(sx(tt.x), sy(tt.y - 14), 96, 0.5 * pulse, 'rgba(176,122,224,0.4)', 0.6 * pulse);
+    }
+    for (const gv of this.graves) {
+      if (gv.dead || (gv.f ?? 0) !== this.map.floor) continue;
+      const fl = 0.75 + Math.sin(this.time * 7 + gv.uid) * 0.25;
+      L.point(sx(gv.x + 7), sy(gv.y - 5), 52, 0.35 * fl, 'rgba(240,200,96,0.35)', 0.5 * fl);
     }
 
     // armed traps light their own corner of their own storey
@@ -4308,6 +4741,71 @@ export class Game {
     x.fillRect(0, 0, 18, 18);
     this.__eyeGlow = c;
     return c;
+  }
+
+  /**
+   * The weather you feel on the screen itself: the lightning flash, slanted
+   * rain, droplets crawling down the glass, and the fog that eats the map
+   * down to a circle around you. All of it screen-space, all of it cheap.
+   */
+  drawWeatherFx(ctx, vw, vh) {
+    const W = this.wx;
+    if (!W) return;
+    if (W.flash > 0.02) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.min(0.5, W.flash * W.flash * 0.5);
+      ctx.fillStyle = '#cfe0ff';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+    if (W.kind === 'storm' && settings.get('weather') && this._perfStage < 2) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(190,215,240,0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const d of W.drops) {
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x - d.l * 0.35, d.y + d.l);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (W.wet > 0.03 && settings.get('weather')) {
+      const sheet = wetSheet(vw, vh);
+      ctx.save();
+      ctx.globalAlpha = 0.14 * W.wet;
+      ctx.drawImage(sheet, 0, 0);
+      // three droplets that actually crawl
+      ctx.globalAlpha = 0.3 * W.wet;
+      ctx.strokeStyle = 'rgba(200,220,240,0.7)';
+      ctx.lineWidth = 1.6;
+      for (let i = 0; i < 3; i++) {
+        const x = ((i * 271 + 90) % vw) + Math.sin(this.time * 0.3 + i * 2) * 6;
+        const y0 = (((i * 173) % (vh / 2)) + (this.time * (12 + i * 5)) % (vh / 2)) | 0;
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.quadraticCurveTo(x + 3, y0 + 24, x - 2, y0 + 52);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (W.kind === 'fog' && settings.get('weather')) {
+      const camX = clamp(Math.round(this.cam.x), 0, Math.max(0, this.map.w * T - vw));
+      const camY = clamp(Math.round(this.cam.y), 0, Math.max(0, this.map.h * T - vh));
+      const px = clamp(this.player.pos.x - camX, 0, vw);
+      const py = clamp(this.player.pos.y - camY, 0, vh);
+      ctx.save();
+      ctx.fillStyle = 'rgba(148,158,166,0.14)';
+      ctx.fillRect(0, 0, vw, vh);
+      const grd = ctx.createRadialGradient(px, py, 60, px, py, 430);
+      grd.addColorStop(0, 'rgba(158,168,176,0)');
+      grd.addColorStop(0.55, 'rgba(158,168,176,0.32)');
+      grd.addColorStop(1, 'rgba(168,178,186,0.78)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
   }
 
   drawWeather(ctx, camX, camY) {

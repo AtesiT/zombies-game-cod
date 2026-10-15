@@ -295,6 +295,74 @@ function buildCorpse(src) {
 
 let cache = null;
 
+/**
+ * The totem: a wrapped pole with a small lit skull on top. Drawn once, used
+ * by every totem in every game -- the glow around it is haunts.js's job.
+ */
+function buildTotem() {
+  const { canvas, ctx } = makeCanvas(14, 32);
+  // the pole, dark wood
+  ctx.fillStyle = '#3a2c1c';
+  ctx.fillRect(5, 8, 4, 24);
+  ctx.fillStyle = '#4e3b26';
+  ctx.fillRect(6, 8, 2, 24);
+  // rope windings
+  ctx.fillStyle = '#6b5334';
+  for (const y of [12, 16, 20, 24, 28]) ctx.fillRect(4, y, 6, 1);
+  // the skull, and the light inside it
+  ctx.fillStyle = '#cfc6a8';
+  ctx.fillRect(4, 2, 6, 5);
+  ctx.fillRect(5, 1, 4, 1);
+  ctx.fillStyle = '#241a10';
+  ctx.fillRect(5, 4, 2, 2);
+  ctx.fillRect(8, 4, 1, 2);
+  ctx.fillStyle = '#b07ae0';
+  ctx.fillRect(5, 4, 1, 1);
+  ctx.fillRect(8, 4, 1, 1);
+  // feathers on the side
+  ctx.fillStyle = '#7a5a8a';
+  ctx.fillRect(10, 6, 1, 5);
+  ctx.fillRect(11, 8, 1, 4);
+  ctx.fillStyle = '#5a4a6a';
+  ctx.fillRect(3, 7, 1, 4);
+  return canvas;
+}
+
+/**
+ * The grave: a leaning headstone on a mound, chipped edge, one candle socket.
+ */
+function buildGrave() {
+  const { canvas, ctx } = makeCanvas(18, 24);
+  // the mound
+  ctx.fillStyle = '#2c2417';
+  ctx.fillRect(2, 19, 14, 4);
+  ctx.fillStyle = '#3d3220';
+  ctx.fillRect(4, 18, 10, 2);
+  ctx.fillStyle = '#4a3d26';
+  ctx.fillRect(6, 17, 6, 1);
+  // the stone, leaning a little
+  ctx.save();
+  ctx.translate(9, 18);
+  ctx.rotate(-0.07);
+  ctx.fillStyle = '#5a5f66';
+  ctx.fillRect(-4, -14, 8, 14);
+  ctx.fillStyle = '#6d737b';
+  ctx.fillRect(-4, -16, 8, 3);
+  ctx.fillRect(-3, -17, 6, 2);
+  // the chipped corner and the scratch of a name nobody reads
+  ctx.fillStyle = '#494e55';
+  ctx.fillRect(2, -16, 2, 2);
+  ctx.fillStyle = '#41464d';
+  ctx.fillRect(-2, -11, 4, 1);
+  ctx.fillRect(-2, -8, 3, 1);
+  ctx.fillRect(-2, -5, 4, 1);
+  ctx.restore();
+  // the candle stub on the mound
+  ctx.fillStyle = '#c8b98a';
+  ctx.fillRect(13, 15, 2, 4);
+  return canvas;
+}
+
 export function buildArt() {
   if (cache) return cache;
 
@@ -413,6 +481,50 @@ export function buildArt() {
     jammerFlip: zombie.map((c) => tintCopy(flipH(c), '#3a4756', 0.6)),
     jammerAtk: zombieAtk.map((c) => tintCopy(c, '#3a4756', 0.6)),
     jammerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#3a4756', 0.6)),
+
+    // ---- the haunt round ------------------------------------------------
+    // bearer: bruised purple, the dusk already on it
+    bearer: zombie.map((c) => tintCopy(c, '#7a4ab0', 0.55)),
+    bearerFlip: zombie.map((c) => tintCopy(flipH(c), '#7a4ab0', 0.55)),
+    bearerAtk: zombieAtk.map((c) => tintCopy(c, '#7a4ab0', 0.55)),
+    bearerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#7a4ab0', 0.55)),
+    // mourner: graveyard ash, wet at the edges
+    mourner: zombie.map((c) => tintCopy(c, '#565d68', 0.6)),
+    mournerFlip: zombie.map((c) => tintCopy(flipH(c), '#565d68', 0.6)),
+    mournerAtk: zombieAtk.map((c) => tintCopy(c, '#565d68', 0.6)),
+    mournerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#565d68', 0.6)),
+    // wraith: moonlight through a body -- the draw path gives it the alpha
+    wraith: zombie.map((c) => tintCopy(c, '#cfe0ee', 0.82)),
+    wraithFlip: zombie.map((c) => tintCopy(flipH(c), '#cfe0ee', 0.82)),
+    wraithAtk: zombieAtk.map((c) => tintCopy(c, '#cfe0ee', 0.82)),
+    wraithAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#cfe0ee', 0.82)),
+    // snowman: frost over everything, a coal-dark heart showing through
+    snowman: zombie.map((c) => tintCopy(c, '#dfe9f2', 0.8)),
+    snowmanFlip: zombie.map((c) => tintCopy(flipH(c), '#dfe9f2', 0.8)),
+    snowmanAtk: zombieAtk.map((c) => tintCopy(c, '#dfe9f2', 0.8)),
+    snowmanAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#dfe9f2', 0.8)),
+    // arsonist: lamp-oil and cinders
+    arsonist: zombie.map((c) => tintCopy(c, '#c85a20', 0.55)),
+    arsonistFlip: zombie.map((c) => tintCopy(flipH(c), '#c85a20', 0.55)),
+    arsonistAtk: zombieAtk.map((c) => tintCopy(c, '#c85a20', 0.55)),
+    arsonistAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c85a20', 0.55)),
+    // witch: bilious, with something of the gasbag's green about it
+    witch: zombie.map((c) => tintCopy(c, '#6a9a3a', 0.55)),
+    witchFlip: zombie.map((c) => tintCopy(flipH(c), '#6a9a3a', 0.55)),
+    witchAtk: zombieAtk.map((c) => tintCopy(c, '#6a9a3a', 0.55)),
+    witchAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#6a9a3a', 0.55)),
+    // shocker: ozone blue, singed at the cuffs
+    shocker: zombie.map((c) => tintCopy(c, '#3a7ab0', 0.55)),
+    shockerFlip: zombie.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
+    shockerAtk: zombieAtk.map((c) => tintCopy(c, '#3a7ab0', 0.55)),
+    shockerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
+    // knight: old steel, no colour left anywhere
+    knight: zombie.map((c) => tintCopy(c, '#77838d', 0.5)),
+    knightFlip: zombie.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
+    knightAtk: zombieAtk.map((c) => tintCopy(c, '#77838d', 0.5)),
+    knightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
+    totem: buildTotem(),
+    grave: buildGrave(),
 
     dogWhite: flatCopy(buildDog(), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),

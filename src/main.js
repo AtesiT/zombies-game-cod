@@ -50,7 +50,11 @@ let displayW = VW;
 // a 1600 px backing store, and it certainly cannot afford one.
 function dlssTarget() {
   const px = (displayW || VW) * (window.devicePixelRatio || 1);
-  return Math.max(1.25, Math.min(2, (px / VW) * 1.6));
+  // the old ceiling was 2x, which is FOUR times the pixels -- and four times
+  // every full-screen pass with it. 1.75 keeps the anti-aliasing win (you
+  // cannot see the difference against 2 once the browser downscales) for
+  // about three quarters of the fill cost. This is where DLSS5 "lagged".
+  return Math.max(1.25, Math.min(1.75, (px / VW) * 1.6));
 }
 
 // and how far the perf watch is allowed to walk that back: 1 = all of it,
@@ -176,8 +180,15 @@ function frame(now) {
   // for long enough and it climbs back up. Only when AUTO PERFORMANCE is on --
   // a player who switched that off asked for the full picture, lag and all
   if (settings.get('dlss') && settings.get('autoQuality')) {
-    if (workMs > 20) { ssSlow++; ssFast = 0; } else if (workMs < 11) { ssFast++; ssSlow = 0; } else { ssSlow = 0; ssFast = 0; }
-    if (ssSlow >= 90 && ssLevel < SS_STEPS.length - 1) { ssLevel++; ssSlow = 0; applyBacking(); } else if (ssFast >= 600 && ssLevel > 0) { ssLevel--; ssFast = 0; applyBacking(); }
+    // a frame past 33 ms is not "a bit slow", it is the game crawling: it
+    // counts triple, so a real stutter steps the supersample down in under
+    // half a second instead of the old second and a half
+    if (workMs > 33) { ssSlow += 3; ssFast = 0; }
+    else if (workMs > 20) { ssSlow++; ssFast = 0; }
+    else if (workMs < 11) { ssFast++; ssSlow = 0; }
+    else { ssSlow = 0; ssFast = 0; }
+    if (ssSlow >= 45 && ssLevel < SS_STEPS.length - 1) { ssLevel++; ssSlow = 0; applyBacking(); }
+    else if (ssFast >= 420 && ssLevel > 0) { ssLevel--; ssFast = 0; applyBacking(); }
   }
 
   requestAnimationFrame(frame);

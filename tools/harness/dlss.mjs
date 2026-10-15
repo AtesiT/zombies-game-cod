@@ -7,6 +7,15 @@
 // the pointer used to be mapped through the backing store's own size.
 import { nc, load, SRC } from './stub.mjs';
 
+// A fixed dice cup, reseeded before every render: the two pictures below are
+// only comparable if they are the SAME picture, and with a live Math.random
+// they never were -- the harness passed or failed on which way a walker
+// happened to be standing.
+let _seed = 0;
+function reseed(v) { _seed = v >>> 0; }
+Math.random = () => { _seed = (_seed * 1103515245 + 12345) & 0x7fffffff; return _seed / 0x7fffffff; };
+reseed(20251016);
+
 // capture the listeners before any module installs them
 const winL = {};
 globalThis.window.addEventListener = (t, fn) => { (winL[t] = winL[t] || []).push(fn); };
@@ -67,6 +76,7 @@ ok(def?.def === false, 'DLSS5 ships switched on, on every machine including the 
 // with the sprites filtered and then scaled back down -- which is what the
 // browser does for you when DLSS5 is on.
 function render(supersample) {
+  reseed(777);                       // both renders start from the same world
   const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
   g.begin();
   g.startRound(3);

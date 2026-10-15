@@ -15,6 +15,7 @@ import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
 import { Powerup } from './powerups.js';
 import { applyShutters } from './crafting.js';
+import { Totem, Grave, ZThrow } from './haunts.js';
 import { audio } from './audio.js';
 import { clamp, damp, dist } from './util.js';
 import { T } from './art.js';
@@ -658,6 +659,7 @@ export class Net {
         pl.slot?.mag ?? 0, pl.slot?.reserve ?? 0, r0(pl.points ?? 0),
         pl.grenades ?? 0, pl.medkits ?? 0, pl.salvage ?? 0, r0(pl.armor ?? 0),
         perkMask, r2(pl.bleedT ?? 0), pl.name ?? '',
+        r2(pl.chillT ?? 0), r2(pl.stunT ?? 0),
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -699,6 +701,14 @@ export class Net {
       // barricade bar past its own end
       bm: g.map.floors.map((F) => F.barricades.map((b) => b.maxPlanks)),
       sh: g.workbench?.shuttersUp ? 1 : 0,
+      // ---- the haunt round: everything a guest must be able to DRAW -------
+      // (real class instances on the other side -- see _apply. A stub here is
+      // a frozen picture over there.)
+      tt: g.totems.map((t) => [r0(t.x), r0(t.y), t.f, r0(t.hp), r2(t.life), r2(t.maxLife), t.uid]),
+      gv: g.graves.map((v) => [r0(v.x), r0(v.y), v.f, r0(v.hp), r2(v.life), r2(v.maxLife), v.uid, r2(v.bellT), r2(v.ring)]),
+      zt: g.zThrows.map((z) => [r0(z.sx), r0(z.sy), r0(z.tx), r0(z.ty), z.f, z.throwKind, r2(z.t), r2(z.dur)]),
+      bo: g.bolts.slice(0, 12).map((b) => [r0(b.x0), r0(b.y0), r0(b.x1), r0(b.y1), r2(b.life), r2(b.max), b.f, r2(b.seed)]),
+      wx: [g.wx?.kind ?? '', r2(g.wx?.flash ?? 0), r2(g.wx?.wet ?? 0)],
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
     };
@@ -784,6 +794,7 @@ export class Net {
       t.weapon = e[8]; t.mag = e[9]; t.reserve = e[10]; t.points = e[11];
       t.grenades = e[12]; t.medkits = e[13]; t.salvage = e[14]; t.armor = e[15];
       t.perkMask = e[16]; t.bleedT = e[17];
+      t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -845,6 +856,37 @@ export class Net {
     // away: deepen the caps without touching the plank counts, which arrived
     // deepened already
     if (s.sh && !g.workbench?.shuttersUp) applyShutters(g, false);
+    // ---- the haunt round: rebuilt as real instances, draw() and all --------
+    g.totems = (s.tt ?? []).map((e) => {
+      const t = new Totem(e[0], e[1], e[2], e[6]);
+      t.hp = e[3]; t.life = e[4]; t.maxLife = e[5] || t.maxLife;
+      return t;
+    });
+    g.graves = (s.gv ?? []).map((e) => {
+      const v = new Grave(e[0], e[1], e[2], e[6]);
+      v.hp = e[3]; v.life = e[4]; v.maxLife = e[5] || v.maxLife;
+      v.bellT = e[7] ?? v.bellT; v.ring = e[8] ?? 0;
+      return v;
+    });
+    g.zThrows = (s.zt ?? []).map((e) => {
+      const z = new ZThrow(e[0], e[1], e[2], e[3], e[5], e[4]);
+      z.t = e[6] ?? 0; z.dur = e[7] || z.dur;
+      const k = Math.min(1, z.t / z.dur);
+      z.x = z.sx + (z.tx - z.sx) * k; z.y = z.sy + (z.ty - z.sy) * k;
+      return z;
+    });
+    g.bolts = (s.bo ?? []).map((e) => ({
+      x0: e[0], y0: e[1], x1: e[2], y1: e[3],
+      life: e[4], max: e[5] || 0.22, f: e[6] ?? 0, seed: e[7] ?? 0,
+    }));
+    if (s.wx) {
+      const kind = s.wx[0] || null;
+      if (g.wx && g.wx.kind !== kind) g.setWeatherKind?.(kind);
+      if (g.wx) {
+        if ((s.wx[1] ?? 0) > g.wx.flash) g.wx.flash = s.wx[1];  // a flash only brightens
+        g.wx.wet = Math.max(g.wx.wet, s.wx[2] ?? 0);
+      }
+    }
     this._snapT = 0;
   }
 
@@ -861,6 +903,7 @@ export class Net {
     pl.pos.x = t.x; pl.pos.y = t.y; pl.aim = t.aim; pl.hp = t.hp;
     pl.maxHp = t.maxHp || pl.maxHp; pl.floor = t.floor;
     pl.dead = t.dead; pl.downed = t.downed; pl.bleedT = t.bleedT ?? 0;
+    pl.chillT = t.chillT ?? 0; pl.stunT = t.stunT ?? 0;
     pl.points = t.points; pl.grenades = t.grenades; pl.medkits = t.medkits;
     pl.salvage = t.salvage; pl.armor = t.armor; pl.sprinting = t.sprinting;
     if (t.weapon && pl.slots && pl.slots[pl.active] !== t.weapon) { pl.slots[pl.active] = t.weapon; }
@@ -901,6 +944,7 @@ export class Net {
       pl.hp = t.hp; pl.maxHp = t.maxHp || pl.maxHp;
       pl.floor = t.floor; pl.dead = t.dead; pl.downed = t.downed;
       pl.bleedT = t.bleedT ?? 0;
+      pl.chillT = t.chillT ?? 0; pl.stunT = t.stunT ?? 0;
       pl.sprinting = t.sprinting; pl.points = t.points;
       pl.grenades = t.grenades; pl.medkits = t.medkits; pl.salvage = t.salvage;
       pl.armor = t.armor;

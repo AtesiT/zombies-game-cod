@@ -6,7 +6,8 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 
 > **Кратко по-русски.** 2D-игра с видом сверху в стиле режима «Zombies» из Call of Duty
 > (первая карта Nacht der Untoten). 15 видов оружия, 8 перков, Mystery Box с wonder-оружием,
-> пауэр-апы, четыре типа врагов, генератор электричества, верстак с крафтом, пасхальное яйцо,
+> пауэр-апы, 26 типов врагов (тотемы, могилы, призраки с саблей, снеговик, рыцарь, молнии),
+> погода с грозой и туманом, говорящий громкоговоритель, генератор электричества, верстак с крафтом, пасхальное яйцо,
 > достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
@@ -176,9 +177,33 @@ under room A's north windows (80 dps, shocks them rigid) and a *Steam Vent* at t
 room B → D doorway (75 dps, scalds, slows and shoves them back out through the door). Only ever
 hurts zombies — and 15 trap kills in one run is an achievement.
 
-**Enemies.** Walkers, **Runners** (fast, frail, from round 6), **Brutes** (2.7× HP, smashes three
-planks at a time, from round 10), **Crawlers** and **Shriekers** and **Hellhounds**. Every fifth
-round is a dog round.
+**Enemies — 26 types.** Walkers, **Runners** (fast, frail, round 6), **Brutes** (2.7× HP, smashes
+three planks at a time, round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
+**Hellhounds** (every fifth round is a dog round), **Helmeted**, **Napalm**, **Gasbags**,
+**Miners** (come up through the floor), **Mimics**, **Field Medics**, **Bonewrights**,
+**Swarmlings**, **Jammers**, and **Amalgams**.
+
+The haunt roster arrives from round 12 up: **Snowmen** lob snowballs (badly — on purpose) that
+chill your legs for three seconds, and roll double in a storm; **Arsonists** throw fire bottles
+that break into burning pools; **Witches** throw potion bottles that burst into gas; a **Totem
+Bearer** kneels once per life and raises a totem you can shoot down — while it hums, the map
+sinks into a purple dusk and the whole horde gets faster, bolder and hungrier for planks; a
+**Mourner** digs a grave that rings a bell every few seconds and lets out half-seen **Wraiths**
+with a sabre of cold light (they fade when the grave is broken, and they never count towards the
+round); **Shockers** gather for three quarters of a second and throw lightning along their line
+of sight — it hurts, and for a moment your legs and your trigger both forget how to work; and
+the **Knight** walks in from round 20: big, slow, 3.6× HP, body shots ring off its plate for
+half damage, and the head is the only honest way in.
+
+**Weather.** From round 3 every round rolls the sky: a storm (slanted rain across the glass,
+lightning flashes with late thunder, the screen stays wet and dries slowly, snowmen come twice
+as often), fog (a veil with a hole of visibility around you), or nothing.
+
+**The loudspeaker.** From round 10 somebody talks — lines tied to events, not timers: a first
+sighting of a new horror, a totem rising, a grave being dug, a storm rolling in, a door you are
+about to buy ("that one leads nowhere good"). And at rounds 25/30/35 the voice is no longer the
+loudspeaker: survivors outside the wire, a helicopter that wants thirty quiet minutes, and a
+"look up" over the roof.
 
 A blast does not always take the head — sometimes it takes the legs. Grenades, monkey bombs and
 Ray Gun splashes will drop a zombie onto its elbows instead: a **Crawler** keeps coming at 70 %

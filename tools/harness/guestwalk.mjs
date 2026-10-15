@@ -184,7 +184,12 @@ console.log('--- the guest\'s hands ---');
 mate.floor = 0;
 const zombie = host.zombies.find((z) => !z.dead) ?? host.makeZombie({ x: mate.pos.x + 18, y: mate.pos.y, floor: 0 }, 'walker');
 if (!host.zombies.includes(zombie)) host.zombies.push(zombie);
-mate.pos.x = zombie.pos.x - 16; mate.pos.y = zombie.pos.y;
+// stand the body along its own aim line: the knife is an arc, and the aim a
+// guest reports has nothing to do with wherever the harness teleports its
+// body -- offset by a fixed +x and the swipe legitimately sails past
+step(host, 2, 'host');                 // let mate.aim settle on the reported one
+mate.pos.x = zombie.pos.x - Math.cos(mate.aim) * 16;
+mate.pos.y = zombie.pos.y - Math.sin(mate.aim) * 16;
 const hpBefore = zombie.hp;
 guest.input.pressed.add('KeyV');
 step(guest, 3, 'guest'); step(host, 6, 'host'); step(guest, 2, 'guest');
@@ -258,7 +263,9 @@ host.addGas(px - 30, py - 50, 100, 8);
 host.monkeys.length = 0;
 host.monkeys.push(new MonkeyBomb(px + 120, py + 60, 30, -20, WEAPONS.monkeybomb, pf));
 mate.floor = pf; mate.pos.x = px + 10; mate.pos.y = py + 10;
-step(host, 2, 'host'); step(guest, 2, 'guest');
+// snapshots go out 20 times a second: two frames of host and two of guest is
+// a phase lottery, not a sync. Step until the wire has actually delivered.
+for (let i = 0; i < 40 && guest.grenades.length < 2; i++) { step(host, 1, 'host'); step(guest, 1, 'guest'); }
 let clutterErr = '';
 try { guest.draw(ctx); } catch (e) { clutterErr = `${e.message}\n${e.stack}`; }
 ok(clutterErr === '', 'the guest drew grenades, powerups, fire, a rift, gas and a monkey', clutterErr);

@@ -745,7 +745,9 @@ export class HUD {
         font: 'bold 9px "Courier New", monospace', colour: '#8fa0b0', align: 'right',
       });
     } else if (p.reloading) {
-      const k = 1 - p.reloadTimer / (d.reload * p.perkFx.reloadMul);
+      // dry reloads (the mag was empty) now genuinely take longer, so the bar
+      // must be measured against what THIS reload started at, not the nominal
+      const k = 1 - p.reloadTimer / (p.reloadTotal || d.reload * p.perkFx.reloadMul);
       bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', GOLD);
       text(ctx, 'RELOADING', x - 94, yAmmo + 10, {
         font: 'bold 9px "Courier New", monospace', colour: GOLD, align: 'right',
@@ -1531,7 +1533,12 @@ export function debugTabHit(game, w, h, mx, my) {
 export function debugPanel(game, w, h) {
   const rows = game.debugRows();
   const cw = 380, HEAD = 46 + 24, FOOT = 40;   // the extra 24 is the tab strip
-  const rowH = rows.length > 13 ? 18 : DEBUG_ROW;
+  // rows keep arriving (the round picker, and whatever comes next): squeeze
+  // them so the LAST one always lands inside the panel -- a row you cannot
+  // see is a row you cannot click
+  const room = h - 16 - HEAD - FOOT;
+  const rowH = Math.max(12, Math.min(rows.length > 13 ? 18 : DEBUG_ROW,
+    Math.floor(room / Math.max(1, rows.length))));
   const ch = Math.min(h - 16, HEAD + rows.length * rowH + FOOT);
   return {
     rows, cw, ch, rowH,

@@ -316,7 +316,7 @@ function warmLayer(w, h) {
  * Grade the finished frame. `t` is time, used to walk the grain around.
  * Returns silently when there is nothing to do.
  */
-export function postgrade(ctx, w, h, t = 0) {
+export function postgrade(ctx, w, h, t = 0, grain = true) {
   ctx.save();
   ctx.imageSmoothingEnabled = true;
 
@@ -330,6 +330,11 @@ export function postgrade(ctx, w, h, t = 0) {
   ctx.fillRect(0, 0, w, h);
 
   // -- film grain: one pattern fill, walked a few pixels each frame ----------
+  // It is the single priciest thing in here -- an overlay-composite fill over
+  // the whole supersampled surface -- and at 2x backing store the downscale
+  // mashes the speckle into mush anyway, so a struggling machine drops it
+  // first and nobody misses it.
+  if (!grain) { ctx.restore(); return; }
   const sheets = grainSheets();
   if (!GRAIN_PATTERNS || GRAIN_PATTERNS.ctx !== ctx) {
     GRAIN_PATTERNS = { ctx, pats: sheets.map((sh) => ctx.createPattern(sh, 'repeat')) };
