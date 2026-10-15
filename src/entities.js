@@ -509,8 +509,10 @@ export class Player {
 
   heal(amount) { this.hp = Math.min(this.maxHp, this.hp + amount); }
 
-  hurt(amount, srcX, srcY, game) {
-    if (this.invuln > 0 || this.dead) return false;
+  hurt(amount, srcX, srcY, game, options = {}) {
+    if (!options.bypassProtection && game.environment?.elevation.inTransit(this)) return false;
+    if (!options.bypassProtection && game.bus?.body.driving && game.bus.body.hp > 0 && this === game.player) return false;
+    if ((!options.ignoreInvulnerability && this.invuln > 0) || this.dead) return false;
     if (game?.debug?.god) return false;          // the debug panel's god mode
     // already on the floor: the hits do not kill you, they hurry you up
     if (this.downed) {
@@ -605,7 +607,7 @@ export class Player {
     this.sprinting = moving && !game.paused && !this.downed
       && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
     this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
-      * (this.downed ? 0.34 : 1);
+      * (this.downed ? 0.34 : 1) * (game.environment?.speedMultiplier(this) ?? 1) * (game.weatherManager?.modifiers.speed ?? 1);
     const targetVx = mv.x * this.speed;
     const targetVy = mv.y * this.speed;
     const a = (moving ? this.accel : this.accel * 1.6) * dt;
@@ -740,7 +742,7 @@ export class Player {
     const ox = this.pos.x, oy = this.pos.y;
 
     const moveSpread = Math.hypot(this.vel.x, this.vel.y) / Math.max(1, this.speed);
-    const spread = d.spread * (1 + moveSpread * 1.3);
+    const spread = d.spread * (1 + moveSpread * 1.3) * (game.environment?.accuracyMultiplier(this) ?? 1) * (game.weatherManager?.modifiers.spread ?? 1);
     const pellets = d.pellets ?? 1;
 
     if (d.special === 'shock') {
@@ -876,6 +878,10 @@ export const ENEMY_TYPES = {
   walker: {
     id: 'walker', name: 'Walker', hp: 1, speed: 1, dmg: 1, r: 6.5, scale: 1,
     chew: 1, points: 1, set: 'zombie', headOff: 1,
+  },
+  'night-stalker': {
+    id: 'night-stalker', name: 'Night Stalker', hp: 1.2, speed: 1.55, dmg: 1.4, r: 6.5, scale: 1.08,
+    chew: 1.2, points: 1.5, set: 'runner', headOff: 1, sprinty: true,
   },
   runner: {
     id: 'runner', name: 'Runner', hp: 0.55, speed: 1.62, dmg: 0.8, r: 6.0, scale: 0.94,
@@ -1396,7 +1402,7 @@ export class Zombie {
     }
 
     // ------------------------------------------------- attack the player ---
-    if (pd < 20 && !p.dead) {
+    if (pd < 20 && !p.dead && game.environment?.elevation.canMelee(this,p) !== false) {
       this.state = ZSTATE.ATTACK;
       if (this.attackCd <= 0) {
         this.attackCd = 1.05;
@@ -1458,7 +1464,7 @@ export class Zombie {
 
     // ------------------------------------------------------- navigation ---
     const step = this.map.flowStep(this.pos.x, this.pos.y, this.floor);
-    let tx, ty, speed = this.baseSpeed;
+    let tx, ty, speed = this.baseSpeed * (game.environment?.speedMultiplier(this) ?? 1) * (game.weatherManager?.modifiers.speed ?? 1);
 
     if (!step) {
       // No step either because we are standing on the target tile itself (fine,
@@ -1918,6 +1924,7 @@ export class Zombie {
     const py = Math.round(this.pos.y);
     const flip = this.facing < 0;
     const sc = this.def.scale;
+    if(this.type==='night-stalker'&&!this.dead){ctx.save();ctx.strokeStyle='#ab70ef';ctx.lineWidth=2;ctx.beginPath();ctx.arc(px,py,10,0,TAU);ctx.stroke();ctx.fillStyle='#d8adff';ctx.fillRect(px-4,py-18,3,2);ctx.fillRect(px+2,py-18,3,2);ctx.restore();}
 
     // underground: all you get is the dirt
     if (this.state === ZSTATE.BURIED && !this.dead) { this._drawMound(ctx, px, py, t); return; }

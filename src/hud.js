@@ -1,3 +1,4 @@
+import { mapSelectionRows } from './systems/map/MapSelectionUI.js';
 // HUD, overlays and full-screen menus.
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
@@ -731,7 +732,9 @@ export class HUD {
     const it = game.interaction;
     if (!it) return;
     const lines = [];
-    if (it.type === 'wallbuy') {
+    if (it.type === 'environment') {
+      lines.push(`[E] ${it.label}`);
+    } else if (it.type === 'wallbuy') {
       const d = WEAPONS[it.weapon];
       const owned = game.player.loadout[it.weapon].owned;
       lines.push(owned
@@ -953,11 +956,17 @@ export class HUD {
       ctx.fillStyle = colour;
       ctx.fillRect(x0 + tx * s - size / 2, y0 + ty * s - size / 2, size, size);
     };
+    if (game.bus) mark(game.bus.body.pos.x, game.bus.body.pos.y, '#7ed2c7', 5);
+    for (const station of map.definition?.level.stations ?? []) mark(station.x, station.y, station.type === 'repair' ? '#e3a568' : '#72c4c2', 3);
     for (const ps of map.perkSpots) {
       if (game.player.hasPerk(ps.id)) mark(ps.x, ps.y, PERKS[ps.id].colour, 3);
       else if (game.powerOn) mark(ps.x, ps.y, 'rgba(240,217,138,0.75)', 2);
     }
-    mark(game.box.spot.x, game.box.spot.y, '#f5d76e', 4);
+    for(const c of game.environment?.configs??[]) {
+      if(c.type==='platform')mark(c.x,c.y,'#d7c48d',3);
+      if(c.type==='relay-quest')mark(c.finale.x,c.finale.y,'#bf90e0',4);
+    }
+    if (game.box.spot) mark(game.box.spot.x, game.box.spot.y, '#f5d76e', 4);
     if (map.workbench) mark(map.workbench.x, map.workbench.y, '#c8a05a', 3);
     if (map.papSpot && game.powerOn) mark(map.papSpot.x, map.papSpot.y, '#8fe05a', 4);
     if (map.powerSwitch && !game.powerOn) mark(map.powerSwitch.x, map.powerSwitch.y, '#8fe05a', 3);
@@ -986,7 +995,7 @@ export class HUD {
     for (const pu of game.powerups) mark(pu.x, pu.y, pu.def.colour, 3);
 
     for (const z of game.zombies) {
-      if (z.dead) continue;
+      if (z.dead || !(game.weatherManager?.visible(z.pos,z.floor??0) ?? true)) continue;
       if ((z.floor ?? 0) !== map.floor) continue;
       const tx = z.pos.x / T, ty = z.pos.y / T;
       if (!map.seen[(ty | 0) * map.w + (tx | 0)]) continue;
@@ -1115,6 +1124,8 @@ export const CONTROL_ROWS = [
   ['SPRINT', 'SHIFT   DASH'],
   ['GRENADE', 'G   NADE'],
   ['MEDKIT', 'H   KIT'],
+  ['FLASHLIGHT', 'L   BATTERY RECHARGES WHEN OFF'],
+  ['WEATHER / TIME DEBUG', 'F6 / F7'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
   ['CONTROLS LIST', 'C   CONTROLS ON THE MENU'],
@@ -1260,6 +1271,7 @@ export function drawAchievements(ctx, game, w, h) {
 }
 
 export function menuRows(scene, game) {
+  if (scene === 'maps') return mapSelectionRows(game.mapManager);
   if (scene === 'mp') {
     const net = game.net;
     return [

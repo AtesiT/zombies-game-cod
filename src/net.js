@@ -24,7 +24,7 @@ export const MAX_PLAYERS = 4;
 
 /** The only keys a phone or a laptop gets to send. Short, bounded, obvious. */
 export const NET_KEYS = [
-  'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'Digit1', 'Digit2',
+  'KeyL', 'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'Digit1', 'Digit2',
 ];
 
 const Z_TYPES = Object.keys(ENEMY_TYPES);
@@ -513,6 +513,7 @@ export class Net {
     peer.reviveT = 0;
 
     const it = g.interactionFor?.(p) ?? null;
+    if (inp.wasPressed('KeyL')) g.dayNight?.toggle(p);
     if (inp.wasPressed('KeyF', 'KeyE')) g.doInteraction?.(p, it);
     if (inp.isDown('KeyE')) g.rebuildTick?.(dt, p, it); else p._rebuildT = 0;
     if (inp.wasPressed('KeyG')) g.throwFor?.(p);
@@ -600,6 +601,8 @@ export class Net {
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
     const doors = g.map.floors.map((F) => F.doors.map((d) => (d.open ? 1 : 0)));
     return {
+      clock: g.dayNight?.serialize(),
+      weather: g.weatherManager?.serialize(),
       tm: r2(g.time), r: g.round, ra: g.roundActive ? 1 : 0, im: r2(g.intermission ?? 0),
       zk: g.zombiesKilled, zt: g.zombiesTotal, pw: g.powerOn ? 1 : 0, dg: g.dogRound ? 1 : 0,
       sd: g.map.secretDoorOpen ? 1 : 0,
@@ -622,6 +625,7 @@ export class Net {
   _apply(s, immediate) {
     const g = this.game;
     if (!s) return;
+    if (s.weather) { try { g.weatherManager?.restore(s.weather); } catch (e) { console.warn(e.message); } }
     g.round = s.r;
     g.roundActive = !!s.ra;
     g.intermission = s.im ?? 0;
@@ -709,6 +713,8 @@ export class Net {
         this._targets.delete(`p${pl.netId}`);
       }
     }
+
+    if (s.clock) { try { g.dayNight?.restore(s.clock); } catch(e) { console.warn(e.message); } }
 
     // ---- loose objects -----------------------------------------------------
     g.powerups = (s.pu ?? []).map((e) => ({ x: e[0], y: e[1], id: e[2], life: e[3], dead: false, update(dt) { this.life -= dt; } }));
