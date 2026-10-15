@@ -256,3 +256,41 @@ second floor and the roof, settings and the last-zombie sound) and carries a lar
 wearable gizmos, a second crafting bench, teleporters and rooftop escapes, a story told through a
 keeper's diary and radio chatter, a full rooftop evacuation finale, weapon mods, daily challenges,
 gamepad support and proper smoke tests.
+
+## Maps, vehicles and environmental mechanics (Phases 1–3)
+
+Choose **SOLO → map** to play Terminal Transit, Neon Night Market, Blackwood
+Logging Camp, or the original Nacht campaign. Terminal Transit includes a drivable armored bus: **E** at the driver
+door, **W/S** drive, **A/D** steer, **Space** brake, **E** exit when stopped.
+Repair/refuel at marked stations using **Shift+E** while driving. **Neon Night Market** has shootable electrical signs, fire escapes and an ordered
+relay/broadcast quest. **Blackwood Logging Camp** has bear traps, 40% slower mud,
+shootable logging supports that create solid cover, and a lookout zipline. Use **E**
+at ladders, relay panels and zipline anchors. Multiplayer continues to use Nacht.
+
+Map catalog and layouts live in `assets/maps/registry.json`. See
+[AGENT_DOCUMENTATION.md](AGENT_DOCUMENTATION.md) for the schema, API, debug
+commands and automated checks; [AGENT_PHASE1_REPORT.md](AGENT_PHASE1_REPORT.md)
+records selection work; [AGENT_PHASE2_REPORT.md](AGENT_PHASE2_REPORT.md) records
+vehicle work and pending browser verification.
+
+[AGENT_PHASE3_REPORT.md](AGENT_PHASE3_REPORT.md) records the environmental-map
+implementation, tests and pending browser verification.
+
+## Dynamic weather and day/night
+
+All selectable maps have clear/rain/fog/storm/snow weather with smooth transitions.
+A day lasts 12 active-play minutes: **day 06:00–17:00**, **dusk 17:00–19:00**,
+**night 19:00–06:00**. Dusk increases spawn rate and newly started round population
+by 10%; night increases them by 50% and may spawn purple-marked Night Stalkers.
+
+- **L** toggles your battery flashlight (90 seconds continuous use). It recharges
+  while off, faster during daylight. Clock/battery status appears below the weather.
+- **F6** cycles and locks weather; **F7** forces and freezes day/dusk/night.
+- Try `?hour=22&weather=fog` on the game URL, then start a map.
+- Console tools: `GAME.dayNight.force(22)`, `GAME.dayNight.resume()`,
+  `GAME.weatherManager.force('snow')`, `GAME.weatherManager.resumeAutomatic()`.
+- Turning weather cosmetics off does not disable fog visibility or lightning.
+
+Implementation and verification details: `AGENT_DOCUMENTATION.md`,
+`AGENT_PHASE5_REPORT.md`, and `AGENT_COMPLETION_REPORT.md`. Browser performance
+and cross-browser acceptance remain pending; software tests are not a 60 FPS guarantee.

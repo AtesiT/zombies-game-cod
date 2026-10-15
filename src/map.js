@@ -73,7 +73,8 @@ export class GameMap {
    * campaign building: one hall, every gun on the walls, a button per
    * creature, the perk row, the machines and a box -- nothing else.
    */
-  constructor(mode = 'campaign') {
+  constructor(mode = 'campaign', definition = null) {
+    this.definition = definition;
     this.mode = mode;
     this.w = MAP_W;
     this.h = MAP_H;
@@ -87,26 +88,28 @@ export class GameMap {
     // --- vertical links ----------------------------------------------------
     // `a` and `b` deliberately share tile coordinates, so climbing the west
     // stair leaves you standing directly above where you were.
-    this.links = mode === 'range' ? [] : LEVEL_LINKS.map((l, i) => ({
+    this.links = mode === 'range' || definition ? [] : LEVEL_LINKS.map((l, i) => ({
       id: i, kind: l.kind, name: l.name,
       a: { floor: l.a.floor, tx: l.a.x, ty: l.a.y },
       b: { floor: l.b.floor, tx: l.b.x, ty: l.b.y },
       cx: (l.a.x + 0.5) * T, cy: (l.a.y + 0.5) * T,
     }));
     // floor -> links that touch it, for the cross-floor pathing search
-    this.linksByFloor = mode === 'range' ? [[]] : FLOORS.map(() => []);
+    this.linksByFloor = mode === 'range' || definition ? [[]] : FLOORS.map(() => []);
     for (const l of this.links) {
       this.linksByFloor[l.a.floor].push(l);
       this.linksByFloor[l.b.floor].push(l);
     }
 
     // --- one parsed storey each --------------------------------------------
-    this.floors = mode === 'range'
+    this.floors = definition ? [this._buildConfiguredFloor(definition)] : mode === 'range'
       ? [this._buildRangeFloor()]
       : FLOORS.map((def, i) => this._parseFloor(def, i));
 
     this.floor = -1;
-    this.playerStart = mode === 'range'
+    this.playerStart = definition
+      ? { x: (definition.level.start.x + 0.5) * T, y: (definition.level.start.y + 0.5) * T }
+      : mode === 'range'
       ? { x: 36.5 * T, y: 26 * T }
       : { x: (PLAYER_START.x + 0.5) * T, y: (PLAYER_START.y + 0.5) * T };
     this.setFloor(0);
@@ -150,7 +153,7 @@ export class GameMap {
     // flow rebuild (which hops storeys) reset a door the player had already
     // opened straight back to shut.
     for (const k of ['perkSpots', 'powerSwitch', 'workbench', 'papSpot',
-      'secretSwitches', 'secretLoot']) this[k] = F[k];
+      'secretSwitches', 'secretLoot', 'powerSwitches', 'papSpots']) this[k] = F[k];
     this.flowDirty = true;
     return true;
   }
@@ -269,6 +272,45 @@ export class GameMap {
     }
 
     F.staticCanvas = paintLevel(F.tiles, MAP_W, MAP_H, 20260101, 0);
+    return F;
+  }
+
+  /** Build a registry-defined floor without importing campaign object tables. */
+  _buildConfiguredFloor(definition) {
+    const level = definition.level;
+    const F = {
+      def: { key: definition.id, name: definition.name, short: '1' }, index: 0,
+      tiles: Uint8Array.from(level.rows.join(''), c => CHAR_TO_TILE[c] ?? TILE.FLOOR),
+      barricadeOf: new Int16Array(this.n).fill(-1), doorOf: new Int16Array(this.n).fill(-1),
+      stairOf: new Int16Array(this.n).fill(-1), seen: new Uint8Array(this.n),
+      barricades: [], doors: [], stairs: [], wallBuys: [], grenadeCrates: [],
+      boxSpots: [], cacheSpots: [], lamps: [], solidProps: [], perkSpots: [],
+      powerSwitch: null, workbench: null, papSpot: null, secretSwitches: [], secretLoot: [],
+      secretDoorIdx: -1, dist: new Int32Array(this.n), next: new Int32Array(this.n),
+      _heap: new MinHeap(this.n),
+      spawnPoints: level.spawns.map(p => ({ tx: p.x, ty: p.y, x: (p.x + 0.5) * T, y: (p.y + 0.5) * T })),
+    };
+    const world = p => ({ ...p, tx: p.x, ty: p.y, x: (p.x+.5)*T, y: (p.y+.5)*T });
+    F.powerSwitches = (level.powerSwitches ?? []).map(world);
+    F.papSpots = (level.upgrades ?? []).map(world);
+    F.powerSwitch = F.powerSwitches[0] ?? null;
+    F.papSpot = F.papSpots[0] ?? null;
+    F.boxSpots = (level.boxSpots ?? []).map(world);
+    F.wallBuys = (level.wallBuys ?? []).map(p => ({ ...world(p), wallCX:(p.wx+.5)*T, wallCY:(p.wy+.5)*T, facing:wallFacing(p) }));
+    for (const window of level.barricades ?? []) {
+      const i = this.idx(window.x,window.y), id = F.barricades.length;
+      F.tiles[i] = TILE.WINDOW; F.barricadeOf[i] = id;
+      F.barricades.push({id,tiles:[i],horizontal:true,opening:2,planks:6,maxPlanks:6,hurt:0,cx:(window.x+.5)*T,cy:(window.y+.5)*T});
+    }
+    for (const door of level.doors ?? []) {
+      const i = this.idx(door.x,door.y);
+      F.tiles[i] = TILE.DOOR; F.doorOf[i] = F.doors.length;
+      F.doors.push({ id:F.doors.length, tx:door.x, ty:door.y, i, horizontal:door.horizontal ?? false, open:false, price:door.price, hurt:0, cx:(door.x+.5)*T, cy:(door.y+.5)*T });
+    }
+    // paintLevel caches by seed: each configured layout must have its own stable key.
+    let seed = 2166136261;
+    for (const ch of definition.id + level.rows.join('')) seed = Math.imul(seed ^ ch.charCodeAt(0), 16777619) >>> 0;
+    F.staticCanvas = paintLevel(F.tiles, this.w, this.h, seed, 0);
     return F;
   }
 
@@ -526,6 +568,7 @@ export class GameMap {
 
   /** Move a circle by (dx,dy), sliding along walls. Mutates pos {x,y}. */
   moveCircle(pos, dx, dy, r, floor = this.floor) {
+    if (this.environment && !this.environment.canMove(pos)) return;
     pos.x += dx;
     this._resolveAxis(pos, r, true, floor);
     this._resolveProps(pos, r, floor);
@@ -768,6 +811,10 @@ export class GameMap {
    */
   /** `floor` lets a zombie read the flow field of the storey it is on. */
   flowStep(x, y, floor = this.floor) {
+    if (this.vehicle && floor === 0) {
+      const detour = this.vehicle.navigation.step(x,y);
+      if (detour !== undefined) return detour;
+    }
     const F = floor === this.floor ? this : this.floors[floor];
     if (!F) return null;
     const tx = Math.floor(x / T), ty = Math.floor(y / T);

@@ -1,3 +1,8 @@
+import { DayNightCycle } from './systems/time/DayNightCycle.js';
+import { WeatherManager } from './systems/weather/WeatherManager.js';
+import { EnvironmentManager } from './systems/environment/EnvironmentManager.js';
+import { BusController } from './systems/vehicle/BusController.js';
+import { MapManager } from './systems/map/MapManager.js';
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
 import { T, buildArt } from './art.js';
 import { GameMap } from './map.js';
@@ -157,6 +162,7 @@ const DECAL_WASH = 0.22;
 export class Game {
   constructor(input) {
     this.input = input;
+    this.mapManager = new MapManager();
     activeGame = this;
     if (!settingsHooked) {
       settingsHooked = true;
@@ -164,7 +170,7 @@ export class Game {
     }
     this.vw = VW;
     this.vh = VH;
-    this.map = new GameMap();
+    this.map = new GameMap('campaign', this.mapManager.current);
     this.art = buildArt();
     this.lighting = new Lighting(VW, VH, 0.5);
     this.hud = new HUD();
@@ -196,8 +202,13 @@ export class Game {
     this.reset();
   }
 
-  reset() {
-    this.map = new GameMap();
+  reset(preparedMap = null) {
+    this.dayNight?.dispose(); this.dayNight = null;
+    this.weatherManager?.dispose(); this.weatherManager = null;
+    this.environment?.dispose(); this.environment = null;
+    this.bus?.dispose();
+    this.bus = null;
+    this.map = preparedMap ?? new GameMap('campaign', this.mapManager.current);
     this._clearDecals();
     this.decals = this._decalFor(this.map.floor);
     this.decalCtx = this._decalCtx[this.map.floor];
@@ -307,6 +318,14 @@ export class Game {
     }
     this.teleportFx = 0;
 
+    if (this.map.definition?.level.environment?.length) this.environment = new EnvironmentManager(this, this.map.definition.level.environment);
+    if (this.map.definition?.level.vehicle) this.bus = new BusController(this, this.map.definition.level.vehicle);
+    this.weatherManager = new WeatherManager(this, this.map.definition?.level.weather ?? {});
+    this.dayNight = new DayNightCycle(this);
+    const forcedHour = new URLSearchParams(globalThis.location?.search ?? '').get('hour');
+    if (forcedHour !== null) { try { this.dayNight.force(Number(forcedHour)); } catch (e) { console.warn(e.message); } }
+    const forcedWeather = new URLSearchParams(globalThis.location?.search ?? '').get('weather');
+    if (forcedWeather) { try { this.weatherManager.force(forcedWeather, { immediate:true }); } catch (e) { console.warn(e.message); } }
     this.rebuildFlow();
     this.cam.x = clamp(this.player.pos.x - VW / 2, 0, this.map.w * T - VW);
     this.cam.y = clamp(this.player.pos.y - VH / 2, 0, this.map.h * T - VH);
@@ -613,7 +632,7 @@ export class Game {
 
   makeZombie(sp, forceType = null) {
     const plan = this.roundPlan(this.round);
-    const type = forceType ?? this.rollEnemyType();
+    const type = forceType ?? (this.dayNight?.period === 'night' && !plan.dog && Math.random() < .18 ? 'night-stalker' : this.rollEnemyType());
     const at = sp.s ?? sp;
     const floor = sp.floor ?? this.map.floor;
     const jitter = type === 'brute' ? 4 : 10;
@@ -628,6 +647,7 @@ export class Game {
   }
 
   startRound(n) {
+    this.weatherManager?.onWave(n);
     this.round = n;
     this.stats.round = n;
     // Co-op: a body that went down comes back when the next round does. You
@@ -656,7 +676,7 @@ export class Game {
     const plan = this.roundPlan(n);
     this.dogRound = plan.dog;
     // the range never "finishes" a round: there is nothing to finish
-    this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
+    this.zombiesTotal = this.rangeMode ? 0x3fffffff : Math.ceil(plan.total * (this.dayNight?.spawnMultiplier ?? 1));
     this.zombiesSpawned = 0;
     this.zombiesKilled = 0;
     this.roundDamageTaken = 0;
@@ -925,7 +945,8 @@ export class Game {
     // jogging about behind the fence; open it up as the rounds climb.
     const lo = Math.floor(cands.length * Math.max(0, 0.25 - this.round * 0.03));
     const hi = Math.floor(cands.length * Math.min(1, 0.56 + this.round * 0.06));
-    return cands[randInt(lo, Math.max(lo, hi - 1))];
+    const chosen = cands[randInt(lo, Math.max(lo, hi - 1))];
+    return this.weatherManager?.adjustSpawn(chosen) ?? chosen;
   }
 
   spawnZombie() {
@@ -1192,7 +1213,8 @@ export class Game {
     const dx = Math.cos(angle), dy = Math.sin(angle);
     const ex = ox + dx * def.range, ey = oy + dy * def.range;
     const wall = this.map.rayWall(ox, oy, ex, ey);
-    const wallT = wall ? wall.t : def.range;
+    const environmentalHit = this.environment?.destructibles.raycast(ox,oy,dx,dy,wall ? wall.t : def.range);
+    const wallT = Math.min(wall ? wall.t : def.range, environmentalHit?.t ?? Infinity);
 
     const hits = [];
     const magnet = this.player.perkFx.headMagnet;
@@ -1250,6 +1272,12 @@ export class Game {
       if (res === 2) { this.onZombieKilled(h.z, h.head); }
       if (pierce > 0 && insta === 1) { pierce--; endT = Math.max(endT, h.t + 8); }
       else if (insta === 1) { endT = h.t; break; }
+    }
+
+    if (environmentalHit && endT >= environmentalHit.t) {
+      this.environment.destructibles.hit(environmentalHit.item, def.dmg * insta);
+      endT = environmentalHit.t;
+      anyHit = true;
     }
 
     // wonder-weapon extras fire once per shot, at the point of impact --
@@ -1399,6 +1427,11 @@ export class Game {
   /** What a given body could reach right now: prices and reach are per
    *  player, since four of you are carrying four wallets. */
   interactionFor(p = this.player) {
+    const environmentAction = this.environment?.interaction(p);
+    if (environmentAction) return environmentAction;
+    const nearest = spots => spots.reduce((a,b) => !a || dist(p.pos.x,p.pos.y,b.x,b.y)<dist(p.pos.x,p.pos.y,a.x,a.y) ? b : a, null);
+    if (this.map.powerSwitches?.length) this.map.powerSwitch = nearest(this.map.powerSwitches);
+    if (this.map.papSpots?.length) this.map.papSpot = nearest(this.map.papSpots);
     let best = null;
     const offer = (o) => { if (!best || o.d < best.d) best = o; };
 
@@ -1454,7 +1487,7 @@ export class Game {
     }
 
     const bs = this.box.spot;
-    const db = dist(p.pos.x, p.pos.y, bs.x, bs.y);
+    const db = bs ? dist(p.pos.x, p.pos.y, bs.x, bs.y) : Infinity;
     if (db < 42) {
       const price = this.box.price();
       offer({
@@ -1520,6 +1553,8 @@ export class Game {
   doInteraction(p = this.player, it = null) {
     it = it ?? this.interactionFor(p);
     if (!it || !p || p.dead || p.downed) return;
+
+    if (it.type === 'environment') { this.environment?.interact(p, it.action); return; }
 
     if (it.type === 'wallbuy') {
       const def = WEAPONS[it.weapon];
@@ -2062,6 +2097,7 @@ export class Game {
 
   // ---------------------------------------------------------------- update
   update(dt) {
+    if (this.bus && (this.paused || this.settingsOpen || this.controlsOpen || this.debugOpen)) this.bus.sound.stop();
     this.time += dt;
 
     // ---- settings overlay (works anywhere, pauses the game behind it) -----
@@ -2212,6 +2248,7 @@ export class Game {
     if (this.input.wasPressed('KeyM')) audio.setMuted(!audio.muted);
 
     if (this.gameOver) {
+      this.bus?.sound.stop();
       this.overT += dt;
       this.particles.update(dt, this.map);
       this.popups.update(dt);
@@ -2225,12 +2262,24 @@ export class Game {
 
     if (this.input.wasPressed('KeyP', 'Escape')) this.paused = !this.paused;
     if (this.paused) {
+      this.bus?.sound.stop();
       if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
       if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
       return;
     }
+
+    const vehicleAction = this.bus && this.input.wasPressed('KeyE') ? this.bus.interact() : false;
+    if (this.input.wasPressed('F6')) this.weatherManager?.cycle();
+    this.weatherManager?.setVisualPolicy(settings.get('weather') && this._perfStage < 2, this._perfStage ? 'low' : this.weatherManager.deviceQuality);
+    if (this.input.wasPressed('KeyL')) this.dayNight?.toggle();
+    if (this.input.wasPressed('F7')) this.dayNight?.force(this.dayNight.period==='day'?18:this.dayNight.period==='dusk'?22:12);
+    this.dayNight?.update(dt);
+    this.weatherManager?.update(dt);
+    if (this.bus) { this.bus.physics.weatherSpeed = this.weatherManager.modifiers.speed; this.bus.physics.weatherDrift = this.weatherManager.modifiers.drift; }
+    this.environment?.beforeUpdate(dt);
+    this.bus?.update(dt);
 
     // ---- flow field refresh ------------------------------------------------
     // One field per storey: the player's own floor points at the player, and
@@ -2248,7 +2297,7 @@ export class Game {
 
     // ---- player ------------------------------------------------------------
     this._fxOn(this.player);
-    this.player.update(dt, this, this.input);
+    if (!this.bus?.body.driving && !this.environment?.elevation.inTransit(this.player)) this.player.update(dt, this, this.input);
     if (this.debug.ammo) {
       for (const id in this.player.loadout) {
         const sl = this.player.loadout[id], w = WEAPONS[id];
@@ -2273,7 +2322,7 @@ export class Game {
         || dist(this.player.pos.x, this.player.pos.y, this.workbench.x, this.workbench.y) > 56) {
         this.craftOpen = false;
       }
-    } else {
+    } else if (!this.bus?.body.driving && !this.environment?.elevation.inTransit(this.player)) {
       // 1 / 2 pick a carried slot, Q flips between them; the wheel and the
       // square brackets dig through the whole armoury (that takes a moment)
       if (this.input.wasPressed('Digit1')) this.player.setSlot(0);
@@ -2299,9 +2348,10 @@ export class Game {
       }
     }
 
-    this.checkLevelLinks(dt);
-    this.updateAimTarget();
+    if (!this.bus?.body.driving) this.checkLevelLinks(dt);
+    if (!this.bus?.body.driving) this.updateAimTarget();
     this.updateInteraction();
+    if (this.bus?.body.driving) this.interaction = null;
     // ---- co-op: pick somebody up, or get on with buying things ------------
     const fallen = this.players.find((o) => o !== this.player && o.downed && !o.dead
       && dist(this.player.pos.x, this.player.pos.y, o.pos.x, o.pos.y) < 40);
@@ -2313,8 +2363,8 @@ export class Game {
     } else {
       this._reviveT = 0;
       if (!this.craftOpen) {
-        if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
-        if (this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
+        if (!vehicleAction && !this.bus?.body.driving && !this.environment?.elevation.inTransit(this.player) && this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
+        if (!vehicleAction && !this.bus?.body.driving && this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
       } else this._rebuildT = 0;
     }
 
@@ -2326,7 +2376,7 @@ export class Game {
         this.spawnTimer -= dt;
         if (this.spawnTimer <= 0 && aliveCount < plan.maxAlive) {
           this.spawnZombie();
-          this.spawnTimer = plan.interval * randRange(0.7, 1.3);
+          this.spawnTimer = plan.interval * randRange(0.7, 1.3) / (this.dayNight?.spawnMultiplier ?? 1);
         }
       }
       if (this.zombiesKilled >= this.zombiesTotal && aliveCount === 0) this.endRound();
@@ -2358,6 +2408,9 @@ export class Game {
 
     this._fxOn(this.player);        // anything the world itself does is here
     for (const z of this.zombies) { this._fxOn(z); z.update(dt, this); }
+    this.bus?.collide();
+    this.environment?.afterUpdate(dt);
+    this.weatherManager?.afterUpdate();
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       if (this.zombies[i].remove) {
         if (this.zombies[i].dead) this.zombies.splice(i, 1);
@@ -2604,8 +2657,9 @@ export class Game {
   /** Camera, lamps, HUD and banners: a guest needs all of it too. */
   _lateUpdate(dt) {
     // ---- camera ------------------------------------------------------------
-    const lookX = ((this.input?.mouse?.x ?? VW / 2) - VW / 2) * 0.22;
-    const lookY = ((this.input?.mouse?.y ?? VH / 2) - VH / 2) * 0.22;
+    const lead = this.bus?.body.driving ? this.bus.body.vel : null;
+    const lookX = lead ? lead.x * .45 : ((this.input?.mouse?.x ?? VW / 2) - VW / 2) * 0.22;
+    const lookY = lead ? lead.y * .45 : ((this.input?.mouse?.y ?? VH / 2) - VH / 2) * 0.22;
     const tx = clamp(this.player.pos.x + lookX - VW / 2, 0, this.map.w * T - VW);
     const ty = clamp(this.player.pos.y + lookY - VH / 2, 0, this.map.h * T - VH);
     this.cam.x = damp(this.cam.x, tx, 7, dt);
@@ -2717,8 +2771,20 @@ export class Game {
    * the whole trick; the box and the player just need to be told.
    */
   _loadMap(range) {
+    this.dayNight?.dispose(); this.dayNight = null;
+    this.weatherManager?.dispose(); this.weatherManager = null;
+    this.environment?.dispose(); this.environment = null;
+    this.bus?.dispose(); this.bus = null;
     this.rangeMode = range;
-    this.map = new GameMap(range ? 'range' : 'campaign');
+    this.map = new GameMap(range ? 'range' : 'campaign', range ? null : this.mapManager.current);
+    if (this.map.definition?.level.environment?.length) this.environment = new EnvironmentManager(this, this.map.definition.level.environment);
+    if (this.map.definition?.level.vehicle) this.bus = new BusController(this, this.map.definition.level.vehicle);
+    this.weatherManager = new WeatherManager(this, this.map.definition?.level.weather ?? {});
+    this.dayNight = new DayNightCycle(this);
+    const forcedHour = new URLSearchParams(globalThis.location?.search ?? '').get('hour');
+    if (forcedHour !== null) { try { this.dayNight.force(Number(forcedHour)); } catch (e) { console.warn(e.message); } }
+    const forcedWeather = new URLSearchParams(globalThis.location?.search ?? '').get('weather');
+    if (forcedWeather) { try { this.weatherManager.force(forcedWeather, { immediate:true }); } catch (e) { console.warn(e.message); } }
 
     // map-bound systems are rebuilt exactly the way the constructor builds
     // them, so switching worlds never drags state across with it
@@ -2787,6 +2853,18 @@ export class Game {
       { dur: 3.2, colour: '#9fd0f0' });
   }
 
+  /** Start a clean solo session on a validated registry definition. */
+  playMap(id) {
+    const definition = this.mapManager.get(id);
+    // Construct first: malformed data must not destroy the active session.
+    const prepared = new GameMap('campaign', definition);
+    this.net.role = 'off';
+    this.reset(prepared);
+    this.mapManager.select(id);
+    this.rangeMode = false;
+    this.begin();
+  }
+
   begin() {
     this.started = true;
     this.scene = null;
@@ -2840,8 +2918,19 @@ export class Game {
     if (esc) { this.scene = this.scene === 'mp' || this.scene === 'rooms' ? 'menu' : 'menu'; audio.dryFire(); return; }
     if (!row) return;
     audio.reload(2);
+    if (row.id.startsWith('map:')) {
+      this.playMap(row.id.slice(4));
+      return;
+    }
     switch (row.id) {
       case 'solo':
+        this.scene = 'maps'; this.menuIndex = 0;
+        if (this.mapManager.status === 'idle') this.mapManager.load();
+        break;
+      case 'retryMaps': this.mapManager.load(); break;
+      case 'classic':
+        this.mapManager.select(null);
+        this._loadMap(false);
         this.net.role = 'off';
         if (this.rangeMode) this._loadMap(false);
         this.begin();
@@ -2964,6 +3053,9 @@ export class Game {
 
   /** Open a room and start playing -- people can walk in at any time. */
   _startHost() {
+    // Custom map networking is deferred until its dynamic state is available.
+    this.mapManager.select(null);
+    if (this.map.definition || this.rangeMode) this._loadMap(false);
     const net = this.net;
     const linked = this._ensureRelay();
     net.hostGame('NACHT', net.name || 'PLAYER');
@@ -3002,6 +3094,8 @@ export class Game {
   }
 
   _joinRoom(room) {
+    this.mapManager.select(null);
+    if (this.map.definition || this.rangeMode) this._loadMap(false);
     const net = this.net;
     if (!this._ensureRelay()) { this._pendingRoom = room; return; }
     net.joinGame(room.id, net.name || 'PLAYER');
@@ -3033,6 +3127,7 @@ export class Game {
   _guestUpdate(dt) {
     const net = this.net;
     net.step(dt);
+    if (!this.paused && !this.gameOver) { this.weatherManager?.update(dt, { authoritative:false }); this.dayNight?.update(dt, { authoritative:false }); }
     const pl = this.player;
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
       this.map.setFloor(pl.floor);
@@ -3165,25 +3260,38 @@ export class Game {
       ctx.beginPath(); ctx.ellipse(f.x, f.y, Math.max(2, f.r * 0.8), Math.max(2, f.r * 0.64), 0, 0, TAU); ctx.stroke();
       ctx.restore();
     }
+    this.environment?.draw(ctx);
+    this.bus?.draw(ctx);
     this.traps.draw(ctx, this.time, this.map.floor);
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
     if (this.map.rangePads) this.drawRangePads(ctx);
     this.drawMysteryBox(ctx);
-    this.drawPowerSwitch(ctx);
+    if (this.map.powerSwitches?.length) {
+      const saved = this.map.powerSwitch;
+      for (const spot of this.map.powerSwitches) { this.map.powerSwitch = spot; this.drawPowerSwitch(ctx); }
+      this.map.powerSwitch = saved;
+    } else this.drawPowerSwitch(ctx);
     this.drawWorkbench(ctx);
-    this.drawPackAPunch(ctx);
+    if (this.map.papSpots?.length) {
+      const saved = this.map.papSpot;
+      for (const spot of this.map.papSpots) { this.map.papSpot = spot; this.drawPackAPunch(ctx); }
+      this.map.papSpot = saved;
+    } else this.drawPackAPunch(ctx);
     this.drawSecretSwitches(ctx);
     this.drawSecretLoot(ctx);
     this.drawPowerups(ctx);
 
+    this.weatherManager?.drawGround(ctx);
+
     // 3. actors, sorted by feet depth
-    const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
-    const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
+    const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor && (this.weatherManager?.visible(z.pos,z.floor??0) ?? true));
+    const list = actors.map((z) => ({ y: z.pos.y, d: () => this.environment ? this.environment.drawActor(ctx,z,()=>z.draw(ctx,this.art,this.time)) : z.draw(ctx, this.art, this.time) }));
     for (const pl of (this.players ?? [this.player])) {
+      if (pl === this.player && this.bus?.body.driving) continue;
       if (!pl || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
-      list.push({ y: pl.pos.y + 0.5, d: () => pl.draw(ctx, this.art) });
+      list.push({ y: pl.pos.y + 0.5, d: () => this.environment ? this.environment.drawActor(ctx,pl,()=>pl.draw(ctx,this.art)) : pl.draw(ctx, this.art) });
     }
     list.sort((a, b) => a.y - b.y);
     for (const l of list) l.d();
@@ -3375,6 +3483,8 @@ export class Game {
     // on. Run before the HUD so the text stays clean and readable.
     if (this._dlss) postgrade(ctx, vw, vh, this.time);
 
+    this.weatherManager?.drawOverlay(ctx);
+
     // 11. vignette + HUD
     // a slightly deeper vignette when the grade is on, so the edges fall away
     drawVignette(ctx, vw, vh, this._dlss ? 0.5 : 0.38);
@@ -3396,6 +3506,8 @@ export class Game {
       ctx.restore();
     }
     if (this.started) this.hud.draw(ctx, this, vw, vh);
+    if (this.started) this.bus?.drawHUD(ctx);
+    if (this.started) { this.environment?.drawHUD(ctx); this.weatherManager?.drawHUD(ctx); this.dayNight?.drawHUD(ctx); }
     this._drawVoice(ctx, vw, vh);
     if (this.teleportFx > 0) {
       ctx.fillStyle = `rgba(0,0,0,${this.teleportFx * 0.45})`;
@@ -3501,8 +3613,10 @@ export class Game {
     const sy = (wy) => wy - camY;
     // the night upstairs is not the night downstairs
     const amb = AMBIENT[this.map.floor] ?? AMBIENT[0];
-    L.setAmbient(amb.rgb, amb.alpha);
+    const darkness = this.dayNight?.darkness ?? 0;
+    L.setAmbient(amb.rgb, amb.alpha + (Math.min(.94, amb.alpha + .22) - amb.alpha) * darkness);
     L.begin();
+    this.environment?.addLights(L,camX,camY);
 
     // open sky over the storey, if it has any
     const sky = SKY_LIGHT[this.map.floor];
@@ -3534,7 +3648,7 @@ export class Game {
       }
       // the open box throws light
       const bs = this.box.spot;
-      L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
+      if (bs) L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
         'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
       // Pack-a-Punch drum. Only the ground floor has one -- and the old
       // `return` here did not skip the drum, it skipped the entire rest of
@@ -3571,8 +3685,8 @@ export class Game {
 
     // player torch + personal bubble
     const p = this.player;
-    L.point(sx(p.pos.x), sy(p.pos.y), 520, 0.52, 'rgba(104,134,186,0.16)', 0.30);
-    L.cone(sx(p.pos.x), sy(p.pos.y - 6), p.aim, 215, 0.58, 0.95);
+    L.point(sx(p.pos.x), sy(p.pos.y), 520, 0.52 * (1 - .75 * darkness), 'rgba(104,134,186,0.16)', 0.30);
+    this.dayNight?.addLights(L, camX, camY);
     L.point(sx(p.pos.x), sy(p.pos.y - 4), 76, 0.74, 'rgba(255,210,150,0.15)', 0.32);
 
     for (const f of this.flashLights) {
@@ -3839,6 +3953,7 @@ export class Game {
   }
 
   drawMysteryBox(ctx) {
+    if (!this.box.spot) return;
     this.box.draw(ctx, this.art, this.time);
     const s = this.box.spot;
     const price = this.box.price();

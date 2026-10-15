@@ -26,7 +26,7 @@ const click = (i, scene = 'menu') => {
 const press = (code) => { g.input.pressed.add(code); g.update(H); g.input.endFrame(); };
 
 // ---- the drawing and the hit test are the same list -----------------------
-for (const scene of ['menu', 'mp', 'rooms', 'waiting']) {
+for (const scene of ['menu', 'maps', 'mp', 'rooms', 'waiting']) {
   g.scene = scene;
   const rows = M.menuRows(scene, g);
   ok(rows.length > 0, `the "${scene}" screen has no rows`);
@@ -90,6 +90,8 @@ ok(g.settingsOpen === false, 'the settings panel would not close');
 
 // ---- SOLO -----------------------------------------------------------------
 click(rowId('menu', 'solo'));
+ok(g.scene === 'maps', 'SOLO did not open map selection');
+click(rowId('maps', 'classic'));
 ok(g.started === true, 'SOLO did not start the game');
 ok(g.round === 1, `SOLO started on round ${g.round}`);
 ok(g.scene === null, 'the menu stayed up after starting');

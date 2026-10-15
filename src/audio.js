@@ -14,6 +14,14 @@ export class AudioEngine {
     this._lastWhimper = -9;
   }
 
+  /** Smooth reusable rain low-pass; music and user volume remain independent. */
+  setWeatherMuffle(amount) {
+    const value = Math.max(0, Math.min(1, amount));
+    if (value === this.weatherMuffle && this._weatherApplied) return;
+    this.weatherMuffle = value;
+    if (this.weatherFilter) { this.weatherFilter.frequency.setTargetAtTime(20000 - 18200 * value, this.ctx.currentTime, .15); this._weatherApplied = true; }
+  }
+
   init() {
     if (this.ctx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -31,13 +39,18 @@ export class AudioEngine {
     bus.connect(this.master);
     this.bus = bus;
 
+    this.weatherFilter = this.ctx.createBiquadFilter();
+    this.weatherFilter.type = 'lowpass';
+    this.weatherFilter.frequency.value = 20000;
+    this.weatherFilter.connect(bus);
+    this.setWeatherMuffle(this.weatherMuffle ?? 0);
     this.sfxBus = this.ctx.createGain();
     this.sfxBus.gain.value = 1;
-    this.sfxBus.connect(bus);
+    this.sfxBus.connect(this.weatherFilter);
 
     this.ambientBus = this.ctx.createGain();
     this.ambientBus.gain.value = 1;
-    this.ambientBus.connect(bus);
+    this.ambientBus.connect(this.weatherFilter);
 
     // music has its own fader: it is the one thing you might want gone
     // while keeping the wind and the shots

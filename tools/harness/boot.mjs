@@ -190,7 +190,14 @@ input.mouse.x = VW / 2;
 input.mouse.y = VH * 0.46;
 input.mouse.pressed = true;
 frames(3);
-ok(game.started === true, 'clicking SOLO did not start the game');
+ok(game.scene === 'maps', 'SOLO did not open map selection');
+// The registry is asynchronous; classic remains available even offline.
+game.menuIndex = (await import('../../src/hud.js')).menuRows('maps', game).findIndex(r => r.id === 'classic');
+input.mouse.pressed = false;
+input.mouse.x = 0; input.mouse.y = 0;
+input.pressed.add('Enter');
+frames(1);
+ok(game.started === true, 'selecting classic did not start the game');
 ok(game.scene === null, 'the menu stayed up after SOLO');
 
 game.player.hurt = () => false;

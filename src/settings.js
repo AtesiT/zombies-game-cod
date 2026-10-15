@@ -42,8 +42,8 @@ export const SETTING_DEFS = [
     hint: 'Muzzle and explosion light bursts',
   },
   {
-    id: 'weather', label: 'WEATHER & LEAVES', type: 'toggle', def: true,
-    hint: 'Wind, drifting leaves and ground mist',
+    id: 'weather', label: 'WEATHER COSMETICS', type: 'toggle', def: true,
+    hint: 'Particles, tracks and leaves; fog and hazards stay active',
   },
   {
     id: 'crosshair', label: 'CROSSHAIR HIGHLIGHT', type: 'toggle', def: true,
