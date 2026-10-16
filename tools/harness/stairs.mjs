@@ -127,7 +127,8 @@ for (const f of [0, 1, 2]) {
     const doors = g4.map.doors.length;
     const bench = !!g4.map.workbench;
     if (f > 0) {
-      ok(doors === 0, `storey ${f} still has ${doors} doors to buy`);
+      // the attic owns the one door upstairs: the bench room earns a lock
+      ok(doors === (f === 2 ? 1 : 0), `storey ${f} still has ${doors} doors to buy`);
       console.log(`     storey ${f}: ${doors} doors, ${bench ? 'the bench is here' : 'no bench'}`);
     }
     ok(bench === (f === 2),

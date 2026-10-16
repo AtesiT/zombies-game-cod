@@ -53,27 +53,25 @@ for (const ps of g.map.perkSpots ?? []) {
   ok(!!p, `the ${ps.id} machine can be walked through`);
 }
 
-// ---- and the box follows the storey you are on ------------------------------
+// ---- and the box belongs to the ground floor alone ---------------------------
+// (it used to pack up and follow you between storeys -- one crate, many homes,
+//  all of them downstairs now)
 const groundSpot = { ...g.box.spot };
 g.map.setFloor(1);
 g.useFloor(1);
 g.update(H);
-const upSpot = g.box.spot;
-ok(!!upSpot, 'the box has no spot on the second floor');
-ok(g.box.spots.every((s, i) => s.x === g.map.boxSpots[i].x && s.y === g.map.boxSpots[i].y),
-  'the box is still using the ground floor\'s spots');
-const utx = Math.floor(upSpot.x / T), uty = Math.floor(upSpot.y / T);
-ok(!g.map.solidAt(utx, uty), 'the box is standing inside a wall upstairs');
-// its solid body moved with it
-const upProp = (g.map.solidProps ?? []).some((p) => upSpot.x > p.x0 && upSpot.x < p.x1
-  && upSpot.y > p.y0 && upSpot.y < p.y1);
-ok(upProp, 'the box is not solid on the second floor');
+ok(Math.abs(g.box.spot.x - groundSpot.x) < 0.01 && Math.abs(g.box.spot.y - groundSpot.y) < 0.01,
+  'the box moved when you changed floors');
+const upProp = (g.map.solidProps ?? []).some((p) => groundSpot.x > p.x0 && groundSpot.x < p.x1
+  && groundSpot.y > p.y0 && groundSpot.y < p.y1);
+ok(!upProp, 'a phantom box is blocking the floor above');
 
 g.map.setFloor(0);
 g.useFloor(0);
 g.update(H);
-ok(Math.abs(g.box.spot.x - groundSpot.x) < 0.01 && Math.abs(g.box.spot.y - groundSpot.y) < 0.01,
-  'the box did not come back to its old spot downstairs');
+const backProp = (g.map.solidProps ?? []).some((p) => groundSpot.x > p.x0 && groundSpot.x < p.x1
+  && groundSpot.y > p.y0 && groundSpot.y < p.y1);
+ok(backProp, 'the box lost its solid body back on the ground floor');
 
 // ---- zombies cannot walk through it either ----------------------------------
 const z = new M.Zombie(g.map, bs.x, bs.y);
@@ -142,5 +140,5 @@ if (fails.length) {
   for (const f of fails) console.log('  -', f);
   process.exitCode = 1;
 } else {
-  console.log('PROPS PASS  the box and the machines have bodies, and the box moves with the storey');
+  console.log('PROPS PASS  the box and the machines have bodies, and the box stays on the ground');
 }

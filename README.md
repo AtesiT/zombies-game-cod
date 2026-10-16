@@ -6,7 +6,11 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 
 > **Кратко по-русски.** 2D-игра с видом сверху в стиле режима «Zombies» из Call of Duty
 > (первая карта Nacht der Untoten). 15 видов оружия, 8 перков, Mystery Box с wonder-оружием,
-> пауэр-апы, четыре типа врагов, генератор электричества, верстак с крафтом, пасхальное яйцо,
+> пауэр-апы, 26 типов врагов (тотемы, могилы, призраки с саблей, снеговик, рыцарь, молнии),
+> погода с грозой и туманом, говорящий громкоговоритель, генератор электричества, верстак с крафтом, пасхальное яйцо,
+> радиособытия с ящиками снабжения, радиостанция на крыше (починил за скрап — ящики каждые
+> два раунда), финал с вертолётом (раунд 25 + 4 маяка, зелёный фальшфейер, 2 минуты до посадки,
+> в кооперативе — голосование большинства, экран EVACUATED с особой отметкой в рекордах),
 > достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
@@ -40,21 +44,36 @@ node server.mjs 8080
 3. **You can join mid-round.** Latecomers are dropped in next to the host with 500
    points and whatever the round has left to throw at them.
 
-Up to four players. The host simulates the world and the rest draw snapshots of it
-20 times a second, so a phone makes a perfectly good second player. Going down is
-not going out: a downed player crawls for 32 s and any team-mate can stand over
-them and hold `F` for 1.3 s. Points are per player, rounds are shared, and the
-horde grows by 32 % for every extra body in the building. If the host quits, the
-relay hands the room to the longest-standing guest.
+Up to **twelve** players, and every hosted room draws a fresh five-letter code.
+The host simulates the world and the rest draw snapshots of it 20 times a second,
+so a phone makes a perfectly good second player. Going down is not going out: a
+downed player bleeds for **60 s** and only the clock can finish them — teeth
+cannot hurry it. Any team-mate, host or guest, stands over the body and holds
+`F`: revival is a **10 s channel** (5 s with Quick Revive), shown as a ring on
+every screen. A body that bleeds out comes back at the top of the next round
+with its sidearm only. Guests fight with the same hands as the host: `G`, `X`
+and `B` throw their own frag, molotov and gas bomb through the host's physics.
+Points are per player, rounds are shared, and the horde grows by 32 % for every
+extra body in the building. If the host quits, the relay hands the room to the
+longest-standing guest.
+
+Joining is watched from the guest's side: it asks the host in, retries once after
+2.5 s if the welcome never comes, and after 9 s says **HOST DID NOT LET YOU IN**
+plainly and returns to the room list instead of spinning forever. A repeated ask
+makes the host resend the welcome, never build a second body. And everything the
+snapshot carries — grenades, power-ups, monkey bombs, fires, rifts, gas — is
+rebuilt on the guest into the exact shape its renderer reads: one wrong shape off
+the wire is not a cosmetic bug, it is a frozen picture.
 
 ## Phone / touch controls
 
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
 FIRE / F / R / Q / sprint / frag / medkit / knife buttons on the right, plus a
-pause button in the corner. A tap anywhere else reaches the game underneath, so
-the menus work with a thumb. `AIM ASSIST` points the barrel at the nearest walker
-while you are not touching the aim stick.
+pause button in the corner — parked off the physical corner of the glass, clear
+of notches and rounded edges, and big enough for a thumb. A tap anywhere else
+reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
+the barrel at the nearest walker while you are not touching the aim stick.
 
 ## Controls
 
@@ -71,10 +90,16 @@ while you are not touching the aim stick.
 | `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
 | `V` | Knife — short range, big points, never runs out |
 | `G` | Throw a frag grenade |
+| `X` | Throw a molotov — leaves a pool of fire that knows its thrower |
+| `B` | Throw a gas bomb — leaves a cloud that slows and bites |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
-| `F` | Same as `E` — and how you revive a downed team-mate in co-op |
+| `F` | Same as `E` — and how you revive a downed team-mate in co-op (**hold**: 10 s, or 5 s with Quick Revive) |
+
+The pause screen is a menu you can click (or thumb): five rows — resume, settings,
+controls, restart the run, return to the front page — each with its old shortcut
+printed on the right, because the keyboard way still works.
 
 ## The map (72 × 50 tiles)
 
@@ -105,11 +130,20 @@ One big level instead of a second map:
 - **Bunker** — four rooms (A/B up, C/D down) split by a central cross-wall, 20 barricaded
   windows, six buyable doors including two that let you **walk outside**.
 - **Radio room** (north-east) — reached by a stairwell from room B. Holds the **Pack-a-Punch**.
-- **Shed** (east) — holds the **workbench**.
-- **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.
-- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
+- **Shed** (east) — tools and sandbags; the workbench it used to hold moved upstairs.
+- **Roof** — the west terrace wears a painted **H**: the helipad, on the deck from
+  the very first night, bird or no bird.
+- **Attic** — the board shack on the roof holds the **workbench**: anything you
+  want built, you carry the scrap up three storeys for.
+- **Roof radio** (east roof block) — a dead set with a bent mast from night one.
+  **25 scrap** straightens the mast: from then on, every second round a supply
+  crate drops onto the pad (points, salvage, every magazine topped up).
+- **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
-  You can leave the bunker and fight in the open; zombies spawn out here and path in.
+  A burnt-out car sits at the bottom of the field and a gutted tank at the bottom
+  right — both at twice their old size, each sunk in its own wide patch of mud,
+  wheel ruts and thrown track. You can leave the bunker and
+  fight in the open; zombies spawn out here and path in.
 
 Stairwells are real portals: step on the tile, walk to its centre, and you pop out at the other
 end (the flow field charges a small cost for it, so zombies use them too).
@@ -128,7 +162,8 @@ slowing webs).
 
 **Mystery Box.** 950 points, five possible locations, spins for ~2.6 s, offers the weapon for
 6.5 s. Pull too many times and the teddy bear steals it — the box relocates. Fire Sale moves it
-and drops the price to 10.
+and drops the price to 10. There is exactly **one** crate in the whole map: all five
+homes are on the ground floor, and upstairs it neither answers nor shows.
 
 **Wonder weapons** (box only): Ray Gun (plasma splash) · Wunderwaffe DG-2 (chains to four
 targets) · Thunder Gun (a cone that throws a whole hallway away) · Winter's Howl (freezes a
@@ -137,9 +172,18 @@ cluster solid) · Monkey Bomb (wind it up, throw it, watch the horde pile on, th
 **Wall buys.** M1911 (start) · MP40 · Thompson · M1897 Trench Gun · PPSh-41 · Kar98k · FG 42 ·
 M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 
-**Workbench.** Kills drop **scrap**. Spend it at the shed: Medkit (+55 HP, stackable, `H`),
-Plank Bundle (two planks on every window at once), Frag Bundle, Ammo Crate (refills everything),
-Armour Plate (+60 absorb), Barricade Spikes (windows bite back for three rounds).
+**Workbench.** Kills drop **scrap**, and the bench in the attic spends it. On the bench today:
+**Medkit** (8 scrap, +55 HP, up to three carried), **Armour Plate** (14 scrap + 1500 points,
+absorbs the next 60 damage, up to 120) and **Steel Shutters** (30 scrap + 2500 points, once per
+house: every window on every floor takes two more planks — the cap itself rises, and the boards
+come with it). The original six recipes were flat vending-machine buttons with nothing behind
+them; they were rewritten onto a new recipe contract, and the four not on the bench yet (Plank
+Bundle, Frag Bundle, Ammo Crate, Barricade Spikes) live in `src/crafting.js` as
+`SHELVED_RECIPES` — hanging one back on is one line. Every recipe owes the bench a `useful()`
+check: a purchase that would change nothing is refused with the reason on the row, so nobody
+ever pays for air again. In co-op every body has its own bench and its own purse; a guest
+builds with its own scrap over the wire, and house-wide buys (the shutters) are shared — the
+deepened caps ride along in the snapshot, so a guest who joins later sees them too.
 
 **Pack-a-Punch.** 5000 points, needs the generator on, one upgrade per weapon per run. It more
 than doubles the damage (×2.2), gives +50 % magazine, double the reserve ammo, an extra point of
@@ -158,9 +202,56 @@ under room A's north windows (80 dps, shocks them rigid) and a *Steam Vent* at t
 room B → D doorway (75 dps, scalds, slows and shoves them back out through the door). Only ever
 hurts zombies — and 15 trap kills in one run is an achievement.
 
-**Enemies.** Walkers, **Runners** (fast, frail, from round 6), **Brutes** (2.7× HP, smashes three
-planks at a time, from round 10), **Crawlers** and **Shriekers** and **Hellhounds**. Every fifth
-round is a dog round.
+**Enemies — 26 types.** Walkers, **Runners** (fast, frail, round 6), **Brutes** (2.7× HP, smashes
+three planks at a time, round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
+**Hellhounds** (every fifth round is a dog round), **Helmeted**, **Napalm**, **Gasbags**,
+**Miners** (come up through the floor), **Mimics**, **Field Medics**, **Bonewrights**,
+**Swarmlings**, **Jammers**, and **Amalgams**.
+
+The haunt roster arrives from round 12 up: **Snowmen** lob snowballs (badly — on purpose) that
+chill your legs for three seconds, and roll double in a storm; **Arsonists** throw fire bottles
+that break into burning pools; **Witches** throw potion bottles that burst into gas; a **Totem
+Bearer** kneels once per life and raises a totem you can shoot down — while it hums, the map
+sinks into a purple dusk and the whole horde gets faster, bolder and hungrier for planks; a
+**Mourner** digs a grave that rings a bell every few seconds and lets out half-seen **Wraiths**
+with a sabre of cold light (they fade when the grave is broken, and they never count towards the
+round); **Shockers** gather for three quarters of a second and throw lightning along their line
+of sight — it hurts, and for a moment your legs and your trigger both forget how to work; and
+the **Knight** walks in from round 20: big, slow, 3.6× HP, body shots ring off its plate for
+half damage, and the head is the only honest way in.
+
+**Weather.** From round 3 every round rolls the sky: a storm (slanted rain across the glass,
+lightning flashes with late thunder, the screen stays wet and dries slowly, snowmen come twice
+as often), fog (a veil with a hole of visibility around you), or nothing.
+
+**The loudspeaker.** From round 10 somebody talks — lines tied to events, not timers: a first
+sighting of a new horror, a totem rising, a grave being dug, a storm rolling in, a door you are
+about to buy ("that one leads nowhere good"). And at rounds 25/30/35 the voice is no longer the
+loudspeaker: survivors outside the wire, a helicopter that wants a lit pad and two minutes, and a
+"look up" over the roof.
+
+**The ending — EVACUATED.** The night can actually be left, and it no longer asks you to
+stand around counting rounds. The four secret dials double as roof beacons: every switch you
+throw lights one of four corner lamps up on the roof (red and green, blinking, visible from
+the deck). Reach **round 25** with all four lit — in whatever order, the pad notices on its
+own — and the crew gives you a bearing and a green flare in a locker at the centre of the H.
+Press E/F on it and a green smoke column goes up: the smoke is what the bird homes on, and
+the clock starts. Two minutes later the smoke thins, the rotor comes in over the west
+trees — shadow, searchlight, chop — and the bird sets down on the pad. Walk up and press
+E/F and the run ends on a golden **EVACUATED** screen to its own music, written to the
+leaderboard with its own **EVAC** mark (and a *Leaving Tonight* badge). Four dials finished
+after round 25 arm it just the same; fewer than four at round 30 and the radio simply
+apologises — the night goes on exactly as before. In co-op the ending is a **vote**: E at
+the landed bird raises (or lowers) your hand, more than half of the bodies alive have to
+agree, and once they do everybody still standing flies.
+
+**The radio's night.** From round 9, every 5–7 rounds the receiver catches a broadcast:
+sitreps ("sector D is lost"), the numbers station, a minute of silence for the ones who did
+not reach morning, a roll call that uses *your* name, a careful hint at one of the dials you
+have not found — a storm forecast that the next round's sky actually honours, and a real
+supply drop: a crate comes down on a parachute by the mystery-box spots, smokes and blinks a
+red flare for ~100 s, and pays 1500 points, 12 salvage and full magazines (*Care Package*).
+Broadcasts never repeat back to back, and rounds 25/30/35 belong to the survivors.
 
 A blast does not always take the head — sometimes it takes the legs. Grenades, monkey bombs and
 Ray Gun splashes will drop a zombie onto its elbows instead: a **Crawler** keeps coming at 70 %
@@ -220,7 +311,7 @@ src/
   perks.js          perk definitions and derived stat effects
   powerups.js       power-up table, drop roll, floating pickup
   mysterybox.js     the box: spin, teddy bear, relocation, fire sale
-  crafting.js       workbench recipes
+  crafting.js       the workbench: recipe contract, three shipped recipes, four shelved
   achievements.js   achievements, localStorage leaderboard, easter-egg state machine
   art.js            sprite baking, parametric gun builder, procedural level painting
   spriteData.js     ASCII pixel art + palette (pure data)
@@ -246,13 +337,20 @@ tools/
 
 To change the level, edit the room/window/door/object tables at the top of `tools/genmap.py` and
 run `python3 tools/genmap.py` — it validates connectivity (nothing solid spawns inside a wall,
-everything is reachable from the player start) and rewrites `src/mapData.js`.
+everything is reachable from the player start, the roof bench included) and rewrites `src/mapData.js`.
+
+> **Before you run it:** `src/mapData.js` has drifted from the generator. The traps, the
+> hand-placed second-floor lamps, the extra box spots upstairs and a few upper-floor doors
+> were edited into the emitted file directly, so regenerating today drops them and the game
+> loses its flame trap, its electric barrier, its steam vent and half the barracks lighting.
+> Port those tables into `genmap.py` first (the warning at the top of the file lists them),
+> or diff and keep them: `git diff src/mapData.js` right after a run is the check.
 
 ## Roadmap
 
 See [`docs/IDEAS.md`](docs/IDEAS.md) — it tracks what is already in (items 1–7 plus the
 Pack-a-Punch / two-slot / trap / Crawler / Shrieker batch, the helmet / napalm / gas zombies, the
-second floor and the roof, settings and the last-zombie sound) and carries a large fresh backlog:
-wearable gizmos, a second crafting bench, teleporters and rooftop escapes, a story told through a
-keeper's diary and radio chatter, a full rooftop evacuation finale, weapon mods, daily challenges,
-gamepad support and proper smoke tests.
+second floor and the roof, settings, the last-zombie sound, the haunt roster and the loudspeaker,
+and now the rooftop evacuation finale with the radio's night) and carries a large fresh backlog:
+wearable gizmos, a second crafting bench, teleporters, a story told through a keeper's diary,
+weapon mods, daily challenges, gamepad support and proper smoke tests.

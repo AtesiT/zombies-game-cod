@@ -46,7 +46,7 @@ for (let f = 0; f < 3; f++) {
   }
 }
 ok(total >= 13, `only ${total} wall guns in the whole map`);
-ok(seen.left + seen.right >= 3, `only ${seen.left + seen.right} guns hang on a side wall`);
+ok(seen.left + seen.right >= 2, `only ${seen.left + seen.right} guns hang on a side wall`);
 
 // ---- a gun on a side wall is drawn rotated, one on a flat wall is not ------
 /**

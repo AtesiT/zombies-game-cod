@@ -60,13 +60,13 @@ for (let f = 0; f < 3; f++) {
     ok(walledUD || walledLR, `floor ${f}: the door at ${tx},${ty} has no wall around it at all`);
     // and the boards lie along the wall, not across it
     if (walledUD && !walledLR) {
-      ok(d.horizontal === true,
-        `floor ${f}: the door at ${tx},${ty} sits in a wall running east-west but boards it north-south`);
+      ok(d.horizontal === false,
+        `floor ${f}: the door at ${tx},${ty} sits in a wall running north-south but boards it east-west`);
       ok(!lf || !rt,
         `floor ${f}: the door at ${tx},${ty} is walled in on all four sides`);
     } else if (walledLR && !walledUD) {
-      ok(d.horizontal === false,
-        `floor ${f}: the door at ${tx},${ty} sits in a wall running north-south but boards it east-west`);
+      ok(d.horizontal === true,
+        `floor ${f}: the door at ${tx},${ty} sits in a wall running east-west but boards it north-south`);
       ok(!up || !dn,
         `floor ${f}: the door at ${tx},${ty} is walled in on all four sides`);
     }
@@ -74,14 +74,13 @@ for (let f = 0; f < 3; f++) {
 }
 
 ok(barricades >= 20, `only ${barricades} boarded windows in the whole map`);
-// The doors on the two upper floors were taken out on purpose: up there you
-// are fighting in a barracks you cannot shut, and a locked door between you
-// and the stairs is not a choice, it is a trap. So every door in the map is
-// on the ground floor now, and the upper storeys must have none at all.
-ok(doors >= 7, `only ${doors} doors in the whole map`);
-ok(doorsOn[0] === doors, `${doors - doorsOn[0]} of the doors are not on the ground floor`);
-ok(doorsOn[1] === 0 && doorsOn[2] === 0,
-  `the upper floors still charge for doors: ${doorsOn[1]} and ${doorsOn[2]}`);
+// The rooms upstairs stay open on purpose: a locked door between you and
+// the stairs is not a choice, it is a trap. The one exception is the attic
+// on the roof -- the bench room earns a door of its own, and it costs.
+ok(doors >= 8, `only ${doors} doors in the whole map`);
+ok(doorsOn[0] === doors - 1, `${doors - doorsOn[0] - 1} of the ground doors are missing`);
+ok(doorsOn[1] === 0 && doorsOn[2] === 1,
+  `the door count upstairs is ${doorsOn[1]} and ${doorsOn[2]}, want 0 and 1 (the attic)`);
 
 // ---- and nothing boards up a tile it cannot be reached from ----------------
 // A window nobody can reach is a window nobody repairs, and it looks like a
@@ -107,6 +106,21 @@ for (let f = 0; f < 3; f++) {
 
 g.map.setFloor(0);
 g.useFloor(0);
+
+// ---- the wall buys: every gun hangs on an actual wall, next to its spot ----
+for (let f = 0; f < g.map.floors.length; f++) {
+  const F = g.map.floors[f];
+  for (const wb of F.wallBuys) {
+    const wall = F.tiles[wb.wy * g.map.w + wb.wx];
+    const sx = Math.round(wb.x / 24 - 0.5), sy = Math.round(wb.y / 24 - 0.5);
+    const stand = F.tiles[sy * g.map.w + sx];
+    if (wall !== 2) fails.push(`floor ${f}: ${wb.weapon} hangs on tile ${wall} at (${wb.wx},${wb.wy}), not a wall`);
+    if (stand === 2) fails.push(`floor ${f}: ${wb.weapon} stands inside a wall at (${sx},${sy})`);
+    if (Math.abs(wb.wx - sx) + Math.abs(wb.wy - sy) !== 1) {
+      fails.push(`floor ${f}: ${wb.weapon}'s wall is not beside its standing spot`);
+    }
+  }
+}
 
 if (fails.length) {
   console.log('OPENINGS FAIL:');

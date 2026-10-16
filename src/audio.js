@@ -293,12 +293,102 @@ export class AudioEngine {
       o.start();
     }
 
-    this._music = { calm, combat, last };
-    this._musicMix = { calm: 0, combat: 0, last: 0 };
+    // elegy: the new voice of the house -- a violin pad that breathes on a
+    // long swell, and a piano that thinks out loud between the rounds. The
+    // pad is a drone like the others; the piano is event-driven (see
+    // _pianoTick) and plays into the same gain, so setMusic({elegy}) is the
+    // one tap that opens or closes both.
+    const elegy = layer();
+    for (const [f, det, amp] of [[196, -5, 0.5], [196, 6, 0.5], [293.7, -3, 0.32]]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = f;
+      o.detune.value = det;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 640; lp.Q.value = 0.9;
+      const g2 = ctx.createGain(); g2.gain.value = amp * 0.16;
+      // a finger on the string: slow vibrato, deeper as the note leans
+      const vib = ctx.createOscillator(); vib.type = 'sine'; vib.frequency.value = 5.1;
+      const vg = ctx.createGain(); vg.gain.value = 7;
+      vib.connect(vg).connect(o.detune);
+      vib.start();
+      o.connect(lp).connect(g2).connect(elegy);
+      o.start();
+    }
+    // the swell: the whole pad breathes in and out every ~22 seconds
+    const swell = ctx.createOscillator(); swell.type = 'sine'; swell.frequency.value = 0.045;
+    const swg = ctx.createGain(); swg.gain.value = 0.35;
+    swell.connect(swg).connect(elegy.gain);
+    swell.start();
+    this._elegyGain = elegy;
+
+    this._music = { calm, combat, last, elegy };
+    this._musicMix = { calm: 0, combat: 0, last: 0, elegy: 0 };
+  }
+
+  // ------------------------------------------------------------- the piano --
+  /**
+   * A small sad piano that plays itself while the elegy layer is up: two or
+   * three notes out of A minor, far apart, each one a struck sine with a
+   * couple of quiet harmonics and a long tail. It costs a timeout and a
+   * handful of oscillators per note, and it never plays over the fight --
+   * the mix decides that, not this.
+   */
+  _pianoNote(freq, t0, vol = 0.5) {
+    const ctx = this.ctx;
+    const dest = this._elegyGain;
+    if (!dest) return;
+    for (const [mult, amp, type] of [[1, 1, 'sine'], [2, 0.32, 'triangle'], [3.01, 0.12, 'sine']]) {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.value = freq * mult;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(vol * amp * 0.3, t0 + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6);
+      o.connect(g).connect(dest);
+      o.start(t0);
+      o.stop(t0 + 2.7);
+    }
+    // the hammer: a tick of noise at the front of the note
+    const n = this._noiseSrc();
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2400;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t0);
+    ng.gain.linearRampToValueAtTime(vol * 0.06, t0 + 0.001);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.035);
+    n.connect(hp).connect(ng).connect(dest);
+    n.start(t0); n.stop(t0 + 0.06);
+  }
+
+  _pianoTick() {
+    this._pianoTimer = null;
+    if (!this.ready || this.muted) return;
+    const mix = this._musicMix?.elegy ?? 0;
+    if (mix > 0.05) {
+      // A minor, spread over two octaves: every note is allowed next to every
+      // other, which is why this can be random and still sound like a choice
+      const scale = [220, 261.6, 293.7, 329.6, 392, 440, 523.3, 587.3];
+      const t = this.t + 0.06;
+      const n = Math.random() < 0.3 ? 2 : 1;
+      let last = -1;
+      for (let i = 0; i < n; i++) {
+        let k = (Math.random() * scale.length) | 0;
+        if (k === last) k = (k + 3) % scale.length;
+        last = k;
+        const octave = Math.random() < 0.35 ? 0.5 : 1;
+        this._pianoNote(scale[k] * octave, t + i * (0.16 + Math.random() * 0.3), 0.4 + Math.random() * 0.25);
+      }
+    }
+    this._pianoTimer = setTimeout(() => this._pianoTick(), 1400 + Math.random() * 2200);
+  }
+
+  _pianoWant(on) {
+    if (on && !this._pianoTimer && this.ready) this._pianoTick();
+    if (!on && this._pianoTimer) { clearTimeout(this._pianoTimer); this._pianoTimer = null; }
   }
 
   /** Where each layer sits, 0..1. They are allowed to overlap. */
-  setMusic({ calm, combat, last } = {}) {
+  setMusic({ calm, combat, last, elegy } = {}) {
     if (!this.ready || !this._music) return;
     // `top` is the ceiling each layer is scaled by. It was 0.12, which -- with
     // the game asking for 0.45 of calm -- put the whole soundtrack at about
@@ -315,8 +405,13 @@ export class AudioEngine {
     set(this._music.calm, calm);
     set(this._music.combat, combat);
     set(this._music.last, last);
+    set(this._music.elegy, elegy);
     const m = this._musicMix;
-    this._musicMix = { calm: calm ?? m.calm, combat: combat ?? m.combat, last: last ?? m.last };
+    this._musicMix = {
+      calm: calm ?? m.calm, combat: combat ?? m.combat,
+      last: last ?? m.last, elegy: elegy ?? m.elegy,
+    };
+    this._pianoWant((this._musicMix.elegy ?? 0) > 0.05);
   }
 
   // --------------------------------------------------------------- reverb --
@@ -921,6 +1016,313 @@ export class AudioEngine {
   }
 
   /** Dog round: a howl and a pack of barks. */
+  // ------------------------------------------------------- haunt round sfx --
+  /** The grave's bell: struck metal that will not hurry. */
+  bell(vol = 0.9) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const f0 = 146;
+    for (const [mult, amp, dec] of [[1, 1, 4.2], [2.0, 0.5, 3.4], [2.42, 0.38, 3.0],
+      [3.01, 0.26, 2.4], [4.16, 0.16, 1.8], [5.43, 0.1, 1.2]]) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = f0 * mult * (1 + (Math.random() - 0.5) * 0.004);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.16 * amp * vol, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      o.connect(g).connect(this.sfxBus);
+      o.start(t); o.stop(t + dec + 0.1);
+    }
+    // the clapper's knock
+    const n = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 900; bp.Q.value = 2;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.1 * vol, 0.002, 0.06);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.1);
+  }
+
+  /** Weather: the sky splitting, some distance off. */
+  thunder(vol = 1) {
+    if (!this.ready || this.muted) return;
+    const t = this.t + 0.02;
+    const n = this._noiseSrc();
+    n.playbackRate.value = 0.5;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 130; lp.Q.value = 0.7;
+    // the rumble walks: the filter opens and shuts while the tail decays
+    lp.frequency.setValueAtTime(90, t);
+    lp.frequency.linearRampToValueAtTime(220, t + 0.5);
+    lp.frequency.linearRampToValueAtTime(70, t + 1.9);
+    n.connect(lp);
+    const g = this._env(lp, t, 0.55 * vol, 0.08, 1.9);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 2.2);
+    this._tone('sine', 46, 26, t, 1.4, 0.3 * vol);
+  }
+
+  /** Weather: the rain bed. On is a ramp up, off a ramp down. */
+  rain(on, vol = 1) {
+    if (!this.ready || this.muted) return;
+    if (!this._rainSrc) {
+      const n = this._noiseSrc();
+      n.playbackRate.value = 0.9;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = 1050; bp.Q.value = 0.28;
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass'; hp.frequency.value = 320;
+      const g = this.ctx.createGain();
+      g.gain.value = 0.0001;
+      n.connect(bp).connect(hp).connect(g).connect(this.ambientBus);
+      n.start();
+      this._rainSrc = n; this._rainGain = g;
+    }
+    const t = this.t;
+    this._rainGain.gain.cancelScheduledValues(t);
+    this._rainGain.gain.setValueAtTime(Math.max(0.0001, this._rainGain.gain.value), t);
+    this._rainGain.gain.linearRampToValueAtTime(on ? 0.075 * vol : 0.0001, t + (on ? 1.6 : 2.2));
+  }
+
+  /**
+   * The bird: a looping rotor chop. `level` 0..1 turns the whole thing --
+   * volume, chop depth and rotor rate -- so one call site can fade the
+   * helicopter in from over the west trees and out again on the way up.
+   */
+  heli(level = 1) {
+    if (!this.ready || this.muted) return;
+    if (!this._heliSrc) {
+      const n = this._noiseSrc();
+      n.playbackRate.value = 0.7;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 230; lp.Q.value = 0.6;
+      const g = this.ctx.createGain();
+      g.gain.value = 0.0001;
+      // the chop: a slow LFO riding straight on the gain
+      const lfo = this.ctx.createOscillator();
+      lfo.type = 'sine'; lfo.frequency.value = 7.5;
+      const depth = this.ctx.createGain();
+      depth.gain.value = 0.0;
+      lfo.connect(depth); depth.connect(g.gain);
+      n.connect(lp).connect(g).connect(this.ambientBus);
+      n.start(); lfo.start();
+      this._heliSrc = n; this._heliGain = g; this._heliDepth = depth; this._heliLfo = lfo;
+    }
+    const t = this.t;
+    const v = Math.max(0, Math.min(1, level));
+    this._heliGain.gain.cancelScheduledValues(t);
+    this._heliGain.gain.setValueAtTime(Math.max(0.0001, this._heliGain.gain.value), t);
+    this._heliGain.gain.linearRampToValueAtTime(0.0001 + 0.11 * v, t + 0.4);
+    this._heliDepth.gain.setTargetAtTime(0.06 * v, t, 0.15);
+    this._heliLfo.frequency.setTargetAtTime(5.5 + 3.5 * v, t, 0.3);
+  }
+
+  /** Rotor off: the bird is gone, or it never came. */
+  heliOff() {
+    if (!this.ready || !this._heliGain) return;
+    const t = this.t;
+    this._heliGain.gain.cancelScheduledValues(t);
+    this._heliGain.gain.setValueAtTime(Math.max(0.0001, this._heliGain.gain.value), t);
+    this._heliGain.gain.linearRampToValueAtTime(0.0001, t + 1.4);
+    this._heliDepth.gain.setTargetAtTime(0, t, 0.4);
+  }
+
+  /**
+   * Wheels-up music: the fight drains out of the mix and a major-key phrase
+   * climbs where the sad piano used to be. One shot, about ten seconds --
+   * the ending screen wants something that sounds like morning.
+   */
+  victory() {
+    if (!this.ready || this.muted) return;
+    this.setMusic({ calm: 0.55, combat: 0, last: 0, elegy: 0.9 });
+    const t = this.t;
+    // the climb: A minor's root walks up into C major
+    [220, 261.6, 329.6, 392, 523.3, 659.3].forEach((f, i) => this._pianoNote(f, t + 0.4 + i * 0.34, 0.6));
+    // the arrival: the chord struck, low C under it
+    [261.6, 329.6, 392, 523.3].forEach((f, i) => this._pianoNote(f, t + 2.7 + i * 0.07, 0.55));
+    this._pianoNote(130.8, t + 2.7, 0.5);
+    // and a warm pad that swells and lets go over nine seconds
+    const ctx = this.ctx;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.09, t + 2.2);
+    g.gain.linearRampToValueAtTime(0.0001, t + 9.5);
+    g.connect(this.musicBus);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.7;
+    lp.connect(g);
+    for (const [f, det] of [[130.8, 0], [261.6, -4], [329.6, 5], [392, -3], [523.3, 4]]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      const og = ctx.createGain(); og.gain.value = f > 400 ? 0.18 : 0.3;
+      o.connect(og).connect(lp);
+      o.start(t); o.stop(t + 9.6);
+    }
+  }
+
+  /** Wheels up: the run does not end with a bang but with a climb. */
+  evacSting() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    [392, 523, 659, 784].forEach((f, i) => this._tone('triangle', f, f, t + i * 0.18, 1.5, 0.11));
+    this._tone('sine', 131, 196, t, 2.4, 0.13);
+  }
+
+  /** Shocker: the light climbing the rod. */
+  zapCharge(vol = 0.8) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(170, t);
+    o.frequency.exponentialRampToValueAtTime(880, t + 0.7);
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1600; bp.Q.value = 3;
+    const trem = this.ctx.createOscillator(); trem.type = 'square'; trem.frequency.value = 26;
+    const tg = this.ctx.createGain(); tg.gain.value = 0.035;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.085 * vol, t + 0.62);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.78);
+    trem.connect(tg).connect(g.gain);
+    o.connect(bp).connect(g).connect(this.sfxBus);
+    o.start(t); o.stop(t + 0.8);
+    trem.start(t); trem.stop(t + 0.8);
+  }
+
+  /** Shocker: the bolt itself. */
+  zap(vol = 1) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    // three crackles on top of each other, then the body of the discharge
+    for (let i = 0; i < 3; i++) {
+      const n = this._noiseSrc();
+      const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2600;
+      n.connect(hp);
+      const g = this._env(hp, t + i * 0.035, 0.3 * vol, 0.001, 0.045);
+      g.connect(this.bus);
+      n.start(t + i * 0.035); n.stop(t + i * 0.035 + 0.08);
+    }
+    this._tone('square', 1250, 130, t, 0.16, 0.16 * vol);
+    const n = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 4200; bp.Q.value = 1.4;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.2 * vol, 0.002, 0.3);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.4);
+  }
+
+  /** Totem: raised, humming, broken. */
+  totemRaise() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this._tone('sine', 92, 44, t, 0.9, 0.4);
+    this._tone('sine', 110, 110, t + 0.15, 1.3, 0.16);
+    this._tone('sine', 165, 164, t + 0.15, 1.3, 0.11);
+    this._tone('triangle', 880, 415, t + 0.3, 0.7, 0.1);
+  }
+
+  totemPulse() {
+    if (!this.ready || this.muted) return;
+    if (this.t - (this._lastTotemPulse ?? 0) < 1.5) return;
+    this._lastTotemPulse = this.t;
+    const t = this.t;
+    this._tone('sine', 58, 52, t, 0.55, 0.2);
+    const n = this._noiseSrc();
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 380;
+    n.connect(lp);
+    const g = this._env(lp, t, 0.05, 0.12, 0.5);
+    g.connect(this.ambientBus);
+    n.start(t); n.stop(t + 0.7);
+  }
+
+  totemBreak() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1400;
+    n.connect(hp);
+    const g = this._env(hp, t, 0.3, 0.002, 0.22);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.3);
+    this._tone('triangle', 330, 82, t, 0.5, 0.24);
+    this._tone('sine', 196, 98, t + 0.05, 0.8, 0.18);
+  }
+
+  /** Grave: dug, and despoiled. */
+  graveDug() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    for (let i = 0; i < 2; i++) {
+      const n = this._noiseSrc();
+      const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260;
+      n.connect(lp);
+      const g = this._env(lp, t + i * 0.28, 0.3, 0.004, 0.16);
+      g.connect(this.bus);
+      n.start(t + i * 0.28); n.stop(t + i * 0.28 + 0.2);
+    }
+    this._tone('sine', 70, 48, t + 0.28, 0.4, 0.22);
+  }
+
+  graveBreak() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 760; bp.Q.value = 0.9;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.32, 0.002, 0.18);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.25);
+    this._tone('sine', 120, 52, t, 0.35, 0.26);
+  }
+
+  /** Snowman: the snowball landing -- on you, or beside you. */
+  snowHit(onYou = 1) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = onYou > 0.7 ? 560 : 420;
+    n.connect(lp);
+    const g = this._env(lp, t, onYou > 0.7 ? 0.3 : 0.14, 0.003, 0.12);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.16);
+    if (onYou > 0.7) this._tone('sine', 130, 72, t, 0.14, 0.12);
+  }
+
+  /**
+   * The last round leaving the gun, and the click of an empty one. Both have
+   * to survive a room full of gunfire: they sit above the mix, short and hard,
+   * and they never rate-limit against each other.
+   */
+  lastClick() {
+    if (!this.ready || this.muted) return;
+    if (this.t - (this._lastClickT ?? 0) < 0.07) return;
+    this._lastClickT = this.t;
+    const t = this.t + 0.015;
+    for (const [f, v, dt2] of [[4700, 0.42, 0], [2500, 0.34, 0.038]]) {
+      const n = this._noiseSrc();
+      const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 9;
+      n.connect(bp);
+      const g = this._env(bp, t + dt2, v, 0.001, 0.028);
+      g.connect(this.bus);
+      n.start(t + dt2); n.stop(t + dt2 + 0.06);
+    }
+    this._tone('square', 195, 120, t, 0.05, 0.14);
+  }
+
+  gunDry() {
+    if (!this.ready || this.muted) return;
+    if (this.t - (this._gunDryT ?? 0) < 0.09) return;
+    this._gunDryT = this.t;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3700; bp.Q.value = 5;
+    n.connect(bp);
+    const g = this._env(bp, t, 0.42, 0.001, 0.045);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.08);
+    this._tone('square', 210, 130, t, 0.05, 0.16);
+  }
+
   dogRound() {
     if (!this.ready || this.muted) return;
     const t = this.t;

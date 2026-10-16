@@ -2,7 +2,7 @@
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
-import { RECIPES, RECIPE_ORDER } from './crafting.js';
+import { recipe, recipeIds, craftRowNote } from './crafting.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
@@ -191,6 +191,7 @@ export class HUD {
     this._health(ctx, game, w, h);
     this._perks(ctx, game, w, h);
     this._timers(ctx, game, w, h);
+    this._heliEta(ctx, game, w, h);
     this._scrap(ctx, game, w, h);
     // While a Jammer is close the picture it takes away is everything that
     // thinks for you: the prompts, the prices, the little map in the corner.
@@ -212,10 +213,10 @@ export class HUD {
   /**
    * A brass arrow at the edge of the screen pointing at the Magic Box.
    *
-   * The crate has five homes on the ground floor and three on each of the
-   * floors above, and it packs up and moves between them once the teddy bear
-   * comes for it -- so people quite reasonably think there are several boxes.
-   * There is one; it just wanders. This is how you find it again. It sits
+   * The crate has five homes, all on the ground floor, and it packs up and
+   * moves between them once the teddy bear comes for it -- so people quite
+   * reasonably think there are several boxes. There is one; it just wanders,
+   * and it never leaves the ground. This is how you find it again. It sits
    * quiet while you are near enough to see it, and flares for a few seconds
    * after it has moved.
    */
@@ -223,6 +224,7 @@ export class HUD {
     this._boxArrowAt = null;
     const box = game.box;
     if (!box || box.state === 'gone') return;
+    if (game.map.floor !== 0 || (game.player?.floor ?? 0) !== 0) return;
     const s = box.spot;
     if (!s) return;
     const sx = s.x - game.cam.x, sy = s.y - game.cam.y;
@@ -456,6 +458,26 @@ export class HUD {
     }
   }
 
+  /** While the flare burns, the roof carries a countdown everybody can read. */
+  _heliEta(ctx, game, w, h) {
+    const H = game.heli;
+    if (!H || H.phase !== 2 || game.rangeMode) return;
+    const left = Math.max(0, 120 - H.t);
+    const mm = Math.floor(left / 60), ss = Math.floor(left % 60);
+    const thin = H.t < 108 ? 1 : Math.max(0.2, (116 - H.t) / 8);
+    ctx.save();
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(`BIRD IN ${mm}:${String(ss).padStart(2, '0')}`, w / 2 + 1, 31);
+    ctx.fillStyle = thin < 1 ? '#f0d98a' : '#8fdc6a';
+    ctx.fillText(`BIRD IN ${mm}:${String(ss).padStart(2, '0')}`, w / 2, 30);
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(159,208,224,0.85)';
+    ctx.fillText('green smoke over the pad', w / 2, 42);
+    ctx.restore();
+  }
+
   // ------------------------------------------------------------ scrap/medkits --
   _scrap(ctx, game, w, h) {
     const p = game.player;
@@ -476,53 +498,108 @@ export class HUD {
   }
 
   // ----------------------------------------------------------- craft menu --
+  /**
+   * The bench. A card can be picked three ways: the number printed on it, the
+   * arrows, or the pointer -- and the pointer is the only one of the three a
+   * phone has, which is why the menu used to be openable and then unusable on
+   * one. The geometry lives in craftLayout/craftRowAt, so what the pointer
+   * hits is exactly what got painted.
+   */
   _craftMenu(ctx, game, w, h) {
+    const p = game.player;
+    const L = craftLayout(game, w, h);
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.88)';
     ctx.fillRect(0, 0, w, h);
     text(ctx, 'WORKBENCH', w / 2, 78, {
       font: 'bold 26px "Courier New", monospace', colour: GOLD, align: 'center',
     });
-    text(ctx, `SCRAP: ${game.player.salvage}     POINTS: ${game.points}`, w / 2, 98, {
+    text(ctx, `SCRAP: ${p.salvage ?? 0}     POINTS: ${game.points}`, w / 2, 98, {
       font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
 
-    const cols = 2, cw = 330, ch = 62, gap = 12;
-    const totalW = cols * cw + gap;
-    const x0 = w / 2 - totalW / 2;
-    let y0 = 122;
-    RECIPE_ORDER.forEach((id, i) => {
-      const r = RECIPES[id];
-      const col = i % cols, row = (i / cols) | 0;
-      const x = x0 + col * (cw + gap);
-      const y = y0 + row * (ch + gap);
-      const why = game.workbench.canCraft(game, id);
-      const ok = why === 'ok';
-      ctx.globalAlpha = ok ? 1 : 0.5;
+    if (!L.ids.length) {
+      // A bare bench still tells you what you are carrying: the scrap is real
+      // and it banks, it just has nothing to buy today.
+      const bw = 420, bh = 96;
+      const bx = Math.round((w - bw) / 2), by = L.y0;
       ctx.fillStyle = 'rgba(18,20,26,0.95)';
-      ctx.fillRect(x, y, cw, ch);
-      ctx.strokeStyle = ok ? 'rgba(240,217,138,0.55)' : 'rgba(120,115,100,0.35)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = 'rgba(120,115,100,0.35)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+      ctx.fillStyle = '#6a5c3a';
+      ctx.fillRect(bx, by, 3, bh);
+      text(ctx, 'THE BENCH IS BARE', w / 2, by + 30, {
+        font: 'bold 16px "Courier New", monospace', colour: INK, align: 'center',
+      });
+      text(ctx, 'No blueprints on it. What you carry stays in your pocket.', w / 2, by + 52, {
+        font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      });
+      text(ctx, `SCRAP BANKED  ${p.salvage ?? 0}`, w / 2, by + 76, {
+        font: 'bold 13px "Courier New", monospace', colour: GOLD, align: 'center',
+      });
+      text(ctx, '[E] or [ESC] to step away', w / 2, h - 40, {
+        font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      });
+      ctx.restore();
+      return;
+    }
+
+    L.ids.forEach((id, i) => {
+      const r = recipe(id);
+      const col = i % L.cols, row = (i / L.cols) | 0;
+      const x = L.x0 + col * (L.cw + L.gap);
+      const y = L.y0 + row * (L.ch + L.gap);
+      const why = game.workbench.canCraft(game, id, p);
+      const ok = why === 'ok';
+      const sel = i === p.craftRow;
+      ctx.globalAlpha = ok ? 1 : 0.55;
+      ctx.fillStyle = sel ? 'rgba(38,36,26,0.97)' : 'rgba(18,20,26,0.95)';
+      ctx.fillRect(x, y, L.cw, L.ch);
+      ctx.strokeStyle = sel
+        ? 'rgba(240,217,138,0.95)'
+        : (ok ? 'rgba(240,217,138,0.55)' : 'rgba(120,115,100,0.35)');
+      ctx.lineWidth = sel ? 2 : 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, L.cw - 1, L.ch - 1);
+      ctx.lineWidth = 1;
       ctx.fillStyle = r.colour;
-      ctx.fillRect(x, y, 3, ch);
+      ctx.fillRect(x, y, 3, L.ch);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.textAlign = 'left';
       ctx.fillStyle = r.colour;
-      ctx.fillText(`[${i + 1}] ${r.name.toUpperCase()}`, x + 12, y + 22);
+      const tag = i < 9 ? `[${i + 1}] ` : '';
+      ctx.fillText(`${tag}${(r.name ?? id).toUpperCase()}`, x + 12, y + 22);
       ctx.font = 'bold 10px "Courier New", monospace';
       ctx.fillStyle = INK_DIM;
-      ctx.fillText(r.desc, x + 12, y + 38);
+      ctx.fillText(r.desc ?? '', x + 12, y + 38);
+      // why not, if not: on the row itself, so the answer is where the eye is
+      if (!ok) {
+        ctx.fillStyle = RED;
+        ctx.fillText(craftRowNote(game, id, why), x + 12, y + 54);
+      }
       ctx.fillStyle = ok ? GOLD : RED;
       ctx.textAlign = 'right';
-      const cost = `${r.salvage} SCRAP` + (r.points ? `  ${r.points} PTS` : '');
-      ctx.fillText(cost, x + cw - 12, y + 54);
+      const cost = `${r.salvage ?? 0} SCRAP` + (r.points ? `  ${r.points} PTS` : '');
+      ctx.fillText(cost, x + L.cw - 12, y + 54);
+      if (r.glyph) {
+        ctx.font = 'bold 22px "Courier New", monospace';
+        ctx.fillStyle = 'rgba(230,220,194,0.14)';
+        ctx.fillText(String(r.glyph), x + L.cw - 14, y + 26);
+      }
       ctx.globalAlpha = 1;
     });
 
-    text(ctx, '[E] or [ESC] to step away', w / 2, h - 40, {
-      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    const selId = L.ids[clamp(p.craftRow ?? 0, 0, L.ids.length - 1)];
+    const hint = selId ? recipe(selId)?.hint : null;
+    if (hint) {
+      text(ctx, hint, w / 2, h - 58, {
+        font: 'bold 11px "Courier New", monospace', colour: INK, align: 'center',
+      });
+    }
+    text(ctx, 'ARROWS PICK · ENTER BUILDS · CLICK OR TAP WORKS · [E] STEPS AWAY', w / 2, h - 40, {
+      font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
     ctx.restore();
   }
@@ -676,6 +753,17 @@ export class HUD {
       });
     }
 
+    // grenades, bottles, pots -- whatever the pockets hold
+    if ((p.molotovs ?? 0) > 0) {
+      text(ctx, `\u25B2 x${p.molotovs}`, x, yOther - 30, {
+        font: 'bold 10px "Courier New", monospace', colour: '#e08a4a', align: 'right',
+      });
+    }
+    if ((p.gasbombs ?? 0) > 0) {
+      text(ctx, `\u25CF x${p.gasbombs}`, x, yOther - 42, {
+        font: 'bold 10px "Courier New", monospace', colour: '#8ab06a', align: 'right',
+      });
+    }
     // grenades
     if (p.grenades > 0) {
       text(ctx, `\u25C8 x${p.grenades}`, x, yOther - 16, {
@@ -690,7 +778,9 @@ export class HUD {
         font: 'bold 9px "Courier New", monospace', colour: '#8fa0b0', align: 'right',
       });
     } else if (p.reloading) {
-      const k = 1 - p.reloadTimer / (d.reload * p.perkFx.reloadMul);
+      // dry reloads (the mag was empty) now genuinely take longer, so the bar
+      // must be measured against what THIS reload started at, not the nominal
+      const k = p.reloadK ?? (1 - p.reloadTimer / (p.reloadTotal || d.reload * p.perkFx.reloadMul));
       bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', GOLD);
       text(ctx, 'RELOADING', x - 94, yAmmo + 10, {
         font: 'bold 9px "Courier New", monospace', colour: GOLD, align: 'right',
@@ -707,7 +797,9 @@ export class HUD {
   _health(ctx, game, w, h) {
     const p = game.player;
     const bw = 168, bh = 8;
-    const x = w / 2 - bw / 2, y = h - 44;
+    // up from the very bottom: the ROUND readout lives at h-42..h-16 and the
+    // bar used to sit right across the word
+    const x = w / 2 - bw / 2, y = h - 58;
     const k = p.hp / p.maxHp;
     const col = k > 0.66 ? '#8fae6a' : k > 0.33 ? '#d0a13f' : RED;
     bar(ctx, x, y, bw, bh, k, 'rgba(0,0,0,0.6)', col);
@@ -759,7 +851,11 @@ export class HUD {
     } else if (it.type === 'power') {
       lines.push(game.powerOn ? 'GENERATOR RUNNING' : '[E] THROW THE SWITCH');
     } else if (it.type === 'workbench') {
-      lines.push('[E] OPEN WORKBENCH');
+      // what you are carrying is the reason to climb up here at all
+      const scrap = game.player.salvage ?? 0;
+      lines.push(recipeIds().length
+        ? `[E] OPEN WORKBENCH   SCRAP ${scrap}`
+        : `WORKBENCH — NOTHING TO BUILD   SCRAP ${scrap}`);
     } else if (it.type === 'pap') {
       if (it.already) lines.push('ALREADY PACK-A-PUNCHED');
       else if (!game.powerOn) lines.push('PACK-A-PUNCH — NO POWER');
@@ -775,6 +871,19 @@ export class HUD {
       lines.push(it.sw.found ? 'SIGNAL LOCKED' : '[E] TURN THE DIAL');
     } else if (it.type === 'loot') {
       lines.push('[E] OPEN THE CACHE');
+    } else if (it.type === 'heli') {
+      const alive = (game.players ?? [game.player]).filter((o) => o && !o.dead).length;
+      if (alive > 1) {
+        const yes = (game.players ?? []).filter((o) => o && !o.dead && o.evacVote).length;
+        lines.push(`[E/F] ${game.player.evacVote ? 'LOWER YOUR HAND' : 'VOTE TO LEAVE'}  ${yes}/${alive}`);
+        lines.push(`${Math.floor(alive / 2) + 1} of you have to agree`);
+      } else lines.push('[E/F] BOARD THE HELICOPTER');
+    } else if (it.type === 'flare') {
+      lines.push('[E/F] LIGHT THE GREEN FLARE  2:00 TO LANDING');
+    } else if (it.type === 'radio') {
+      lines.push(it.affordable
+        ? `[E/F] FIX THE ROOF RADIO  ${it.price} SCRAP`
+        : `ROOF RADIO — NEEDS ${it.price} SCRAP`);
     }
     let y = h - 108;
     for (const l of lines) {
@@ -1108,12 +1217,14 @@ export const CONTROL_ROWS = [
   ['RELOAD', 'R   RLD'],
   ['USE  BUY  REVIVE', 'F   F'],
   ['REPAIR A WINDOW', 'HOLD F   HOLD F'],
-  ['CRAFT AT THE BENCH', 'HOLD E'],
+  ['WORKBENCH MENU', 'E OPENS  ARROWS PICK  ENTER BUILDS'],
   ['KNIFE', 'V   KNIFE'],
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['SPRINT', 'SHIFT   DASH'],
   ['GRENADE', 'G   NADE'],
+  ['MOLOTOV', 'X   MOL'],
+  ['GAS BOMB', 'B   GAS'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
@@ -1127,12 +1238,34 @@ export const CONTROL_ROWS = [
  * The controls, as a panel over the top of things rather than another screen:
  * you open it to look something up and close it again, not to navigate.
  */
+export const TOUCH_CONTROL_ROWS = [
+  ['MOVE', 'LEFT STICK'],
+  ['AIM', 'RIGHT STICK'],
+  ['FIRE', 'FIRE'],
+  ['USE  BUY  REVIVE', 'F'],
+  ['REPAIR A WINDOW', 'HOLD F'],
+  ['WORKBENCH MENU', 'F AT THE BENCH'],
+  ['RELOAD', 'R'],
+  ['SWAP WEAPON', 'Q'],
+  ['SPRINT', '>>'],
+  ['GRENADE', 'G'],
+  ['MOLOTOV', 'X'],
+  ['GAS BOMB', 'B'],
+  ['MEDKIT', 'H'],
+  ['KNIFE', 'V'],
+  ['PAUSE  SETTINGS  MENU', 'II'],
+  ['DEBUG MENU', 'FIVE TAPS ON THE ROUND (PAUSED)'],
+];
+
 export function drawControls(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.88)';
   ctx.fillRect(0, 0, w, h);
 
-  const rows = CONTROL_ROWS;
+  // the page you get is the page for the hands you are using: a phone reads
+  // the stick layout, a keyboard reads the keys
+  const onTouch = !!game.touch?.enabled && game.touch?.panel;
+  const rows = onTouch ? TOUCH_CONTROL_ROWS : CONTROL_ROWS;
   const step = CONTROLS_STEP;
   const cw = Math.min(w - 30, 470);
   const ch = Math.min(h - 24, 62 + rows.length * step + 40);
@@ -1146,7 +1279,8 @@ export function drawControls(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, 'CONTROLS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYBOARD & MOUSE', cx + 14, cy + 20,
+    { font: 'bold 16px "Courier New", monospace', colour: GOLD });
   text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
   });
@@ -1407,7 +1541,7 @@ export function drawMenu(ctx, game, w, h) {
     }
     const board = loadBoard();
     if (board.length) {
-      text(ctx, `BEST ROUND  ${board[0].round}   (${board[0].kills} kills)`, w / 2, y + 4, {
+      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, y + 4, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
       });
     }
@@ -1419,15 +1553,61 @@ export function drawMenu(ctx, game, w, h) {
   ctx.restore();
 }
 
+/**
+ * The pause screen is a little menu of its own now: five rows you can click
+ * or thumb, each with its old shortcut printed on the right so the keyboard
+ * way is still discoverable. game.js reads the rows through pauseHitTest.
+ */
+export const PAUSE_ROWS = [
+  { label: 'RESUME', hint: 'P / ESC' },
+  { label: 'SETTINGS', hint: 'O' },
+  { label: 'CONTROLS', hint: 'C' },
+  { label: 'RESTART RUN', hint: 'R' },
+  { label: 'RETURN TO MENU', hint: '' },
+];
+
+export function pauseRowRect(i, w, h) {
+  const rw = 268, rh = 30;
+  return { x: w / 2 - rw / 2, y: h * 0.30 + 30 + i * 38, w: rw, h: rh };
+}
+
+export function pauseHitTest(game, w, h, mx, my) {
+  for (let i = 0; i < PAUSE_ROWS.length; i++) {
+    const r = pauseRowRect(i, w, h);
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) return i;
+  }
+  return -1;
+}
+
 export function drawPause(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
-  text(ctx, 'PAUSED', w / 2, h * 0.42, {
+  text(ctx, 'PAUSED', w / 2, h * 0.30, {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
-  text(ctx, 'P / ESC — resume      O — settings      C — controls      R — restart run', w / 2, h * 0.42 + 28, {
-    font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  const m = game.input?.mouse;
+  const hover = m ? pauseHitTest(game, w, h, m.x, m.y) : -1;
+  PAUSE_ROWS.forEach((r, i) => {
+    const rc = pauseRowRect(i, w, h);
+    const hot = i === hover;
+    ctx.fillStyle = hot ? 'rgba(240,217,138,0.14)' : 'rgba(18,22,28,0.66)';
+    ctx.fillRect(rc.x, rc.y, rc.w, rc.h);
+    ctx.strokeStyle = hot ? GOLD : 'rgba(140,150,165,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rc.x + 0.5, rc.y + 0.5, rc.w - 1, rc.h - 1);
+    text(ctx, r.label, rc.x + 18, rc.y + 20, {
+      font: 'bold 14px "Courier New", monospace', colour: hot ? GOLD : INK, align: 'left',
+    });
+    if (r.hint) {
+      text(ctx, r.hint, rc.x + rc.w - 18, rc.y + 20, {
+        font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+      });
+    }
+  });
+  const last = pauseRowRect(PAUSE_ROWS.length - 1, w, h);
+  text(ctx, 'the shortcuts still work', w / 2, last.y + last.h + 24, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
   ctx.restore();
 }
@@ -1472,7 +1652,12 @@ export function debugTabHit(game, w, h, mx, my) {
 export function debugPanel(game, w, h) {
   const rows = game.debugRows();
   const cw = 380, HEAD = 46 + 24, FOOT = 40;   // the extra 24 is the tab strip
-  const rowH = rows.length > 13 ? 18 : DEBUG_ROW;
+  // rows keep arriving (the round picker, and whatever comes next): squeeze
+  // them so the LAST one always lands inside the panel -- a row you cannot
+  // see is a row you cannot click
+  const room = h - 16 - HEAD - FOOT;
+  const rowH = Math.max(12, Math.min(rows.length > 13 ? 18 : DEBUG_ROW,
+    Math.floor(room / Math.max(1, rows.length))));
   const ch = Math.min(h - 16, HEAD + rows.length * rowH + FOOT);
   return {
     rows, cw, ch, rowH,
@@ -1530,18 +1715,21 @@ export function drawDebug(ctx, game, w, h) {
   rows.forEach((r, i) => {
     const sel = i === game.debugIndex;
     if (sel) {
-      const bh = p.rowH - 2, by = y - Math.round(p.rowH * 0.6);
+      // the highlight owns exactly the stripe the hit test reports, so the
+      // row you click is the row that lights up -- it used to sit half a row
+      // above the pointer
+      const bh = p.rowH - 2, by = y + 1;
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
       ctx.fillRect(cx + 6, by, cw - 12, bh);
       ctx.fillStyle = GOLD;
       ctx.fillRect(cx + 6, by, 2, bh);
     }
     const live = r.value === 'ON';
-    text(ctx, r.label, cx + 18, y + 1, {
+    text(ctx, r.label, cx + 18, y + Math.round(p.rowH * 0.72), {
       font: 'bold 12px "Courier New", monospace',
       colour: sel ? INK : INK_DIM,
     });
-    text(ctx, r.value, cx + cw - 18, y + 1, {
+    text(ctx, r.value, cx + cw - 18, y + Math.round(p.rowH * 0.72), {
       font: 'bold 12px "Courier New", monospace',
       colour: r.value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
       align: 'right',
@@ -1557,6 +1745,39 @@ export function drawDebug(ctx, game, w, h) {
 }
 
 /**
+ * The bench geometry, shared by the painter and the pointer -- the same trick
+ * the settings panel uses, so a click lands on the card you can see. Cards are
+ * 330x62 in two columns once there are more than four of them, one wider
+ * column while the bench is nearly bare.
+ */
+export function craftLayout(game, w, h) {
+  const ids = recipeIds();
+  const cols = ids.length > 4 ? 2 : 1;
+  const cw = cols === 2 ? 330 : 420;
+  const ch = 62, gap = 12;
+  const rows = Math.max(1, Math.ceil(ids.length / cols));
+  const totalW = cols * cw + (cols - 1) * gap;
+  const x0 = Math.round((w - totalW) / 2);
+  return { ids, cols, rows, cw, ch, gap, x0, y0: 122, totalW };
+}
+
+/** Which blueprint (index into recipeIds()) is under the pointer, or -1. */
+export function craftRowAt(game, w, h, mx, my) {
+  const L = craftLayout(game, w, h);
+  if (!L.ids.length) return -1;
+  if (mx < L.x0 || mx > L.x0 + L.totalW) return -1;
+  const rel = my - L.y0;
+  if (rel < 0 || rel >= L.rows * (L.ch + L.gap) - L.gap) return -1;
+  const row = Math.floor(rel / (L.ch + L.gap));
+  if (rel - row * (L.ch + L.gap) > L.ch) return -1;      // the gutter between rows
+  const col = Math.floor((mx - L.x0) / (L.cw + L.gap));
+  if (col >= L.cols) return -1;
+  if (mx - L.x0 - col * (L.cw + L.gap) > L.cw) return -1; // the gutter between columns
+  const i = row * L.cols + col;
+  return i < L.ids.length ? i : -1;
+}
+
+/**
  * The settings panel geometry, shared by the painter and the mouse. Keeping
  * them on one function is what lets a click land on exactly the row you see.
  */
@@ -1566,8 +1787,10 @@ export function settingsLayout(game, w, h) {
   const maxRows = Math.max(5, Math.floor((h - 40 - HEAD - FOOT) / ROW));
   const shown = Math.min(rows, maxRows);
   const over = rows - shown;
+  // the wheel owns the window; the selection only drags it along when it
+  // walks out of sight
   const top = over > 0
-    ? Math.max(0, Math.min(over, game.settingsIndex - Math.floor(shown / 2)))
+    ? Math.max(0, Math.min(over, game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2))))
     : 0;
   const cw = 420, ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
@@ -1731,15 +1954,25 @@ export function drawCursor(ctx, game) {
 }
 
 export function drawGameOver(ctx, game, w, h) {
+  // The same screen wears two faces: the night got you, or you got out.
+  const evac = !!game.evacuated;
+  const guestWaiting = !evac && game.net?.playing && !game.net.isHost;
   ctx.save();
-  ctx.fillStyle = `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
+  ctx.fillStyle = evac
+    ? `rgba(8,13,7,${Math.min(0.85, game.overT * 0.7)})`
+    : `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
   ctx.fillRect(0, 0, w, h);
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
 
-  text(ctx, 'YOU DIED', w / 2, h * 0.16, {
-    font: 'bold 40px "Courier New", monospace', colour: '#c2503c', align: 'center',
+  text(ctx, evac ? 'EVACUATED' : 'YOU DIED', w / 2, h * 0.16, {
+    font: 'bold 40px "Courier New", monospace', colour: evac ? '#f0d98a' : '#c2503c', align: 'center',
   });
+  if (evac) {
+    text(ctx, 'the bird lifted with you aboard -- the night stays behind', w / 2, h * 0.16 + 26, {
+      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  }
 
   const s = game.stats;
   const acc = s.shots ? Math.round((s.hits / s.shots) * 100) : 0;
@@ -1769,7 +2002,7 @@ export function drawGameOver(ctx, game, w, h) {
     board.slice(0, 5).forEach((e, i) => {
       const col = i === (game.rank ?? -1) ? GOLD : INK_DIM;
       text(ctx, `${i + 1}.`, w / 2 - 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
-      text(ctx, `ROUND ${e.round}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `ROUND ${e.round}${e.evac ? ' EVAC' : ''}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
       text(ctx, `${e.kills} kills`, w / 2 - 10, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
       text(ctx, `${e.points} pts`, w / 2 + 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'right' });
       y += 15;
@@ -1778,7 +2011,9 @@ export function drawGameOver(ctx, game, w, h) {
 
   if (game.overT > 1.1) {
     const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
-    text(ctx, 'PRESS R OR CLICK TO TRY AGAIN', w / 2, h * 0.86, {
+    text(ctx, guestWaiting
+      ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
+      : (evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN'), w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
     });
   }

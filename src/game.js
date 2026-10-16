@@ -1,5 +1,5 @@
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
-import { T, buildArt } from './art.js';
+import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
@@ -8,13 +8,14 @@ import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, p
 import { PERKS } from './perks.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
-import { Workbench, RECIPES, RECIPE_ORDER } from './crafting.js';
+import { Totem, Grave, ZThrow } from './haunts.js';
+import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -136,23 +137,137 @@ let settingsHooked = false;
 // --- the loudspeaker -------------------------------------------------------
 // Somebody else is in this building, and from round ten they say so. Short,
 // dry, and always about what just happened rather than about the plot.
-const VOICE_LINES = {
+export const VOICE_LINES = {
   round: [
     'You are still here. They have noticed.',
     'They learn where you stand. Stop standing there.',
     'The generator will not hold forever.',
     'Something on the roof is walking about.',
     'Do not let them pile up in a doorway.',
+    'Between us: I stopped counting the rounds. You should too.',
+    'The east wall is thinner than it looks. So is the west. That is the joke.',
   ],
   medic: ['That one was putting them back together.', 'Leave it dead this time.'],
   amalgam: ['Three of them went in. One came out. That is worse.'],
   breach: ['They are inside. That window is gone.'],
-  hurt: ['Get up. Get up.'],
+  hurt: ['Get up. Get up.', 'Breathe. You have done this eleven times already.',
+    'That was closer than the last one. Do not make it a habit.'],
+  // ---- the haunt round: what he says when the house changes shape ----------
+  door: [
+    'I would not open that door.',
+    'Every door you buy, they can use too. Sit with that.',
+    'That one leads nowhere good. Nowhere with fewer of them, I mean.',
+  ],
+  totem: [
+    'That thing is drinking the light. Put it down.',
+    'Do not let it hum. Shoot the humming.',
+    'It is darker because of that stick. That is not weather.',
+  ],
+  totemdown: ['Better. The house exhales.', 'Light comes back. So do they, eventually.'],
+  grave: [
+    'Somebody is being buried out there. That is not a funeral, it is a door.',
+    'Bells. I hate the bells. Shoot the headstone.',
+    'What walks out of that grave is not counted. Shoot the grave.',
+  ],
+  gravedown: ['The bells stop. Walkers fade. Someone had a proper funeral once, probably not that one.'],
+  storm: [
+    'Sky is going green. That is not rain, that is a mood.',
+    'Storm covers the sound of them digging. Stay sharp.',
+  ],
+  fog: [
+    'Fog. Do not shoot what you cannot see. Do not let it touch you, either.',
+    'The house is breathing out. Walk inside the breath, not outside it.',
+  ],
+  witch: ['That one throws bottles. Do not breathe what comes out.', 'Green glass. It was green glass.'],
+  snowman: ['Is that thing making snowballs?', 'It is cold all of a sudden, and it is not the weather.'],
+  arsonist: ['Fire in a bottle. Somebody taught them that. Run.', 'The floor remembers every bottle. So will your boots.'],
+  knight: ['Big one. Armour. Aim for the head like it owes you money.', 'That is not a zombie, that is a monument. Chip the monument.'],
+  shocker: ['Something out there is carrying lightning. Keep moving or keep smoking.', 'Blue one on a rod. Shoot it while it winds up.'],
+  bearer: ['Purple one with a bundle. It is going to plant something. Do not let it.', 'That one kneels. When it kneels, the house changes. Interrupt the kneeling.'],
+  mourner: ['Grey one with a spade. It digs, and then the bells start.', 'Do not let it finish the hole. Nobody should be buried here tonight.'],
 };
+
+// The droplets on the glass after a storm: one baked sheet per frame size,
+// blitted while the screen dries. Baked because ninety little arcs a frame is
+// ninety little arcs too many.
+let WET_SHEET = null;
+function wetSheet(w, h) {
+  if (WET_SHEET && WET_SHEET.w === w && WET_SHEET.h === h) return WET_SHEET.canvas;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, w); c.height = Math.max(1, h);
+  const x = c.getContext('2d');
+  for (let i = 0; i < 90; i++) {
+    const dx = Math.random() * w, dy = Math.random() * h, r = 1 + Math.random() * 2.4;
+    x.fillStyle = 'rgba(210,228,244,0.5)';
+    x.beginPath(); x.arc(dx, dy, r, 0, Math.PI * 2); x.fill();
+    x.fillStyle = 'rgba(120,140,160,0.35)';
+    x.beginPath(); x.arc(dx + r * 0.3, dy + r * 0.35, r * 0.6, 0, Math.PI * 2); x.fill();
+  }
+  WET_SHEET = { w, h, canvas: c };
+  return c;
+}
 
 const DECAL_SCALE = 0.5;
 const DECAL_MAX = 260;
 const DECAL_WASH = 0.22;
+
+// ---- the helicopter ending: pad, beacons, and the radio's night ------------
+// The pad sits on the south roof block of the campaign's top storey; each of
+// the four secret dials downstairs lights one beacon at the roof corners.
+const HELI_PAD = { x: 18.5 * T, y: 15.5 * T, f: 2 };
+const HELI_BEACONS = [
+  { x: 15.5 * T, y: 10.5 * T },
+  { x: 44.5 * T, y: 10.5 * T },
+  { x: 15.5 * T, y: 30.5 * T },
+  { x: 31.5 * T, y: 30.5 * T },
+];
+// heli.phase: 0 off, 1 armed (four beacons lit, the board has a bearing),
+// 2 inbound, 3 landed, 4 wheels up, 5 gone (the run ended EVACUATED)
+const HELI_PHASE_NAMES = ['OFF', 'ARMED', 'INBOUND', 'LANDED', 'LEAVING', 'GONE'];
+// the roof radio station: scrap fixes it, then every second round a crate
+// comes down on the pad. It sits on the east roof block, clear of the pad.
+const ROOF_RADIO = { x: 40.5 * T, y: 12.5 * T, f: 2 };
+const ROOF_RADIO_PRICE = 25;
+// where the four dials hide, in the radio's careful words (switch order)
+const SWITCH_HINTS = [
+  'the west end, by the stair that climbs',
+  'the east wing, past the long room',
+  'the southeast yard, beyond the shed',
+  'the north wall, at the tree line',
+];
+// Every 5-7 rounds somebody finds your frequency. No repeats back to back;
+// two of these are not flavour at all: the forecast binds the next round's
+// sky, and the crate really lands somewhere by the boxes.
+const RADIO_EVENTS = [
+  { id: 'sitrep1', text: () => 'Sector D is lost. Repeat: sector D is lost. If you can hear this, you are further than the army got.' },
+  { id: 'sitrep2', text: () => 'They are counting your rounds over the wire. Every magazine that answers is one more night somebody else gets to see.' },
+  { id: 'sitrep3', text: () => 'The convoy turned back at the bridge. We are not coming in. But we are not leaving you either -- keep talking to us.' },
+  { id: 'rollcall', text: (g) => `${(g.player?.name ?? '') || 'Survivor'}, this is actual. We have you on the board, alone and lit up like a fuse. Keep burning.` },
+  { id: 'numbers', text: () => 'Four. Nine. One. Seven. Zero. ... The numbers do not mean anything. Or they mean everything. We stopped asking at midnight.' },
+  { id: 'quiet', text: () => 'A moment for the ones who did not reach morning. The wire remembers every name, even the ones we never learned.' },
+  {
+    id: 'hint',
+    cond: (g) => !g.rangeMode && !g.egg?.complete && (g.map.secretSwitches?.some((sw) => !sw.found) ?? false),
+    text: (g) => {
+      const open = (g.map.secretSwitches ?? []).filter((sw) => !sw.found);
+      const one = open[randInt(0, open.length - 1)];
+      const where = SWITCH_HINTS[one?.id ?? 0] ?? 'somewhere in the house';
+      return `One of the four dials is awake tonight -- ${where}. Four lit beacons and the board can give you a bearing. That is all we are allowed to say.`;
+    },
+  },
+  {
+    id: 'stormwarn',
+    cond: (g) => !g.rangeMode && settings.get('weather'),
+    text: () => 'Barometer is falling hard out here. Whatever you planned for the next round -- plan it wet, and plan it loud.',
+    fx: (g) => { g.wx.forecast = 'storm'; },
+  },
+  {
+    id: 'supply',
+    cond: (g) => !g.rangeMode,
+    text: () => 'We pushed a crate out of the bird ten minutes ago. Red flare, look for the smoke by the boxes. It will not wait all night.',
+    fx: (g) => g.dropSupply(),
+  },
+];
 
 export class Game {
   constructor(input) {
@@ -215,12 +330,33 @@ export class Game {
     this.player.crafted = {};
     this.zombies = [];
     this.grenades = [];
+    this.pThrows = [];
     this.monkeys = [];
     this.powerups = [];
     this.webBlasts = [];
     this.arcs = [];
     this.shriekRings = [];
     this.fires = [];
+    // ---- the haunt round: what the new creatures leave behind and throw ----
+    this.totems = [];       // dusk on a stick: shoot it or the house stays bold
+    this.graves = [];       // bells, and the wraiths that answer them
+    this.zThrows = [];      // snowballs, fire bottles, stink potions in flight
+    this.bolts = [];        // the Shocker's lightning, purely to look at
+    this._hauntId = 0;
+    this.hordeThin = false; // half the round is gone: nobody hides any more
+    // ---- weather: a roll of the sky, once per round ------------------------
+    this.wx = { kind: null, t: 0, flash: 0, strikeT: 4, thunderAt: -1, wet: 0, drops: [], forecast: null };
+    this._storySaid = {};   // the survivors outside say each thing only once
+    // ---- the radio's night and the bird waiting behind it -------------------
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
+    this.roofRadio = { fixed: false };
+    this.supplies = [];        // crates the radio drops: real, walkable loot
+    this.radioNext = 9;        // the first broadcast: a fixed round, so booting
+                               // a run never moves the dice the world rolls on
+    this._radioLast = '';
+    this._radioHeard = 0;
+    this.evacuated = false;    // the run ended aboard the helicopter
+    this._heliSnd = false;
     this.rifts = [];      // Rift Splitter floor hazards
     this.gases = [];
     this.inFire = 0;
@@ -290,7 +426,8 @@ export class Game {
     this.box._now = () => this.time;
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches);
-    this.craftOpen = false;
+    this._beaconTold = 0;   // the 'four beacons' explanation, said once
+    // (the bench menu lives on each body now -- see the craftOpen proxy below)
     this.dogRound = false;
     this.timers = { instakill: 0, doublepoints: 0, firesale: 0, deathmachine: 0 };
     this.jamT = 0;            // seconds of radio silence a Jammer has bought
@@ -322,6 +459,8 @@ export class Game {
   rebuildFlow() {
     const live = (this.players ?? [this.player]).filter((pl) => pl && !pl.dead);
     if (!live.length) return;
+    this.map.trail = this.trail ?? null;
+    this.map.trailT = this.time;
     const floorOf = (pl) => pl.floor ?? this.map.floor;
     const done = new Set();
 
@@ -401,9 +540,9 @@ export class Game {
     this.decalCtx = this._decalCtx[floor];
     // the bench is in the attic: it exists on the top storey and nowhere else
     this.workbench?.useSpot(this.map.workbench);
-    // the mystery box has a spot on every storey: follow the one we are on,
-    // or it keeps the ground floor's and stands inside a wall upstairs
-    this._boxOnFloor();
+    // the mystery box does NOT come along: it has one home floor -- the
+    // ground -- and the storeys above no longer grow their own copy of it
+    // ("a box per floor" was exactly how people ended up counting several)
   }
 
   /** Is any decal inside this world-space box? Used to skip the blit. */
@@ -460,6 +599,16 @@ export class Game {
   get points() { return this.player ? this.player.points : 0; }
   set points(v) { if (this.player) this.player.points = v; }
 
+  /**
+   * Same story for the bench menu: it used to be one flag on the game, so the
+   * workbench belonged to whoever the game was -- the host. A guest pressing E
+   * at the bench was told no, and had no menu of its own to open anyway. Each
+   * body keeps its own flag; `game.craftOpen` means "mine", which is what the
+   * HUD, the touch panel and the cursor have always wanted.
+   */
+  get craftOpen() { return !!(this.player && this.player.craftOpen); }
+  set craftOpen(v) { if (this.player) this.player.craftOpen = !!v; }
+
   addPoints(n, x, y, colour, who) {
     const t = who ?? this.player;
     if (t) t.points = (t.points ?? 0) + n;
@@ -476,7 +625,7 @@ export class Game {
   pickTarget(z) {
     let best = null, bd = Infinity;
     for (const p of this.players ?? [this.player]) {
-      if (!p || p.dead) continue;
+      if (!p || p.dead || p.evac) continue;
       let d = dist2(z.pos.x, z.pos.y, p.pos.x, p.pos.y);
       if ((p.floor ?? this.map.floor) !== (z.floor ?? 0)) d *= 5;   // same storey first
       if (p.downed) d *= 2.4;                                        // finish the standing first
@@ -493,6 +642,7 @@ export class Game {
     });
     const entered = on && !rec.linkOn;
     rec.linkOn = on;
+    if (entered) this._noteLinkTrail(on);
     if (!entered || rec.linkCd > 0) return;
     rec.linkCd = 0.6;
     const other = on.a.floor === (p.floor ?? this.map.floor) ? on.b : on.a;
@@ -519,12 +669,12 @@ export class Game {
     this.net?.emit('revive', { name: downed.name });
   }
 
-  throwFor(p) {
-    if (!p || p.dead || p.downed) return;
-    if ((p.grenades ?? 0) <= 0) return;
-    p.grenades--;
-    throwGrenade(this, p.pos.x, p.pos.y, p.aim);
-    p.vel.x -= Math.cos(p.aim) * 30;
+  throwFor(p, kind = 'frag') {
+    if (!p || p.dead || p.downed || p.evac) return;
+    const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
+    if ((p[pocket] ?? 0) <= 0) return;
+    p[pocket]--;
+    this.throwAtCursor(p, kind, p.aim);
     this.shake(2, 0.1);
   }
 
@@ -575,28 +725,31 @@ export class Game {
     if (this.dogRound) return 'dog';
     const r = this.round;
     // The plain walker has to stay the majority all the way to the cap --
-    // specials are seasoning, not the meal. Everything together tops out at
-    // about 70 %, and each type arrives on its own round so the escalation
-    // is something you can feel happening.
-    // Room was made for the item-B types by trimming the others. Everything
-    // together tops out at about 60 %, so the plain walker stays the single
-    // biggest group at every round, and each type arrives on its own round
-    // so the escalation is something you can feel happening.
-    const runnerChance = Math.min(0.17, Math.max(0, (r - 5) * 0.021));
-    const bruteChance = Math.min(0.09, Math.max(0, (r - 9) * 0.012));
-    const shriekChance = Math.min(0.045, Math.max(0, (r - 11) * 0.008));
-    const helmetChance = Math.min(0.065, Math.max(0, (r - 11) * 0.011));
-    const gasChance = Math.min(0.035, Math.max(0, (r - 13) * 0.007));
-    const napalmChance = Math.min(0.04, Math.max(0, (r - 14) * 0.008));
-    const minerChance = Math.min(0.065, Math.max(0, (r - 11) * 0.010));
-    const medicChance = Math.min(0.05, Math.max(0, (r - 12) * 0.009));
-    const mimicChance = Math.min(0.04, Math.max(0, (r - 14) * 0.007));
-    // the first three of the creature shortlist. The Bonewright is rare and
-    // early -- one of it changes a round from a shooting gallery into a job --
-    // while the swarm and the jammer belong to the late game.
-    const boneChance = Math.min(0.05, Math.max(0, (r - 5) * 0.006));
-    const swarmChance = Math.min(0.07, Math.max(0, (r - 17) * 0.010));
-    const jammerChance = Math.min(0.05, Math.max(0, (r - 24) * 0.008));
+    // specials are seasoning, not the meal. The haunt round made room for
+    // itself by shaving every older cap a little: everything together still
+    // tops out near four walkers in five... no -- near one special in five at
+    // mid rounds, and the walker stays the single biggest group at every one.
+    const runnerChance = Math.min(0.135, Math.max(0, (r - 5) * 0.020));
+    const bruteChance = Math.min(0.070, Math.max(0, (r - 9) * 0.011));
+    const shriekChance = Math.min(0.039, Math.max(0, (r - 11) * 0.007));
+    const helmetChance = Math.min(0.050, Math.max(0, (r - 11) * 0.010));
+    const gasChance = Math.min(0.030, Math.max(0, (r - 13) * 0.006));
+    const napalmChance = Math.min(0.034, Math.max(0, (r - 14) * 0.007));
+    const minerChance = Math.min(0.050, Math.max(0, (r - 11) * 0.009));
+    const medicChance = Math.min(0.043, Math.max(0, (r - 12) * 0.008));
+    const mimicChance = Math.min(0.034, Math.max(0, (r - 14) * 0.006));
+    const boneChance = Math.min(0.043, Math.max(0, (r - 5) * 0.006));
+    const swarmChance = Math.min(0.055, Math.max(0, (r - 17) * 0.009));
+    const jammerChance = Math.min(0.043, Math.max(0, (r - 24) * 0.007));
+    // ---- the haunt round: each arrives on its own round, all of them rare --
+    // the snowman likes a storm and comes twice as often in one
+    const snowChance = Math.min(0.022, Math.max(0, (r - 11) * 0.004)) * (this.wx?.kind === 'storm' ? 2 : 1);
+    const arsonChance = Math.min(0.017, Math.max(0, (r - 12) * 0.004));
+    const witchChance = Math.min(0.015, Math.max(0, (r - 13) * 0.004));
+    const bearerChance = Math.min(0.011, Math.max(0, (r - 14) * 0.003));
+    const mournerChance = Math.min(0.011, Math.max(0, (r - 15) * 0.003));
+    const shockChance = Math.min(0.015, Math.max(0, (r - 17) * 0.0035));
+    const knightChance = Math.min(0.013, Math.max(0, (r - 19) * 0.0035));
     const x = Math.random();
     let acc = 0;
     for (const [type, chance] of [
@@ -604,6 +757,9 @@ export class Game {
       ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
       ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
       ['bonewright', boneChance], ['swarmling', swarmChance], ['jammer', jammerChance],
+      ['snowman', snowChance], ['arsonist', arsonChance], ['witch', witchChance],
+      ['bearer', bearerChance], ['mourner', mournerChance], ['shocker', shockChance],
+      ['knight', knightChance],
     ]) {
       acc += chance;
       if (x < acc) return type;
@@ -624,12 +780,22 @@ export class Game {
       type,
     });
     z.floor = floor;
+    // the loudspeaker notices the new arrivals once each (round ten onwards,
+    // its own cooldown -- sometimes the house just does not comment)
+    if (!forceType && VOICE_LINES[type]) this.say(type);
     return z;
   }
 
   startRound(n) {
     this.round = n;
     this.stats.round = n;
+    // throwables come back two at a time for whoever already owns the kind
+    for (const pl of this.players ?? []) {
+      if (!pl || !pl.ownThrow) continue;
+      if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
+      if (pl.ownThrow.molotov) pl.molotovs = Math.min(GRENADE_MAX, pl.molotovs + 2);
+      if (pl.ownThrow.gas) pl.gasbombs = Math.min(GRENADE_MAX, pl.gasbombs + 2);
+    }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
     for (const pl of this.players ?? []) {
@@ -639,8 +805,20 @@ export class Game {
         : (this.net?._spawnSpot?.() ?? this.map.playerStart);
       pl.dead = false;
       pl.downed = false;
+      pl.evac = false;
+      pl.evacVote = false;
       pl._deathTold = 0;
       pl._downTold = 0;
+      if ((this.players?.length ?? 1) > 1 && pl !== this.player) {
+        // bled out last round: you come back with your sidearm and nothing
+        // else -- the good guns stay where you dropped them
+        const d = WEAPONS.m1911;
+        pl.loadout = { m1911: { owned: true, mag: d.mag, reserve: d.maxReserve } };
+        pl.slots = ['m1911', null];
+        pl.active = 0;
+        pl.reloading = false;
+        pl.reloadTimer = 0;
+      }
       pl.hp = pl.maxHp;
       pl.bleedT = 0;
       pl.invuln = 2;
@@ -659,6 +837,7 @@ export class Game {
     this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
     this.zombiesSpawned = 0;
     this.zombiesKilled = 0;
+    this.hordeThin = false;
     this.roundDamageTaken = 0;
     if (n >= 10) this.say('round');
     this.roundActive = true;
@@ -666,6 +845,7 @@ export class Game {
     this.spawnTimer = 0.35;
     this._fusionCd = 6;
     this.workbench.onRoundStart();
+    if (this.roofRadio?.fixed && n % 2 === 0 && !this.rangeMode) this.dropRoofSupply();
     if (plan.dog) {
       this.bannerShow(`ROUND ${n}`, 'something is out there', { dur: 2.6, big: true, colour: '#e0705a' });
       audio.dogRound();
@@ -673,6 +853,16 @@ export class Game {
       this.bannerShow(`ROUND ${n}`, n === 1 ? 'they are coming' : null, { dur: 2.4, big: true });
       audio.roundSting(true);
     }
+    this.rollWeather(n);
+    // the survivors outside: the loudspeaker stops being a stranger
+    if (n === 25 || n === 35) this.sayStory(n);
+    this._radioNight(n);
+    // round 30 belongs to the board itself: with four beacons it gives you a
+    // bearing, without them it apologises -- either way it has more to say
+    // than the old story beat, so that one only speaks if the board stayed
+    // silent (the bird is already spoken for, or this is the range)
+    this._heliArmCheck();          // 25 + four dials: the pad arms with the round
+    if (n === 30 && !this._heliRoundStart(n)) this.sayStory(30);
     if (n >= 10) this.achievements.unlock('round_10');
     if (n >= 20) this.achievements.unlock('round_20');
     if (n >= 30) this.achievements.unlock('round_30');
@@ -684,6 +874,7 @@ export class Game {
     this.roundActive = false;
     this.intermission = 6;
     this.respawnQueue = 0;
+    this.setWeatherKind(null);   // the sky clears while you catch your breath
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
     this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
     audio.roundSting(false);
@@ -691,6 +882,12 @@ export class Game {
 
   get zombiesLeft() {
     return Math.max(0, this.zombiesTotal - this.zombiesKilled);
+  }
+
+  /** Is a totem humming anywhere in the house? The horde can feel it. */
+  get totemPower() {
+    for (const t of this.totems) if (!t.dead) return 1;
+    return 0;
   }
 
   /**
@@ -772,18 +969,22 @@ export class Game {
   _atmosphere(dt) {
     // music -- four times a second is plenty for a 0.9 s cross-fade
     this._musicT = (this._musicT ?? 0) - dt;
-    if (this._musicT <= 0) {
+    // once the bird is coming the victory cue owns the mix (audio.victory)
+    if (this._musicT <= 0 && this.heli.phase < 4) {
       this._musicT = 0.25;
       let alive = 0;
       for (const z of this.zombies) if (!z.dead) alive++;
       const fighting = alive > 0 && this.roundActive;
       audio.setMusic({
         // the drone ducks out of the way while the fight layer comes up
-        calm: fighting ? 0.4 : 0.7,
+        calm: fighting ? 0.4 : 0.45,
         combat: fighting ? this._combatLevel() : 0,
         // `tension` is the last-couple-of-zombies breath, not the fight; the
         // high scrape belongs to it and nothing else
         last: this.tension ?? 0,
+        // the piano and the violin own the quiet: full between rounds, and a
+        // thin thread under a storm so the weather has a soundtrack too
+        elegy: fighting ? (this.wx?.kind === 'storm' ? 0.18 : 0) : 0.55,
       });
     }
 
@@ -866,21 +1067,36 @@ export class Game {
     if (!this.voice || this.voice.left <= 0) return;
     // fade the last half second out
     const a = Math.min(1, this.voice.left / 0.5);
-    const y = vh - 74;
+    // broadcasts are sentences now, not call-signs: wrap them to the box
+    // (12px Courier is ~7.2px a character; the box is 440 wide, 420 usable)
+    const words = String(this.voice.text).split(/\s+/);
+    const lines = [];
+    let cur = '';
+    for (const wd of words) {
+      const t = cur ? `${cur} ${wd}` : wd;
+      if (t.length > 58 && cur) { lines.push(cur); cur = wd; } else cur = t;
+      while (cur.length > 58) { lines.push(cur.slice(0, 58)); cur = cur.slice(58); }
+    }
+    if (cur) lines.push(cur);
+    const shown = lines.slice(0, 3);
+    const y = vh - 96;
+    const bh = 20 + shown.length * 14;
     ctx.save();
     ctx.globalAlpha = a * 0.55;
     ctx.fillStyle = '#0a0c0e';
-    ctx.fillRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.fillRect(vw / 2 - 220, y - 16, 440, bh);
     ctx.globalAlpha = a;
     ctx.strokeStyle = 'rgba(150,190,220,0.35)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.strokeRect(vw / 2 - 220, y - 16, 440, bh);
     ctx.restore();
     text(ctx, 'LOUDSPEAKER', vw / 2 - 210, y - 6, {
       font: 'bold 9px "Courier New", monospace', colour: '#7f9cb5', align: 'left', alpha: a,
     });
-    text(ctx, this.voice.text, vw / 2, y + 6, {
-      font: 'bold 12px "Courier New", monospace', colour: '#cfe0ee', align: 'center', alpha: a,
+    shown.forEach((ln, i) => {
+      text(ctx, ln, vw / 2, y + 10 + i * 14, {
+        font: 'bold 12px "Courier New", monospace', colour: '#cfe0ee', align: 'center', alpha: a,
+      });
     });
   }
 
@@ -1010,18 +1226,513 @@ export class Game {
     this.particles.smoke(x, y, 16);
   }
 
+  // ------------------------------------------------------- the haunt round --
+  /**
+   * Timers and flight paths only. Called from the host's update *and* from
+   * _guestUpdate: everything inside is safe to run twice over the wire, and
+   * anything with consequences checks isAuth() on its own.
+   */
+  _stepHaunts(dt) {
+    for (let i = this.totems.length - 1; i >= 0; i--) {
+      this.totems[i].update(dt, this);
+      if (this.totems[i].dead) this.totems.splice(i, 1);
+    }
+    for (let i = this.graves.length - 1; i >= 0; i--) {
+      this.graves[i].update(dt, this);
+      if (this.graves[i].dead) this.graves.splice(i, 1);
+    }
+    for (let i = this.zThrows.length - 1; i >= 0; i--) {
+      this.zThrows[i].update(dt, this);
+      if (this.zThrows[i].dead) this.zThrows.splice(i, 1);
+    }
+    for (let i = this.bolts.length - 1; i >= 0; i--) {
+      this.bolts[i].life -= dt;
+      if (this.bolts[i].life <= 0) this.bolts.splice(i, 1);
+    }
+    this._updateWeather(dt);
+  }
+
+  /** A Bearer or a Mourner kneels and leaves something behind. False = house full. */
+  placeHaunt(z) {
+    const floor = z.floor ?? this.map.floor;
+    if (z.def.places === 'totem') {
+      if (this.totems.some((t) => !t.dead)) return false;   // one dusk at a time
+      const tt = new Totem(z.pos.x, z.pos.y, floor, ++this._hauntId);
+      this.totems.push(tt);
+      audio.totemRaise();
+      this.shake(2.2, 0.3);
+      this.explosionLights.push({ x: tt.x, y: tt.y - 10, r: 170, life: 0.6, max: 0.6, colour: '#8a4ad0', f: floor });
+      this.bannerShow('A TOTEM RISES', 'the dusk is theirs now -- shoot it', { dur: 3, colour: '#b07ae0' });
+      this.say('totem');
+      return true;
+    }
+    if (this.graves.filter((g) => !g.dead).length >= 2) return false;
+    const gv = new Grave(z.pos.x, z.pos.y, floor, ++this._hauntId);
+    this.graves.push(gv);
+    audio.graveDug();
+    this.bannerShow('A GRAVE IS DUG', 'the bells and the walkers belong to it', { dur: 3, colour: '#9fb4c8' });
+    this.say('grave');
+    return true;
+  }
+
+  /** Snowman / Arsonist / Witch: the arm comes back and something flies. */
+  throwZombieProjectile(z, target, kind) {
+    const p = target ?? this.player;
+    if (!p) return;
+    const scatter = kind === 'snow' ? 54 : kind === 'bottle' ? 44 : 50;
+    const a = randRange(0, TAU), r = Math.sqrt(Math.random()) * scatter;
+    const tx = p.pos.x + Math.cos(a) * r, ty = p.pos.y + Math.sin(a) * r;
+    this.zThrows.push(new ZThrow(z.pos.x, z.pos.y - 10, tx, ty, kind, z.floor ?? this.map.floor));
+    audio.growl(kind === 'snow' ? 1.3 : 0.95, (z.floor ?? 0) === this.map.floor ? 0.8 : 0.3);
+  }
+
+  /** The Shocker's bolt. Walls eat it; you do not. */
+  zapPlayer(z, p) {
+    if (!p) return;
+    const tx = p.pos.x, ty = p.pos.y - 6;
+    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty);
+    const ex = wall ? wall.x : tx, ey = wall ? wall.y : ty;
+    const floor = z.floor ?? this.map.floor;
+    this.bolts.push({
+      x0: z.pos.x, y0: z.pos.y - 14, x1: ex, y1: ey,
+      life: 0.22, max: 0.22, f: floor, seed: Math.random() * 100,
+    });
+    audio.zap(wall ? 0.6 : 1);
+    this.particles.spark(ex, ey, randRange(0, TAU), 12, '#bfe0ff');
+    this.explosionLights.push({ x: ex, y: ey, r: 150, life: 0.18, max: 0.18, colour: '#9fd0ff', f: floor });
+    if (!wall && !p.dead) {
+      this.shake(3, 0.25);
+      if (p.hurt(12, z.pos.x, z.pos.y, this)) {
+        p.stunT = Math.max(p.stunT ?? 0, 0.75);
+        this.popups.add(p.pos.x, p.pos.y - 40, 'SHOCKED', '#bfe0ff', 12);
+      }
+    }
+  }
+
+  /** The grave lets one out: half-seen, quick, and not part of the round's tally. */
+  spawnWraith(x, y, floor, uid) {
+    const a = randRange(0, TAU), r = randRange(26, 52);
+    const z = this.makeZombie({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r, floor }, 'wraith');
+    z.graveUid = uid;
+    z.summoned = true;
+    this.zombies.push(z);
+    this.particles.smoke(z.pos.x, z.pos.y, 8);
+    audio.whimper();
+  }
+
+  /** Grenades, monkey bombs and traps are allowed to break the furniture too. */
+  hurtHaunts(x, y, R, dmg, floor) {
+    for (const tt of this.totems) {
+      if (tt.dead || (tt.f ?? 0) !== floor) continue;
+      const d = dist(x, y, tt.x, tt.y);
+      if (d < R) tt.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const gv of this.graves) {
+      if (gv.dead || (gv.f ?? 0) !== floor) continue;
+      const d = dist(x, y, gv.x, gv.y);
+      if (d < R) gv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+  }
+
+  // ---------------------------------------------------------------- weather --
+  /** Once per round the sky is rolled: storm, fog, or business as usual. */
+  rollWeather(n) {
+    if (this.rangeMode || !settings.get('weather') || n < 3) { this.setWeatherKind(null); return; }
+    // the radio called it last round: the sky keeps its promise
+    if (this.wx.forecast) {
+      const k = this.wx.forecast;
+      this.wx.forecast = null;
+      this.setWeatherKind(k);
+      return;
+    }
+    const stormP = Math.min(0.26, 0.14 + n * 0.003);
+    const r = Math.random();
+    if (r < stormP) this.setWeatherKind('storm');
+    else if (r < stormP + 0.13) this.setWeatherKind('fog');
+    else this.setWeatherKind(null);
+  }
+
+  setWeatherKind(kind) {
+    const W = this.wx;
+    if (W.kind === kind) return;
+    W.kind = kind;
+    W.t = 0; W.flash = 0; W.strikeT = randRange(2.5, 6); W.thunderAt = -1;
+    audio.rain(kind === 'storm');
+    if (kind === 'storm') {
+      W.drops = [];
+      for (let i = 0; i < 110; i++) {
+        W.drops.push({ x: Math.random() * VW, y: Math.random() * VH, s: randRange(340, 620), l: randRange(7, 16) });
+      }
+      this.say('storm');
+    }
+    if (kind === 'fog') this.say('fog');
+  }
+
+  _updateWeather(dt) {
+    const W = this.wx;
+    if (!W) return;
+    if (W.kind === 'storm') {
+      W.t += dt;
+      W.flash = Math.max(0, W.flash - dt * 2.6);
+      W.wet = Math.min(1, W.wet + dt * 0.25);
+      W.strikeT -= dt;
+      if (W.strikeT <= 0) {
+        W.strikeT = randRange(3.5, 8.5);
+        W.flash = 1;
+        W.thunderAt = W.t + randRange(0.3, 1.1);
+        this.shake(1.6, 0.3);
+      }
+      if (W.thunderAt > 0 && W.t >= W.thunderAt) { W.thunderAt = -1; audio.thunder(0.9); }
+      for (const d of W.drops) {
+        d.y += d.s * dt;
+        d.x -= 160 * dt;                      // the rain comes in slanted
+        if (d.y > VH) { d.y = -12; d.x = Math.random() * (VW + 80); }
+        if (d.x < -20) d.x += VW + 40;
+      }
+    } else if (W.wet > 0) {
+      W.wet = Math.max(0, W.wet - dt * 0.05); // the glass dries slowly
+    }
+  }
+
+  /** The loudspeaker is not a stranger any more. */
+  sayStory(n) {
+    if (this._storySaid[n]) return;
+    this._storySaid[n] = true;
+    const lines = {
+      25: 'This is not the loudspeaker. We are outside the wire, and we can see your roof. Keep going.',
+      30: 'Copy that, survivor. The bird wants twenty quiet minutes after this. Give us thirty, and be on the roof.',
+      35: 'We are circling. When the roof is clear, look up. Do not make us come back for you.',
+    };
+    const line = lines[n];
+    if (!line) return;
+    const hold = audio.voice(line, { pitch: 0.9 });
+    this.voice = { text: line, left: hold };
+  }
+
+  /** One line over the wire, with the subtitle channel and a cooldown to match. */
+  _speak(text, pitch = 0.9) {
+    const hold = audio.voice(text, { pitch });
+    this.voice = { text, left: hold };
+    this._voiceCd = Math.max(this._voiceCd ?? 0, 10);
+  }
+
+  /**
+   * The radio's night: every 5-7 rounds somebody finds your frequency --
+   * sitreps, a roll call by name, the numbers station, a careful hint at one
+   * of the four dials, a storm forecast that binds the next round's sky, or a
+   * crate really pushed out of a bird. It never talks over the story rounds.
+   */
+  _radioNight(n) {
+    if (this.rangeMode || n < 8 || n < this.radioNext) return;
+    if (n === 25 || n === 30 || n === 35) { this.radioNext = n + 1; return; }
+    if (this.heli.phase >= 2) return;      // inbound or landed: the crew talks now
+    this.radioNext = n + 5 + randInt(0, 2);
+    const pool = RADIO_EVENTS.filter((e) => e.id !== this._radioLast && (!e.cond || e.cond(this)));
+    if (!pool.length) return;
+    const ev = pool[randInt(0, pool.length - 1)];
+    this._radioLast = ev.id;
+    this._radioHeard++;
+    audio.radioStart();
+    this._speak(ev.text(this));
+    if (ev.fx) ev.fx(this);
+    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0' });
+  }
+
+  /**
+   * Round 30: the board either has a bearing on you, or it apologises.
+   * Returns true when it took the wire (so the old story beat stays quiet).
+   */
+  _heliRoundStart(n) {
+    if (this.rangeMode) return false;
+    const H = this.heli;
+    if (n !== 30 || H.phase !== 0) return false;
+    if (this.egg?.complete) return false;   // the arm check in _heliStep owns it now
+    if (!H.sorry) {
+      H.sorry = true;
+      this._speak('The bird was fuelled and ready. Then the board went dark -- too few beacons, no bearing on this house. Find the four dials, survivor. We are sorry.');
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Round 25 with four lit dials arms the pad -- no calendar ritual, no three
+   * rounds of holding the roof. Whatever order you did it in, this notices.
+   */
+  _heliArmCheck() {
+    const H = this.heli;
+    if (this.rangeMode || H.phase !== 0) return;
+    if (!this.egg?.complete || this.round < 25) return;
+    H.phase = 1; H.t = 0;
+    this._speak('Four beacons lit and the round counter past twenty-five -- we have a bearing and a bird. There is a flare locker at the centre of the pad. Light it: green smoke is what the crew homes on.');
+    this.bannerShow('THE PAD IS ARMED', 'light the green flare at the centre of the pad', { dur: 4.4, colour: '#f0d98a' });
+  }
+
+  /**
+   * The bird and the crates, ticked on both sides of the wire: the phases
+   * themselves advance only on the authority, but the guest runs the same
+   * timers so the rotor and the inbound glide stay smooth between snapshots.
+   */
+  _heliStep(dt) {
+    const H = this.heli;
+    const auth = !this.net?.playing || this.net.isHost;
+    H.t += dt;
+    this._heliArmCheck();
+    if (H.phase === 2) {
+      // two minutes of green smoke: the bird is a dot for most of it, then
+      // the smoke thins as the wings come in over the west trees
+      const thin = H.t < 108 ? 1 : Math.max(0, (116 - H.t) / 8);
+      if (H.flare && thin > 0 && Math.random() < dt * 26 * thin) {
+        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1);
+      }
+      this._heliSnd = H.t > 108;
+      if (this._heliSnd) audio.heli(Math.min(1, 0.25 + (H.t - 108) / 12));
+      if (H.t >= 60 && !H._said60 && auth) {
+        H._said60 = 1;
+        this._speak('One minute out. That smoke is on our scope the whole way in -- keep the pad clear.');
+      }
+      if (H.t >= 108 && !H._said108 && auth) {
+        H._said108 = 1;
+        this._speak('Smoke is thinning, wings on the west trees -- it comes in loud and low, keep your head down.');
+        this.bannerShow('INBOUND', 'the smoke clears, the bird comes in', { dur: 3.6, colour: '#f0d98a' });
+        this.shake(3, 1.2);
+      }
+      if (H.t >= 120 && auth) {
+        H.phase = 3; H.t = 0;
+        this.shake(5, 0.9);
+        this.bannerShow('THE BIRD IS DOWN', 'walk over and press E to vote yourself aboard', { dur: 3.6, colour: '#f0d98a' });
+      }
+    } else if (H.phase === 3) {
+      this._heliSnd = true;
+      audio.heli(0.5);
+    } else if (H.phase === 4) {
+      this._heliSnd = true;
+      audio.heli(Math.min(1, 0.5 + H.t * 0.16));
+      if (H.t >= 4.5 && auth) { H.phase = 5; this._finishEvac(); }
+    } else if (this._heliSnd) {
+      this._heliSnd = false;
+      audio.heliOff();
+    }
+    for (let i = this.supplies.length - 1; i >= 0; i--) {
+      const s = this.supplies[i];
+      s.t += dt;
+      if (s.taken) { this.supplies.splice(i, 1); continue; }
+      if (s.t <= s.fall) continue;                 // still under the canopy
+      s.life -= dt;
+      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1);
+      if (s.life <= 0) { this.supplies.splice(i, 1); continue; }   // the night takes it back
+      if (!auth) continue;                          // the host hands out the contents
+      for (const pl of this.players ?? [this.player]) {
+        if (!pl || pl.dead || pl.downed || (pl.floor ?? 0) !== (s.f ?? 0)) continue;
+        if (dist(pl.pos.x, pl.pos.y, s.x, s.y) < 24) { this._takeSupply(s, pl); break; }
+      }
+      if (s.taken) this.supplies.splice(i, 1);      // gone the moment it is opened
+    }
+  }
+
+  /** The crate the radio promised: it lands by the boxes and it is real. */
+  dropSupply() {
+    const spots = this.map.floors?.[0]?.boxSpots ?? [];
+    const spot = spots.length ? spots[randInt(0, spots.length - 1)] : this.map.playerStart;
+    this.supplies.push({
+      x: clamp(spot.x + randRange(-30, 30), T, this.map.w * T - T),
+      y: clamp(spot.y + randRange(-30, 30), T, this.map.h * T - T),
+      f: 0, t: 0, fall: 2.6, life: 100, taken: false, seed: Math.random() * 100,
+    });
+  }
+
+  _takeSupply(s, pl) {
+    s.taken = true;
+    pl.points = (pl.points ?? 0) + 1500;
+    pl.salvage = (pl.salvage ?? 0) + 12;
+    pl.refillAllReserve?.();
+    this.popups.add(pl.pos.x, pl.pos.y - 40, '+1500 CARE PACKAGE', '#f2e26a', 13);
+    this.bannerShow('CARE PACKAGE', 'points, salvage, every magazine topped up', { dur: 2.8, colour: '#f2e26a' });
+    audio.powerUp();
+    if (pl === this.player) this.achievements.unlock('care_package');
+  }
+
+  /** E at the landed bird: the ending the whole radio night was for. */
+  evacuate(p) {
+    const H = this.heli;
+    if (this.rangeMode || H.phase !== 3) return;
+    if (this.net?.playing && !this.net.isHost) {
+      // the guest's E already travelled over the wire and the host ran this
+      // very method on this very body (net._remoteInteract); the flip here is
+      // only so the pad answers instantly -- the snapshot is the authority
+      p.evacVote = !p.evacVote;
+      return;
+    }
+    // E at the bird is a VOTE, not a seat: a hand raised can be taken back,
+    // and nobody is bundled aboard until the room has actually agreed
+    p.evacVote = !p.evacVote;
+    const alive = (this.players ?? []).filter((o) => o && !o.dead);
+    const yes = alive.filter((o) => o.evacVote).length;
+    const need = Math.floor(alive.length / 2) + 1;      // strictly more than half
+    if (alive.length > 1 && yes < need) {
+      const nay = alive.filter((o) => !o.evacVote).map((o) => o.name).join(', ');
+      this.bannerShow(`EVAC VOTE ${yes}/${alive.length}`,
+        `${p.evacVote ? 'you are in' : 'you are out'} -- ${need} hands needed${nay ? `, ${nay} not yet` : ''}`,
+        { dur: 2.6, colour: '#f0d98a' });
+      audio.deny();
+      return;
+    }
+    H.phase = 4; H.t = 0;
+    audio.evacSting();
+    audio.victory();
+    this.shake(6, 1.4);
+    this.bannerShow('WHEELS UP', 'the room agreed -- everybody aboard', { dur: 3.4, colour: '#f0d98a' });
+    this._speak('We have them. Deck is clear, going up. Somebody put the kettle on.');
+    this.achievements.unlock('leaving_tonight');
+    // everybody still standing came aboard: from here on they are not on the
+    // roof any more -- they are in the cabin, watching the house shrink
+    for (const pl of this.players ?? []) { if (pl && !pl.dead) pl.evac = true; }
+  }
+
+  /** Green smoke over the roof: the two-minute burn begins. */
+  _lightFlare(p) {
+    const H = this.heli;
+    if (this.rangeMode || H.phase !== 1) return;
+    H.phase = 2; H.t = 0; H.flare = true; H._said60 = 0; H._said108 = 0;
+    this.shake(3, 0.8);
+    audio.powerUp();
+    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1);
+    this.bannerShow('FLARE LIT', 'green smoke over the roof -- the bird lands in 2:00', { dur: 4.2, colour: '#8fdc6a' });
+    this._speak('Green over the roof, we see it. Two minutes out -- keep the pad clear and your heads down.');
+    this.net?.emit('flare', {});
+  }
+
+  /**
+   * The roof radio: scrap now, supply crates every second round forever.
+   * It is a roof fixture from night one, dead silent until somebody pays.
+   */
+  _fixRoofRadio(p) {
+    if (this.roofRadio?.fixed) return;
+    if ((p.salvage ?? 0) < ROOF_RADIO_PRICE) {
+      this.popups.add(p.pos.x, p.pos.y - 34, `NEED ${ROOF_RADIO_PRICE} SCRAP`, '#9fd0e0', 12);
+      return;
+    }
+    p.salvage -= ROOF_RADIO_PRICE;
+    this.roofRadio.fixed = true;
+    audio.powerUp();
+    this.bannerShow('THE ROOF RADIO LIVES', 'a crate will fall every second round', { dur: 3.6, colour: '#9fd0e0' });
+    this._speak('Somebody got the roof set talking again. Mark it: every second round from here, a crate comes down on your pad.');
+    this.net?.emit('radiofix', {});
+  }
+
+  /** The crate the roof radio called in: it lands on the pad, under canopy. */
+  dropRoofSupply() {
+    this.supplies.push({
+      x: HELI_PAD.x + randRange(-46, 46),
+      y: HELI_PAD.y + randRange(-30, 30),
+      f: HELI_PAD.f, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
+    });
+    this.bannerShow('SUPPLY RUN', 'the roof radio called it in -- crate on the pad', { dur: 2.8, colour: '#f2e26a' });
+    audio.radioStart();
+  }
+
+  /** The bird is a star over the west trees: the run ends, the board remembers. */
+  _finishEvac() {
+    this.gameOver = true;
+    this.evacuated = true;
+    this.overT = 0;
+    audio.heliOff();
+    if (this.net?.playing && !this.net.isHost) return;   // a guest gets its screen off the snapshot
+    const stamp = Date.now();
+    this.board = submitScore({
+      round: this.round, kills: this.stats.kills, headshots: this.stats.headshots,
+      points: this.stats.points, time: Math.round(this.time), evac: true, date: stamp,
+    });
+    this.rank = this.board.findIndex((e) => e.date === stamp);
+  }
+
+  /** Keep the settings window over the row the arrows just landed on. */
+  _viewFollow() {
+    const L = settingsLayout(this, VW, VH);
+    if (!L.over) { this.settingsView = 0; return; }
+    let v = this.settingsView ?? L.top;
+    if (this.settingsIndex < v) v = this.settingsIndex;
+    else if (this.settingsIndex >= v + L.shown) v = this.settingsIndex - L.shown + 1;
+    this.settingsView = clamp(v, 0, L.over);
+  }
+
+  /** The pause menu's last row: leave the run and stand at the front door. */
+  _quitToMenu() {
+    if (this.net?.playing || this.net?.active) this.net.close();
+    audio.heliOff();
+    this.paused = false;
+    this.settingsOpen = false;
+    this.controlsOpen = false;
+    this.debugOpen = false;
+    this.craftOpen = false;
+    this.gameOver = false;
+    this.started = false;
+    this.scene = 'menu';
+  }
+
+  /** Where the bird is right now: inbound glide, on the pad, or climbing out. */
+  _heliPos() {
+    const H = this.heli;
+    const pad = HELI_PAD;
+    let x = pad.x, y = pad.y, scale = 1, alpha = 1, light = 0;
+    if (H.phase === 2) {
+      const k = Math.max(0, Math.min(1, (H.t - 111) / 9));
+      if (k <= 0) return { x: pad.x, y: pad.y, scale: 0.35, alpha: 0, light: 0 };
+      x = pad.x - (1 - k) * 1500;
+      y = pad.y - (1 - k) * 520;
+      scale = 0.35 + k * 0.65;      // altitude reads as size from straight up
+      light = k;
+    } else if (H.phase === 3) {
+      light = 0.5;
+    } else if (H.phase === 4) {
+      const k = Math.min(1, H.t / 4.5);
+      y = pad.y - k * 560;
+      scale = 1 - k * 0.6;
+      alpha = 1 - k * 0.85;
+      light = 1 - k;
+    }
+    return { x, y, scale, alpha, light };
+  }
+
+  /** Debug: drop whatever is happening and stand in round n instead. */
+  jumpToRound(n) {
+    n = clamp(Math.round(n) || 1, 1, 99);
+    for (const z of this.zombies) { z.dead = true; z.remove = true; }
+    this.zombies = [];
+    this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
+    this.fires = []; this.gases = []; this.rifts = [];
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
+    this.supplies = [];
+    audio.heliOff();
+    this.respawnQueue = 0;
+    this.intermission = 0;
+    this.startRound(n);
+    this.bannerShow('DEBUG', `jumped to round ${n}`, { dur: 1.6, colour: '#8fa8bd' });
+  }
+
   /**
    * Damage over time that is not a hit: no knockback, no shake, no i-frames.
    * It does hold the regen timer open, which is the point -- you cannot stand
    * in a fire and heal through it.
    */
-  scorchPlayer(dmg, game) {
+  scorchPlayer(dmg, game, owner) {
     const p = this.player;
     if (p.dead || this.gameOver) return;
+    if (p.evac || p.downed) return;               // aboard, or already on the floor
+    if (this.debug?.god || p.god) return;         // god mode means ALL of it
+    // your own fire and your own gas know you, if you own the flopper
+    if (owner && owner === p && p.perks?.has('phdflopper')) return;
     p.hp -= dmg;
     p.lastHurt = this.time;
     p.hurtFlash = Math.max(p.hurtFlash ?? 0, 0.25);
-    if (p.hp <= 0) { p.hp = 0; p.dead = true; this.gameOver = true; this.overT = 0; }
+    if (p.hp <= 0) {
+      p.hp = 0;
+      const coop = (this.players?.length ?? 1) > 1;
+      if (coop) {
+        p.downed = true; p.bleedT = 60; p.invuln = 1.2;
+        this.popups?.add?.(p.pos.x, p.pos.y - 34, 'DOWN', '#c4463a', 13);
+      } else { p.dead = true; this.gameOver = true; this.overT = 0; }
+    }
   }
 
   /**
@@ -1045,8 +1756,8 @@ export class Game {
     audio.chime();
   }
 
-  collectPowerup(pu) {
-    const p = this.player;
+  collectPowerup(pu, who) {
+    const p = who || this.player;
     switch (pu.id) {
       case 'maxammo':
         p.refillAllReserve();
@@ -1070,6 +1781,9 @@ export class Game {
         }
         this.shake(9, 0.5);
         this.explosionLights.push({ x: p.pos.x, y: p.pos.y, r: 900, life: 0.7, max: 0.7, f: this.fxFloor });
+        // the white-out is the loudest picture in the game: a guest used to
+        // read about it and see nothing
+        this.netEmit('boom', { x: Math.round(p.pos.x), y: Math.round(p.pos.y), r: 220, f: this.fxFloor });
         this.bannerShow('NUKE', n ? `${n} down` : 'the air crackles', { dur: 2.4, colour: '#8fe05a' });
         audio.nuke();
         break;
@@ -1121,6 +1835,8 @@ export class Game {
     this.shake(11, 0.42);
     this.explosionLights.push({ x, y, r: r * 2.4, life: 0.4, max: 0.4, f: this.fxFloor });
     this.splat(x, y, r * 0.5, 0.25, '#1a1512');
+    // the guest used to watch a grenade go off in silence: no flash, no shake
+    this.netEmit('boom', { x: Math.round(x), y: Math.round(y), r: Math.round(r), f: this.fxFloor });
   }
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
@@ -1220,6 +1936,18 @@ export class Game {
       if (t > wallT) continue;
       hits.push({ z, t, head, x: res.cx, y: res.cy });
     }
+    // the planted haunts take bullets too -- shooting the totem or the
+    // headstone is the whole point of them
+    for (const arr of [this.totems, this.graves]) {
+      for (const st of arr) {
+        if (st.dead || (st.f ?? 0) !== this.map.floor) continue;
+        const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
+        if (res.d2 > 13 * 13) continue;
+        const t = Math.hypot(res.cx - ox, res.cy - oy);
+        if (t > wallT) continue;
+        hits.push({ st, t, head: false, x: res.cx, y: res.cy });
+      }
+    }
     hits.sort((a, b) => a.t - b.t);
 
     const insta = this.timers.instakill > 0 ? 9999 : 1;
@@ -1228,6 +1956,24 @@ export class Game {
     let anyHit = false;
     let firstHit = null;
     for (const h of hits) {
+      if (h.st) {
+        // furniture: pays like a body, breaks like a promise
+        this.stats.hits++;
+        this.addPoints(POINTS_HIT, h.x, h.y - 8, 'rgba(230,220,194,0.9)', by ?? this.player);
+        if (!by || by === this.player) this.hud.hit(false);
+        this.net?.emit('hit', {
+          x: Math.round(h.x), y: Math.round(h.y), a: Math.round(angle * 100) / 100,
+          head: false, by: by?.netId ?? 0,
+        });
+        const broke = h.st.hurt(def.dmg * insta, this);
+        if (broke) {
+          this.addPoints(h.st.kind === 'totem' ? 250 : 200, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
+        }
+        anyHit = true;
+        if (!firstHit) firstHit = { x: h.x, y: h.y, z: null };
+        endT = h.t;
+        break;
+      }
       const wasAlive = !h.z.dead;
       const mul = (h.head ? def.headMul : 1) * insta;
       const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
@@ -1281,6 +2027,9 @@ export class Game {
     this.net?.emit('shot', {
       x0: Math.round(muzzle.x), y0: Math.round(muzzle.y),
       x1: Math.round(hx), y1: Math.round(hy),
+      // the spark on a guest's screen points down the barrel: send the angle
+      // or it always faces east (m.a ?? 0)
+      a: +Math.atan2(hy - muzzle.y, hx - muzzle.x).toFixed(2),
       c: tc, w: def.id, p: def.packed ? 1 : 0, by: by?.netId ?? 0,
     });
   }
@@ -1422,8 +2171,9 @@ export class Game {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
         offer({
-          type: 'grenade', price: GRENADE_PRICE, d,
-          affordable: p.points >= GRENADE_PRICE && p.grenades < 9,
+          type: 'grenade', kind: g.kind ?? 'frag', price: GRENADE_PRICE, d,
+          affordable: p.points >= GRENADE_PRICE
+            && (p[{ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[g.kind ?? 'frag']] ?? 0) < GRENADE_MAX,
         });
       }
     }
@@ -1455,7 +2205,7 @@ export class Game {
 
     const bs = this.box.spot;
     const db = dist(p.pos.x, p.pos.y, bs.x, bs.y);
-    if (db < 42) {
+    if ((p.floor ?? 0) === 0 && db < 42) {   // the crate only answers on its own floor
       const price = this.box.price();
       offer({
         type: 'box', d: db, price,
@@ -1505,6 +2255,19 @@ export class Game {
       if (d < 32) offer({ type: 'switch', sw, d, price: 0, affordable: !sw.found });
     }
 
+    if (this.heli.phase === 3 && !this.rangeMode && (p.floor ?? 0) === HELI_PAD.f) {
+      const d = dist(p.pos.x, p.pos.y, HELI_PAD.x, HELI_PAD.y);
+      if (d < 58) offer({ type: 'heli', d, price: 0, affordable: true });
+    }
+    if (this.heli.phase === 1 && !this.rangeMode && (p.floor ?? 0) === HELI_PAD.f) {
+      const d = dist(p.pos.x, p.pos.y, HELI_PAD.x, HELI_PAD.y);
+      if (d < 46) offer({ type: 'flare', d, price: 0, affordable: true });
+    }
+    if (!this.rangeMode && !this.roofRadio?.fixed && (p.floor ?? 0) === ROOF_RADIO.f) {
+      const d = dist(p.pos.x, p.pos.y, ROOF_RADIO.x, ROOF_RADIO.y);
+      if (d < 40) offer({ type: 'radio', d, price: ROOF_RADIO_PRICE, affordable: (p.salvage ?? 0) >= ROOF_RADIO_PRICE });
+    }
+
     if (this.map.secretDoorOpen) {
       for (const l of this.map.secretLoot) {
         const d = dist(p.pos.x, p.pos.y, l.x, l.y);
@@ -1520,6 +2283,10 @@ export class Game {
   doInteraction(p = this.player, it = null) {
     it = it ?? this.interactionFor(p);
     if (!it || !p || p.dead || p.downed) return;
+
+    if (it.type === 'heli') { this.evacuate(p); return; }
+    if (it.type === 'flare') { this._lightFlare(p); return; }
+    if (it.type === 'radio') { this._fixRoofRadio(p); return; }
 
     if (it.type === 'wallbuy') {
       const def = WEAPONS[it.weapon];
@@ -1543,6 +2310,7 @@ export class Game {
       p.points -= it.price;
       it.door.open = true;
       this.stats.doors++;
+      this.say('door');   // round ten onwards, on its own cooldown: sometimes he begs
       audio.buy();
       audio.door();
       this.popups.add(p.pos.x, p.pos.y - 26, 'DOOR OPEN', '#f0d98a', 12);
@@ -1576,11 +2344,15 @@ export class Game {
     }
 
     if (it.type === 'grenade') {
-      if (p.points < it.price || p.grenades >= 9) { audio.deny(); return; }
+      const kind = it.kind ?? 'frag';
+      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
+      if (p.points < it.price || (p[pocket] ?? 0) >= GRENADE_MAX) { audio.deny(); return; }
       p.points -= it.price;
-      p.grenades += 2;
+      p[pocket] = (p[pocket] ?? 0) + 2;
+      p.ownThrow[kind] = true;
       audio.buy();
-      this.popups.add(p.pos.x, p.pos.y - 26, 'FRAG GRENADES', '#f0d98a', 12);
+      this.popups.add(p.pos.x, p.pos.y - 26,
+        { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind], '#f0d98a', 12);
       return;
     }
 
@@ -1641,8 +2413,16 @@ export class Game {
     }
 
     if (it.type === 'workbench') {
-      if (p !== this.player) { audio.deny(); return; }
-      this.craftOpen = !this.craftOpen;
+      // Every body gets its own bench. It used to be the host's alone: a guest
+      // who climbed to the roof and pressed E was told "no" for no reason at
+      // all. The menu is now each client's own business -- a guest opens its
+      // copy in _guestUpdate and sends what it wants built (net.js, m:'craft')
+      // -- so the host deliberately keeps no copy of a remote body's flag.
+      // Nothing to fall out of sync, and no body left unable to fire because
+      // somebody else's menu went stale.
+      if (p !== this.player) return;
+      p.craftOpen = !p.craftOpen;
+      p.craftRow = clamp(p.craftRow ?? 0, 0, Math.max(0, recipeIds().length - 1));
       audio.reload(2);
       return;
     }
@@ -1702,6 +2482,15 @@ export class Game {
       audio.chime();
       this.popups.add(p.pos.x, p.pos.y - 28,
         `SIGNAL ${this.egg.found}/${this.egg.switches.length}`, '#9fd0e0', 11);
+      // four lit beacons: say plainly what happens next, so nobody stands
+      // on the roof at round 25 wondering whether the game forgot them
+      if (this.egg.found >= 4 && !this._beaconTold) {
+        this._beaconTold = 1;
+        this.bannerShow('FOUR BEACONS LIT',
+          'reach round 25 and the pad arms -- then light the green flare',
+          { dur: 4.2, colour: '#9fd0e0' });
+        this._speak('Four beacons on the deck and still counting. Get to round twenty-five and the board cuts a bearing -- then light the green flare on the pad and hold on for two minutes.');
+      }
       if (this.egg.complete && this.egg.state === 'idle') {
         this.egg.start();
         this.bannerShow('THE RADIO SPEAKS', 'something is transmitting', { dur: 3.0, colour: '#9fd0e0' });
@@ -1775,6 +2564,7 @@ export class Game {
     if (!entered || this._linkCd > 0) return;
     const other = on.a.floor === this.map.floor ? on.b : on.a;
     const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
+    this._noteLinkTrail(on);
     this.goToFloor(other.floor, to, on);
   }
 
@@ -1794,6 +2584,7 @@ export class Game {
 
   goToFloor(n, to, link) {
     const from = { x: this.player.pos.x, y: this.player.pos.y };
+    this._noteLinkTrail(link);
     this.map.setFloor(n);
     this.player.floor = n;
     this.useFloor(n);
@@ -1825,6 +2616,23 @@ export class Game {
     this.rebuildFlow();
   }
 
+  /**
+   * The horde reads your footsteps: every hatch you drop through and every
+   * window you climb goes into this trail, and the flow field prefers it for
+   * a while -- so fleeing through the east hatch does not send them west.
+   */
+  noteTrail(floor, tx, ty) {
+    const tr = this.trail ?? (this.trail = new Map());
+    tr.set(`${floor}:${ty * this.map.w + tx}`, this.time);
+    if (tr.size > 96) for (const [k, t] of tr) if (this.time - t > 60) tr.delete(k);
+  }
+
+  _noteLinkTrail(link) {
+    if (!link) return;
+    this.noteTrail(link.a.floor, link.a.tx, link.a.ty);
+    this.noteTrail(link.b.floor, link.b.tx, link.b.ty);
+  }
+
   onPlayerTeleport(from, to) {
     this.teleportFx = 1;
     this.particles.dust(to.x, to.y, randRange(0, TAU), 8);
@@ -1832,9 +2640,41 @@ export class Game {
     audio.door();
   }
 
-  /** Throw a Monkey Bomb from the player's hands. */
-  throwMonkey() {
-    const p = this.player;
+  /**
+   * A throwable leaves toward the pointer: the further the cursor, the harder
+   * the throw, so what you point at is roughly what you hit. Remote bodies
+   * have no pointer on this machine, so they throw along their aim instead.
+   */
+  throwAtCursor(p, kind, aimOverride, distOverride) {
+    let aim = p.aim ?? 0;
+    let d = 200;
+    if (distOverride != null) { aim = aimOverride ?? aim; d = distOverride; }
+    else if (aimOverride == null) {
+      const mw = this.screenToWorld(this.input.mouse.x, this.input.mouse.y);
+      const dx = mw.x - p.pos.x, dy = mw.y - p.pos.y;
+      const dd = Math.hypot(dx, dy);
+      if (dd > 8) { aim = Math.atan2(dy, dx); d = dd; }
+    }
+    const speed = Math.max(150, Math.min(700, d * 1.64));
+    const floor = p.floor ?? this.map.floor;
+    p.vel.x -= Math.cos(aim) * 26;
+    p.vel.y -= Math.sin(aim) * 26;
+    if (kind === 'frag') {
+      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor);
+      audio.shot?.('throw', 0);
+      return;
+    }
+    this.pThrows.push({
+      kind, x: p.pos.x + Math.cos(aim) * 10, y: p.pos.y + Math.sin(aim) * 10,
+      vx: Math.cos(aim) * speed, vy: Math.sin(aim) * speed,
+      floor, t: 0, rot: 0, owner: p,
+    });
+    audio.shot?.('throw', 0);
+  }
+
+  /** Throw a Monkey Bomb from the player's hands -- whoever that player is. */
+  throwMonkey(by) {
+    const p = by || this.player;
     const def = WEAPONS.monkeybomb;
     p.slot.mag--;
     p.fireTimer = def.delay;
@@ -1896,6 +2736,10 @@ export class Game {
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
     }
 
+    // the furniture takes its share: a totem or a headstone near a blast
+    // does not get to sit it out
+    this.hurtHaunts(x, y, r, Math.min(dmg, 320), this.map.floor);
+
     // self-damage: normal grenades hurt you, PhD Flopper says otherwise
     const pd = dist(x, y, p.pos.x, p.pos.y);
     if (pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
@@ -1905,22 +2749,120 @@ export class Game {
     }
   }
 
-  tryCraft(id) {
-    const r = RECIPES[id];
-    const why = this.workbench.canCraft(this, id);
+  /**
+   * Build something at the bench.
+   *
+   * `p` is the body doing the building, which in co-op is not necessarily the
+   * host's: a guest picks a card on its own screen and the host runs this for
+   * it (net.js, `m:'craft'`). Everything here -- the purse, the popup, the
+   * tally -- belongs to that body.
+   */
+  tryCraft(id, p = this.player) {
+    const r = recipe(id);
+    if (!r || !p || p.dead || p.downed) return false;
+    const why = this.workbench.canCraft(this, id, p);
     if (why !== 'ok') {
+      // the reason goes over the head of whoever asked, not over the host's
       audio.deny();
-      this.popups.add(this.player.pos.x, this.player.pos.y - 28,
-        why === 'salvage' ? 'NOT ENOUGH SCRAP' : 'NOT ENOUGH POINTS', '#c4463a', 10);
+      this.popups.add(p.pos.x, p.pos.y - 28, craftRefusal(id, why), '#c4463a', 10);
       return false;
     }
-    this.workbench.craft(this, id);
-    this.stats.crafted++;
-    if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
-    if (id === 'medkit') this.achievements.unlock('field_medic');
+    this.workbench.craft(this, id, p);
+    if (p === this.player) {
+      this.stats.crafted++;
+      if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
+      if (id === 'medkit') this.achievements.unlock('field_medic');
+    }
     audio.buy();
-    this.popups.add(this.player.pos.x, this.player.pos.y - 26, r.name.toUpperCase(), r.colour, 12);
+    const name = (r.name ?? id).toUpperCase();
+    this.popups.add(p.pos.x, p.pos.y - 26, name, r.colour ?? '#f0d98a', 12);
+    // and the rest of the house hears the hammer: what one body builds at the
+    // bench is team news, the same way a bought perk is
+    this.netEmit('craft', {
+      x: Math.round(p.pos.x), y: Math.round(p.pos.y), name, c: r.colour ?? '#f0d98a',
+      by: p.netId ?? 0,
+    });
     return true;
+  }
+
+  /**
+   * The bench menu's own input, for one body. The host path and the guest path
+   * both run it, because a guest has a menu too -- only the building itself
+   * travels over the wire (`remote`).
+   *
+   * Returns true when this step consumed the menu: built something, or shut
+   * it. The caller keeps `craftWasOpen` from the top of the frame and leaves E
+   * and F alone if it was set -- without that, the same press that stepped
+   * away from the bench is read again by the interaction code underneath and
+   * the menu snaps straight back open. It used to, which is why the only way
+   * out of the bench was Q or walking off.
+   */
+  _craftInput(dt, p, remote) {
+    if (!p) return false;
+    if (!p.craftOpen) return false;
+    const inp = this.input;
+    const ids = recipeIds();
+    let touched = false;
+
+    const build = (id) => {
+      if (!id) return;
+      if (remote) { this.net?.requestCraft?.(id); return; }
+      this.tryCraft(id, p);
+    };
+
+    // numbers still work, for as many cards as there are digits
+    for (let i = 0; i < ids.length && i < 9; i++) {
+      if (inp?.wasPressed(`Digit${i + 1}`)) { build(ids[i]); return true; }
+    }
+
+    // The pointer: hover picks a card, a click builds it. On a phone this is
+    // not a convenience, it is the entire menu -- a touchscreen has no digits.
+    // A key pressed in the same frame wins over a pointer that is merely
+    // resting on a card, or the arrows cannot move away from wherever the
+    // mouse happens to be parked (the settings panel has the same rule for
+    // its wheel).
+    const m = inp?.mouse;
+    const keyed = !!inp && inp.wasPressed(
+      'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
+    );
+    if (m && ids.length) {
+      const hover = craftRowAt(this, VW, VH, m.x, m.y);
+      if (!keyed && hover >= 0 && hover !== p.craftRow) { p.craftRow = hover; audio.dryFire(); }
+      if (m.pressed && hover >= 0) { build(ids[hover]); return true; }
+    }
+
+    // arrows and WASD walk the grid, Enter builds what is lit
+    if (ids.length) {
+      const n = ids.length;
+      const cols = craftLayout(this, VW, VH).cols;
+      const move = (d) => {
+        p.craftRow = clamp(((p.craftRow ?? 0) + d + n) % n, 0, n - 1);
+        audio.dryFire();
+      };
+      if (inp?.wasPressed('ArrowUp', 'KeyW')) move(-cols);
+      if (inp?.wasPressed('ArrowDown', 'KeyS')) move(cols);
+      if (inp?.wasPressed('ArrowLeft', 'KeyA')) move(-1);
+      if (inp?.wasPressed('ArrowRight', 'KeyD')) move(1);
+      if (inp?.wasPressed('Enter', 'Space')) { build(ids[clamp(p.craftRow ?? 0, 0, n - 1)]); return true; }
+    }
+
+    // stepping away: E is what the world uses for the bench and F is what a
+    // phone has instead. Q used to be one of these, but Q also swaps guns and
+    // a guest's Q travels, so closing the menu changed your weapon.
+    if (inp?.wasPressed('Escape', 'KeyE', 'KeyF')) {
+      p.craftOpen = false;
+      audio.dryFire();
+      return true;
+    }
+    // ...as is walking off, or taking the stairs: the bench is on one storey
+    // and the menu must not follow you down it
+    if (!this.map.workbench
+      || dist(p.pos.x, p.pos.y, this.workbench.x, this.workbench.y) > 56
+      || (p.floor ?? this.map.floor) !== this.map.floor) {
+      p.craftOpen = false;
+      return true;
+    }
+    return false;
   }
 
   /** The debug panel as data, so the HUD can draw it and the mouse can hit it. */
@@ -1973,7 +2915,7 @@ export class Game {
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
     return [
-      { id: 'god', label: 'GOD MODE', value: on(d.god) },
+      { id: 'god', label: 'GOD MODE', value: on(d.god || this.player?.god) },
       { id: 'ammo', label: 'INFINITE AMMO', value: on(d.ammo) },
       { id: 'paths', label: 'SHOW WALLS & PATHS', value: on(d.paths) },
       { id: 'points', label: '+5000 POINTS', value: 'GO' },
@@ -1987,12 +2929,17 @@ export class Game {
       { id: 'drop', label: 'DROP A POWER-UP', value: 'GO' },
       { id: 'kill', label: 'KILL EVERYTHING HERE', value: 'GO' },
       { id: 'round', label: 'END THE ROUND', value: 'GO' },
+      { id: 'roundpick', label: 'PICK A ROUND (enter: +1)', value: String(this._dbgRound ?? this.round) },
+      { id: 'roundgo', label: 'JUMP TO THE PICKED ROUND', value: 'GO' },
+      { id: 'callbird', label: 'CALL THE BIRD', value: HELI_PHASE_NAMES[this.heli?.phase ?? 0] },
+      { id: 'supply', label: 'DROP A SUPPLY CRATE', value: 'GO' },
     ];
   }
 
-  /** Do the thing on that row. */
-  _debugRun(id) {
-    const p = this.player;
+  /** Do the thing on that row. `remote` is a guest's body: the row runs on
+   *  the host, but the buff belongs to whoever pressed it. */
+  _debugRun(id, remote) {
+    const p = remote ?? this.player;
     if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
     switch (id) {
       case 'where':
@@ -2006,11 +2953,28 @@ export class Game {
         for (const z of this.zombies) { z.dead = true; z.remove = true; }
         this.zombies = [];
         break;
+      case 'roundpick':
+        this._dbgRound = ((this._dbgRound ?? this.round) % 60) + 1;
+        break;
+      case 'roundgo':
+        this.jumpToRound(this._dbgRound ?? this.round);
+        break;
+      case 'callbird':
+        if (this.heli.phase !== 4) {
+          this.heli.phase = 2; this.heli.t = 0; this.heli.flare = true;
+          this.heli._said60 = 0; this.heli._said108 = 0;
+          this.bannerShow('DEBUG', 'flare burning, bird inbound', { dur: 1.6, colour: '#8fa8bd' });
+        }
+        break;
+      case 'supply':
+        this.dropSupply();
+        this.bannerShow('DEBUG', 'crate on the wire', { dur: 1.6, colour: '#8fa8bd' });
+        break;
       case 'god': this.debug.god = !this.debug.god; break;
       case 'ammo': this.debug.ammo = !this.debug.ammo; break;
       case 'paths': this.debug.paths = !this.debug.paths; break;
       case 'points':
-        this.addPoints(5000, p.pos.x, p.pos.y - 26, '#f0d98a');
+        this.addPoints(5000, p.pos.x, p.pos.y - 26, '#f0d98a', p);
         break;
       case 'perks':
         this.powerOn = true;
@@ -2036,6 +3000,18 @@ export class Game {
         this.flowTimer = 0;
         break;
       case 'floor': {
+        if (remote) {
+          // a guest's body hops the link itself; goToFloor is the host's chair
+          const n = ((p.floor ?? 0) + 1) % this.map.floors.length;
+          const lk = (this.map.links ?? []).find((l) => l.a.floor === n || l.b.floor === n);
+          if (!lk) break;
+          const dest = lk.a.floor === n ? lk.a : lk.b;
+          p.floor = n;
+          p.pos.x = (dest.tx + 0.5) * T; p.pos.y = (dest.ty + 0.5) * T;
+          p.vel.x = 0; p.vel.y = 0;
+          this.rebuildFlow();
+          break;
+        }
         const n = (this.map.floor + 1) % 3;
         const lk = (this.map.links ?? []).find((l) => l.a.floor === n)
           ?? (this.map.links ?? []).find((l) => l.b.floor === n);
@@ -2073,6 +3049,7 @@ export class Game {
     if (oPressed) {
       const was = this.settingsOpen;
       this.settingsOpen = !this.settingsOpen;
+      if (this.settingsOpen) this.settingsView = null;
       openedByO = !was;
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
@@ -2090,17 +3067,33 @@ export class Game {
     if (this.settingsOpen) {
       const S = settings;
       // the mouse and the wheel are first-class citizens here too: hover
-      // picks a row, a click flips or drags it, the wheel walks the list
+      // picks a row, a click flips or drags it, the wheel scrolls the window
+      // (the selection keeps its place while the list moves under it)
       const m = this.input.mouse;
       const wheeled = !!this.input.wheel;
       if (wheeled) {
-        this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
+        const L = settingsLayout(this, VW, VH);
+        if (L.over > 0) {
+          // a list taller than the panel: the wheel scrolls the window and
+          // the selection keeps its place
+          const cur = this.settingsView ?? L.top;
+          this.settingsView = clamp(cur + this.input.wheel, 0, L.over);
+        } else {
+          // everything fits: the wheel walks the selection, as it always did
+          this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
+        }
         audio.dryFire();
       }
+      // hover only picks a row while the pointer is actually moving: a hand
+      // resting on the panel must not pin the keyboard's selection
+      const moved = m.x !== (this._smx ?? -999) || m.y !== (this._smy ?? -999);
+      this._smx = m.x; this._smy = m.y;
       const hover = settingsRowAt(this, VW, VH, m.x, m.y);
-      // the wheel wins over the hover in the same frame, or a scroll while
-      // the pointer rests on a row would snap straight back to that row
-      if (!wheeled && hover >= 0 && hover !== this.settingsIndex) { this.settingsIndex = hover; audio.dryFire(); }
+      if (!wheeled && moved && hover >= 0 && hover !== this.settingsIndex) {
+        this.settingsIndex = hover;
+        this._viewFollow();
+        audio.dryFire();
+      }
       if (m.pressed && hover >= 0) {
         const d = SETTING_DEFS[hover];
         if (d.type === 'range') {
@@ -2115,10 +3108,12 @@ export class Game {
       }
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
+        this._viewFollow();
         audio.dryFire();
       }
       if (this.input.wasPressed('ArrowDown', 'KeyS')) {
         this.settingsIndex = (this.settingsIndex + 1) % SETTING_DEFS.length;
+        this._viewFollow();
         audio.dryFire();
       }
       if (this.input.wasPressed('ArrowLeft', 'KeyA')) S.nudge(SETTING_DEFS[this.settingsIndex].id, -1);
@@ -2194,7 +3189,14 @@ export class Game {
       if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
         const row = rows[this.debugIndex] ?? rows[0];
-        if (row) this._debugRun(row.id);
+        if (row) {
+          if (this.net?.playing && !this.net.isHost) {
+            // the guest's panel is a remote control: the world lives on the
+            // host, so the row runs there (GOD arms your own body only)
+            this.net.send(this.net.hostId, { m: 'dbg', id: row.id });
+            audio.dryFire();
+          } else this._debugRun(row.id);
+        }
       }
       if (this.input.wasPressed('Escape', 'KeyP') || (bq && !openedByBq)) {
         this.debugOpen = false;
@@ -2213,9 +3215,13 @@ export class Game {
 
     if (this.gameOver) {
       this.overT += dt;
+      // the ending -- death or EVACUATED -- is something the other machine
+      // has to see too: keep pumping snapshots while this screen is up
+      if (this.net?.active && this.net.isHost) this.net.step(dt);
       this.particles.update(dt, this.map);
       this.popups.update(dt);
       if (this.overT > 1.1 && (this.input.wasPressed('KeyR') || this.input.mouse.pressed)) {
+        if (this.net?.playing && !this.net.isHost) this.net.close();
         this.reset();
         this.started = true;
         this.startRound(1);
@@ -2223,8 +3229,25 @@ export class Game {
       return;
     }
 
-    if (this.input.wasPressed('KeyP', 'Escape')) this.paused = !this.paused;
+    // Escape belongs to whatever full-screen list is up: at the bench it steps
+    // away from the bench, and only then -- on the next press -- does it pause.
+    // It used to pause straight through the menu, so the one key the footer
+    // advertised never did what it said.
+    if (this.input.wasPressed('KeyP')) this.paused = !this.paused;
+    else if (this.input.wasPressed('Escape') && !this.craftOpen) this.paused = !this.paused;
     if (this.paused) {
+      // the pause screen is a menu you can click (or thumb) now: the rows and
+      // their geometry live in hud.js, the shortcuts still work as before
+      const m = this.input.mouse;
+      const hit = pauseHitTest(this, VW, VH, m.x, m.y);
+      if (m.pressed && hit >= 0) {
+        audio.dryFire();
+        if (hit === 0) this.paused = false;
+        else if (hit === 1) { this.settingsOpen = true; this._wasPaused = true; }
+        else if (hit === 2) { this.controlsOpen = true; this._wasPaused = true; }
+        else if (hit === 3) { this.reset(); this.started = true; this.startRound(1); }
+        else if (hit === 4) this._quitToMenu();
+      }
       if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
@@ -2247,15 +3270,27 @@ export class Game {
     this._refreshProps();
 
     // ---- player ------------------------------------------------------------
+    // The bench menu owns the movement keys while it is up: you navigate
+    // blueprints, you do not wander off the roof in the middle of choosing.
+    if (this.input) this.input.menuLock = this.craftOpen;
     this._fxOn(this.player);
     this.player.update(dt, this, this.input);
-    if (this.debug.ammo) {
-      for (const id in this.player.loadout) {
-        const sl = this.player.loadout[id], w = WEAPONS[id];
+    // footprints through the openings: whichever window or hatch a living body
+    // is standing in goes on the trail the horde reads when it paths to you
+    for (const pl of this.players ?? []) {
+      if (!pl || pl.dead) continue;
+      const f = pl.floor ?? this.map.floor;
+      const tx = Math.floor(pl.pos.x / T), ty = Math.floor(pl.pos.y / T);
+      if (this.map.tileOn(f, tx, ty) === TILE.WINDOW) this.noteTrail(f, tx, ty);
+    }
+    for (const pl of this.players ?? [this.player]) {
+      if (!pl || !(this.debug.ammo || pl._dbgAmmo)) continue;
+      for (const id in pl.loadout) {
+        const sl = pl.loadout[id], w = WEAPONS[id];
         if (!sl.owned || !w) continue;
         sl.mag = w.mag; sl.reserve = w.maxReserve;
       }
-      this.player.grenades = Math.max(this.player.grenades, 4);
+      pl.grenades = Math.max(pl.grenades ?? 0, 4);
     }
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
 
@@ -2263,17 +3298,15 @@ export class Game {
     this._fxOn(this.player);
     if (this.net?.active) this.net.step(dt);
 
-    // ---- workbench craft menu (swallows the number keys while open) --------
-    if (this.craftOpen) {
-      for (let i = 0; i < RECIPE_ORDER.length; i++) {
-        if (this.input.wasPressed(`Digit${i + 1}`)) this.tryCraft(RECIPE_ORDER[i]);
-      }
-      if (this.input.wasPressed('Escape', 'KeyE', 'KeyQ')) this.craftOpen = false;
-      if (!this.map.workbench
-        || dist(this.player.pos.x, this.player.pos.y, this.workbench.x, this.workbench.y) > 56) {
-        this.craftOpen = false;
-      }
-    } else {
+    // ---- workbench craft menu ---------------------------------------------
+    // While it is up it swallows the digits, the arrows and the pointer, so
+    // the weapon slots and the wheel below wait their turn. `craftWasOpen` is
+    // what the interaction code further down needs: an E that closed the menu
+    // must not be read a second time by the bench itself, or the menu you just
+    // stepped away from is open again before you can see it close.
+    const craftWasOpen = this.craftOpen;
+    if (craftWasOpen) this._craftInput(dt, this.player, false);
+    if (!craftWasOpen) {
       // 1 / 2 pick a carried slot, Q flips between them; the wheel and the
       // square brackets dig through the whole armoury (that takes a moment)
       if (this.input.wasPressed('Digit1')) this.player.setSlot(0);
@@ -2286,8 +3319,18 @@ export class Game {
       // grenades
       if (this.input.wasPressed('KeyG') && this.player.grenades > 0 && !this.player.dead) {
         this.player.grenades--;
-        throwGrenade(this, this.player.pos.x, this.player.pos.y, this.player.aim);
-        this.player.vel.x -= Math.cos(this.player.aim) * 30;
+        this.throwAtCursor(this.player, 'frag');
+        this.shake(2, 0.1);
+      }
+      // molotovs and gas: their own pockets, their own keys
+      if (this.input.wasPressed('KeyX') && this.player.molotovs > 0 && !this.player.dead) {
+        this.player.molotovs--;
+        this.throwAtCursor(this.player, 'molotov');
+        this.shake(2, 0.1);
+      }
+      if (this.input.wasPressed('KeyB') && this.player.gasbombs > 0 && !this.player.dead) {
+        this.player.gasbombs--;
+        this.throwAtCursor(this.player, 'gas');
         this.shake(2, 0.1);
       }
       // medkit
@@ -2309,10 +3352,15 @@ export class Game {
     if (fallen && !this.player.downed && !this.player.dead && this.input.isDown('KeyF')) {
       this._reviveT = (this._reviveT ?? 0) + dt;
       this.player.vel.x *= 0.86; this.player.vel.y *= 0.86;
-      if (this._reviveT >= 1.3) { this._reviveT = 0; this.revive(fallen, this.player); }
+      this.reviveNeed = this.player.perks?.has('quickrevive') ? 5 : 10;
+      this.reviveTarget = fallen;
+      if (this._reviveT >= this.reviveNeed) { this._reviveT = 0; this.revive(fallen, this.player); }
     } else {
       this._reviveT = 0;
-      if (!this.craftOpen) {
+      // not "is the menu shut" but "was it shut when the frame started": the
+      // E that shut it is still held in `pressed`, and reading it again here
+      // is what used to open the bench straight back up
+      if (!this.craftOpen && !craftWasOpen) {
         if (this.input.wasPressed('KeyE', 'KeyF')) this.doInteraction();
         if (this.input.isDown('KeyE')) this.rebuildTick(dt); else this._rebuildT = 0;
       } else this._rebuildT = 0;
@@ -2345,6 +3393,10 @@ export class Game {
     const standing = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
     this.lastCall = this.roundActive && this.zombiesTotal > 0
       && standing <= Math.max(1, Math.ceil(this.zombiesTotal * 0.10));
+    // half the round already in the ground: whatever is sulking under the
+    // soil comes up now -- you have earned an honest fight
+    this.hordeThin = this.roundActive && this.zombiesTotal > 0
+      && this.zombiesKilled >= this.zombiesTotal * 0.5;
     if (this.lastCall && !this._lastCallPing) {
       const hiding = this.zombies.some((z) => !z.dead
         && (z.state === ZSTATE.BURIED || z.state === ZSTATE.HIDDEN || z.hidden));
@@ -2396,13 +3448,43 @@ export class Game {
     }
     this.monkeys = this.monkeys.filter((m) => !m.remove);
 
+    // ---- the players' own bottles and pots, in flight ----------------------
+    for (let i = this.pThrows.length - 1; i >= 0; i--) {
+      const th = this.pThrows[i];
+      th.t += dt;
+      const tmp = { x: th.x, y: th.y };
+      this.map.moveCircle(tmp, th.vx * dt, th.vy * dt, 3, th.floor);
+      th.x = tmp.x; th.y = tmp.y;
+      const f = Math.max(0, 1 - 1.7 * dt);
+      th.vx *= f; th.vy *= f;
+      th.rot += dt * 10;
+      const slow = Math.hypot(th.vx, th.vy) < 26;
+      if (slow || th.t > 2.6) {
+        this.pThrows.splice(i, 1);
+        if (th.kind === 'molotov') {
+          this.fires.push({ x: th.x, y: th.y, r: 46, life: 4.5, max: 4.5, tick: 0, puff: 0, f: th.floor, owner: th.owner });
+          audio.explode?.(0.4);
+          this.explosionLights?.push?.({ x: th.x, y: th.y, r: 90, life: 0.35, max: 0.35, colour: '#f07a2a' });
+          this.shake(3, 0.2);
+        } else {
+          this.gases.push({ x: th.x, y: th.y, r: 54, life: 7, max: 7, puff: 0, drift: randRange(0, TAU), f: th.floor, owner: th.owner });
+          audio.growl?.(0.7, 0.5);
+        }
+      }
+    }
+
     // ---- power-ups ---------------------------------------------------------
     for (const pu of this.powerups) pu.update(dt);
     for (const pu of this.powerups) {
       if ((pu.f ?? 0) !== this.map.floor) continue;
-      if (dist(pu.x, pu.y, this.player.pos.x, this.player.pos.y) < 24) {
-        pu.dead = true;
-        this.collectPowerup(pu);
+      for (const pl of this.players ?? []) {
+        if (!pl || pl.dead || pl.downed || pl.evac) continue;
+        if ((pl.floor ?? 0) !== (pu.f ?? 0)) continue;
+        if (dist(pu.x, pu.y, pl.pos.x, pl.pos.y) < 24) {
+          pu.dead = true;
+          this.collectPowerup(pu, pl);
+          break;
+        }
       }
     }
     this.powerups = this.powerups.filter((p) => !p.dead);
@@ -2487,7 +3569,7 @@ export class Game {
       }
       if (!p.dead && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
         this.inFire = 1;
-        this.scorchPlayer(20 * dt, this);
+        this.scorchPlayer(20 * dt, this, f.owner);
       }
       f.puff -= dt;
       if (f.puff <= 0) {
@@ -2502,15 +3584,23 @@ export class Game {
       g.life -= dt;
       if (g.life <= 0) { this.gases.splice(i, 1); continue; }
       g.drift += dt * 0.3;
-      // zombies choke in it; it is not what kills them
-      for (const z of this.zombies) {
-        if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
-        if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
-        z.webbed = Math.max(z.webbed ?? 0, 0.45);
+      // zombies choke in it; a thrown pot also bites a little
+      g.tick = (g.tick ?? 0) + dt;
+      while (g.tick >= 0.5) {
+        g.tick -= 0.5;
+        for (const z of this.zombies) {
+          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
+          z.webbed = Math.max(z.webbed ?? 0, 0.45);
+          if (g.owner) {
+            const res = z.hurt(7, false, this, randRange(0, TAU));
+            if (res === 2) this.onZombieKilled(z, false, null, 'gas');
+          }
+        }
       }
       if (!p.dead && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
         this.inGas = 1;
-        this.scorchPlayer(11 * dt, this);
+        this.scorchPlayer(11 * dt, this, g.owner);
       }
       g.puff -= dt;
       if (g.puff <= 0) {
@@ -2519,6 +3609,9 @@ export class Game {
         this.particles.smoke(g.x + Math.cos(a) * d, g.y + Math.sin(a) * d, 1);
       }
     }
+
+    this._stepHaunts(dt);
+    this._heliStep(dt);
 
     // ---- the last few: the map goes quiet and starts breathing -------------
     const aliveNow = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
@@ -2695,20 +3788,25 @@ export class Game {
     if (!settings.get('autoQuality')) {
       // the player took the wheel: whatever auto had dialled back is restored
       // at once, and nothing may be dialled back again until they hand it over
-      this._slowFrames = 0; this._fastFrames = 0;
+      this._slowFrames = 0; this._fastFrames = 0; this._grainOff = false;
       if (this._perfStage !== 0) { this._perfStage = 0; this._applyLightScale(); }
       return;
     }
-    if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
+    if (workMs > 33) { this._slowFrames += 3; this._fastFrames = 0; }
+    else if (workMs > 20) { this._slowFrames++; this._fastFrames = 0; }
     else if (workMs < 11) { this._fastFrames++; this._slowFrames = 0; }
     else { this._slowFrames = 0; this._fastFrames = 0; }
 
     const ceil = this._userLighting ?? 2;
-    if (this._slowFrames >= 90 && this._perfStage < ceil) {
+    if (this._slowFrames >= 45 && this._perfStage < ceil) {
       this._perfStage++; this._slowFrames = 0; this._applyLightScale();
-    } else if (this._fastFrames >= 900 && this._perfStage > 0) {
+    } else if (this._fastFrames >= 600 && this._perfStage > 0) {
       this._perfStage--; this._fastFrames = 0; this._applyLightScale();
     }
+    // once the governor has had to step the lights down, the machine is not
+    // happy: the film grain goes too (see postgrade), unless the player
+    // switched AUTO PERFORMANCE off and asked for the full picture
+    this._grainOff = settings.get('autoQuality') && this._perfStage > 0;
   }
 
   /**
@@ -2727,6 +3825,13 @@ export class Game {
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches ?? []);
     this.traps = new Traps();
+    // the roof finale belongs to the campaign night it was earned in: a new
+    // map (including the range) never inherits a bird, a tally or a crate
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
+    this.roofRadio = { fixed: false };
+    this.supplies = [];
+    this._heliSnd = false;
+    audio.heliOff();
 
     // a brand new body: the range must not lend its racks, perks or god-mode
     // to a campaign run, nor the campaign its wounds to the range
@@ -2743,6 +3848,14 @@ export class Game {
     this.gases = [];
     this.powerups = [];
     this.tracers = [];
+    this.totems = [];
+    this.graves = [];
+    this.zThrows = [];
+    this.bolts = [];
+    this.hordeThin = false;
+    this.setWeatherKind(null);
+    this.wx.wet = 0;
+    this._storySaid = {};
     this.decals = this._decalFor(0);
     this.stats = {
       round: 0, kills: 0, headshots: 0, points: 0, shots: 0, hits: 0, planks: 0, doors: 0,
@@ -2966,7 +4079,7 @@ export class Game {
   _startHost() {
     const net = this.net;
     const linked = this._ensureRelay();
-    net.hostGame('NACHT', net.name || 'PLAYER');
+    net.hostGame(net.makeRoomCode(), net.name || 'PLAYER');
     // hosting without a relay is not fatal: you just play by yourself, and
     // the HUD says so rather than pretending a room is open
     if (!linked) this.bannerShow('NO RELAY', 'run with node server.mjs to let people join',
@@ -2995,11 +4108,6 @@ export class Game {
     }
   }
 
-  /** The box has spots on every storey; follow the one you are standing on. */
-  _boxOnFloor() {
-    const spots = this.map.boxSpots;
-    if (spots?.length) this.box.useSpots(spots);
-  }
 
   _joinRoom(room) {
     const net = this.net;
@@ -3032,11 +4140,43 @@ export class Game {
   /** No simulation at all: interpolate what the host sent and draw it. */
   _guestUpdate(dt) {
     const net = this.net;
-    net.step(dt);
     const pl = this.player;
+    // the bench menu owns the movement keys here too, exactly as it does for
+    // the host's own body: nobody drifts off the roof in the middle of a choice
+    if (this.input) this.input.menuLock = this.craftOpen;
+    net.step(dt);
+    // bells, hums, snowballs and the rain on the glass: the timers and the
+    // kinematics are the guest's to run, the consequences are not (isAuth)
+    this._stepHaunts(dt);
+    this._heliStep(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
       this.map.setFloor(pl.floor);
       this.useFloor(pl.floor);
+    }
+    // What is under hand. Without this a guest gets no prompt at all -- no
+    // price on a door, no "the box is spinning", no bench -- and presses E on
+    // faith while the host does the work somewhere off screen.
+    this.updateInteraction();
+    // The bench is the one thing a guest drives for itself: the menu is local,
+    // so it opens the instant E goes down with no round trip, and only the
+    // building travels (net.js, `m:'craft'`).
+    // kneeling over a friend: the host owns the revive, the guest owns the bar
+    if (pl && !pl.dead && !pl.downed && this.input?.isDown('KeyF')) {
+      const fallen = this.players.find((o) => o !== pl && o.downed && !o.dead
+        && dist(pl.pos.x, pl.pos.y, o.pos.x, o.pos.y) < 40);
+      if (fallen) {
+        this.reviveTarget = fallen;
+        this.reviveNeed = pl.perks?.has('quickrevive') ? 5 : 10;
+        this._reviveT = Math.min(this.reviveNeed, (this._reviveT ?? 0) + dt);
+      } else { this._reviveT = 0; this.reviveTarget = null; }
+    } else if (this.net?.role === 'guest') { this._reviveT = 0; this.reviveTarget = null; }
+    const craftWasOpen = this.craftOpen;
+    if (craftWasOpen) this._craftInput(dt, pl, true);
+    if (!craftWasOpen && pl && !pl.dead && !pl.downed
+      && this.input?.wasPressed('KeyE', 'KeyF')
+      && this.interaction?.type === 'workbench') {
+      pl.craftOpen = true;
+      audio.reload(2);
     }
     this.particles.update(dt, this.map);
     this.popups.update(dt);
@@ -3056,7 +4196,15 @@ export class Game {
       this.shakeT -= dt;
       if (this.shakeT <= 0) { this.shakeMag = 0; this.shakeT = 0; }
     }
-    if (this.gameOver) this.overT += dt;
+    if (this.gameOver) {
+      this.overT += dt;
+      if (this.overT > 1.1 && (this.input?.wasPressed('KeyR') || this.input?.mouse?.pressed)) {
+        this.net?.close?.();
+        this.reset();
+        this.started = true;
+        this.startRound(1);
+      }
+    }
     this._lateUpdate(dt);
   }
 
@@ -3088,6 +4236,8 @@ export class Game {
     ctx.save();
     ctx.translate(-camX, -camY);
 
+    // what the night left in the fields: painted on the ground, under everybody
+    if (!this.rangeMode && this.map.floor === 0) this.drawWrecks(ctx);
     this.drawBarricades(ctx);
     this.drawDoors(ctx);
     this.drawSecretDoor(ctx);
@@ -3165,24 +4315,79 @@ export class Game {
       ctx.beginPath(); ctx.ellipse(f.x, f.y, Math.max(2, f.r * 0.8), Math.max(2, f.r * 0.64), 0, 0, TAU); ctx.stroke();
       ctx.restore();
     }
+    // 2c. the planted haunts, what flies through the air, and the lightning
+    for (const gv of this.graves) {
+      if (!gv.dead && (gv.f ?? 0) === this.map.floor) gv.draw(ctx, this.art, this.time);
+    }
+    for (const tt of this.totems) {
+      if (!tt.dead && (tt.f ?? 0) === this.map.floor) tt.draw(ctx, this.art, this.time);
+    }
+    for (const th of this.zThrows) {
+      if (!th.dead && (th.f ?? 0) === this.map.floor) th.draw(ctx, this.art, this.time);
+    }
+    for (const b of this.bolts) {
+      if ((b.f ?? 0) !== this.map.floor) continue;
+      const k = Math.max(0, b.life / b.max);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = '#dff0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.x0, b.y0);
+      const segs = 5;
+      for (let i = 1; i < segs; i++) {
+        const kk = i / segs;
+        const jx = Math.sin(b.seed + i * 12.9) * 9 * (1 - Math.abs(kk - 0.5) * 1.4);
+        const jy = Math.cos(b.seed + i * 7.7) * 7;
+        ctx.lineTo(b.x0 + (b.x1 - b.x0) * kk + jx, b.y0 + (b.y1 - b.y0) * kk + jy);
+      }
+      ctx.lineTo(b.x1, b.y1);
+      ctx.stroke();
+      ctx.globalAlpha = k * 0.4;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(140,190,255,0.5)';
+      ctx.stroke();
+      ctx.restore();
+    }
     this.traps.draw(ctx, this.time, this.map.floor);
     this.drawWallBuys(ctx);
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
     if (this.map.rangePads) this.drawRangePads(ctx);
-    this.drawMysteryBox(ctx);
+    if (this.map.floor === 0) this.drawMysteryBox(ctx);   // one box, ground floor, drawn once
     this.drawPowerSwitch(ctx);
     this.drawWorkbench(ctx);
     this.drawPackAPunch(ctx);
     this.drawSecretSwitches(ctx);
     this.drawSecretLoot(ctx);
+    this.drawSupplies(ctx);
+    if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
+      this.drawHeliPad(ctx);
+      this.drawRoofBeacons(ctx);
+      this.drawRoofFlare(ctx);
+      this.drawRoofRadio(ctx);
+      this.drawHeli(ctx);
+    }
     this.drawPowerups(ctx);
 
     // 3. actors, sorted by feet depth
     const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
     const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
+    // the revive channel: a green bar over the body somebody is kneeling by
+    if (this.reviveTarget && (this._reviveT ?? 0) > 0 && !this.reviveTarget.dead) {
+      const tgt = this.reviveTarget;
+      const k = clamp(this._reviveT / (this.reviveNeed ?? 10), 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(tgt.pos.x - 16, tgt.pos.y - 32, 32, 5);
+      ctx.fillStyle = '#7fd75a';
+      ctx.fillRect(tgt.pos.x - 16, tgt.pos.y - 32, Math.round(32 * k), 5);
+      ctx.strokeStyle = 'rgba(127,215,90,0.5)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(tgt.pos.x - 16.5, tgt.pos.y - 32.5, 33, 6);
+    }
     for (const pl of (this.players ?? [this.player])) {
-      if (!pl || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
+      if (!pl || pl.evac || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
       list.push({ y: pl.pos.y + 0.5, d: () => pl.draw(ctx, this.art) });
     }
     list.sort((a, b) => a.y - b.y);
@@ -3275,6 +4480,27 @@ export class Game {
         ctx.fillStyle = 'rgba(255,90,60,0.9)';
         ctx.fillRect(g.pos.x - 1, g.pos.y - 5, 2, 2);
       }
+    }
+
+    // 6b. the players' own bottles and pots, tumbling to where they were aimed
+    for (const th of this.pThrows) {
+      if ((th.floor ?? this.map.floor) !== this.map.floor) continue;
+      ctx.save();
+      ctx.translate(th.x, th.y);
+      ctx.rotate(Math.sin(th.rot) * 0.6);
+      if (th.kind === 'molotov') {
+        ctx.fillStyle = '#7a3a2a';
+        ctx.fillRect(-2, -3, 4, 6);
+        ctx.fillStyle = '#d0603c';
+        ctx.fillRect(-1, -6, 2, 3);
+        if (Math.floor(th.t * 14) % 2 === 0) { ctx.fillStyle = '#f6c04a'; ctx.fillRect(-1, -8, 2, 2); }
+      } else {
+        ctx.fillStyle = '#4a5c4a';
+        ctx.fillRect(-2, -4, 4, 7);
+        ctx.fillStyle = '#8ab06a';
+        ctx.fillRect(-2, -1, 4, 2);
+      }
+      ctx.restore();
     }
 
     // 7. lightning arcs + web blasts
@@ -3373,11 +4599,53 @@ export class Game {
     // 10b. DLSS5's grade over the lit scene: warm highlights, pushed contrast,
     // a touch of film grain. Cheap full-screen blits, only when it is switched
     // on. Run before the HUD so the text stays clean and readable.
-    if (this._dlss) postgrade(ctx, vw, vh, this.time);
+    if (this._dlss) postgrade(ctx, vw, vh, this.time, !this._grainOff);
 
     // 11. vignette + HUD
     // a slightly deeper vignette when the grade is on, so the edges fall away
     drawVignette(ctx, vw, vh, this._dlss ? 0.5 : 0.38);
+
+    // 11a. the dusk a totem brings: a purple weight over the whole picture
+    if (this.totemPower) {
+      ctx.save();
+      ctx.fillStyle = `rgba(38,16,64,${0.26 + Math.sin(this.time * 1.7) * 0.05})`;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.05 + Math.sin(this.time * 2.3) * 0.02;
+      ctx.fillStyle = '#7a3ac0';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+
+    // 11b. weather on the glass: the flash, the streaks, the fog, the wet
+    this.drawWeatherFx(ctx, vw, vh);
+
+    // 11c. what a snowball or a bolt left on you
+    if (this.player.chillT > 0 && !this.player.dead) {
+      const a = Math.min(0.5, (this.player.chillT / 3.2) * 0.5);
+      const grd = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.3, vw / 2, vh / 2, vh * 0.75);
+      grd.addColorStop(0, 'rgba(160,210,240,0)');
+      grd.addColorStop(1, `rgba(160,210,240,${a})`);
+      ctx.save(); ctx.fillStyle = grd; ctx.fillRect(0, 0, vw, vh); ctx.restore();
+    }
+    if (this.player.stunT > 0 && !this.player.dead) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.3 + Math.random() * 0.2;
+      ctx.strokeStyle = '#dff0ff';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 4; i++) {
+        const x = Math.random() * vw;
+        const y = Math.random() < 0.5 ? Math.random() * 34 : vh - Math.random() * 34;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + randRange(-24, 24), y + randRange(-14, 14));
+        ctx.lineTo(x + randRange(-30, 30), y + randRange(-18, 18));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     if (this.inFire) {
       ctx.save();
       const a = 0.16 + Math.sin(this.time * 14) * 0.05;
@@ -3439,7 +4707,9 @@ export class Game {
       out.push({ x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hb, floor: f });
     };
     const bs = this.box.spot;
-    if (bs && this.box.state !== 'gone') add(bs.x, bs.y, 13, 8, 8);
+    // the crate is solid where it stands -- and it only ever stands on the
+    // ground floor, so upstairs there is no phantom block to walk into
+    if (bs && this.box.state !== 'gone' && this.map.floor === 0) add(bs.x, bs.y, 13, 8, 8);
     for (const ps of this.map.perkSpots ?? []) add(ps.x, ps.y, 10, 13, 13);
     if (this.map.papSpot) add(this.map.papSpot.x, this.map.papSpot.y, 13, 16, 16);
     if (this.map.workbench) add(this.map.workbench.x, this.map.workbench.y, 12, 7, 9);
@@ -3532,10 +4802,13 @@ export class Game {
         const pulse = 0.75 + Math.sin(this.time * 2.4 + ps.x * 0.1) * 0.25;
         L.point(sx(ps.x), sy(ps.y), 96 * pulse, 0.85, hexA(def.colour, 0.30 * pulse), 0.45);
       }
-      // the open box throws light
-      const bs = this.box.spot;
-      L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
-        'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
+      // the open box throws light -- from the ground floor only; it used to
+      // glow through the ceiling of whatever storey you were standing on
+      if (this.map.floor === 0) {
+        const bs = this.box.spot;
+        L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
+          'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
+      }
       // Pack-a-Punch drum. Only the ground floor has one -- and the old
       // `return` here did not skip the drum, it skipped the entire rest of
       // the lighting pass: no darkness, no torch, no muzzle flash, no bloom
@@ -3558,6 +4831,33 @@ export class Game {
       const k = Math.min(1, f.life / f.max);
       const flick = 0.8 + Math.sin(this.time * 15 + f.x) * 0.2;
       L.point(sx(f.x), sy(f.y), f.r * 2.6, 0.85 * k * flick, hexA('#f0913a', 0.5), 0.55 * k);
+    }
+
+    // the haunts light their own corners: dusk-purple totem, one small candle
+    for (const tt of this.totems) {
+      if (tt.dead || (tt.f ?? 0) !== this.map.floor) continue;
+      const pulse = 0.7 + Math.sin(this.time * 2.2) * 0.3;
+      L.point(sx(tt.x), sy(tt.y - 14), 96, 0.5 * pulse, 'rgba(176,122,224,0.4)', 0.6 * pulse);
+    }
+    for (const gv of this.graves) {
+      if (gv.dead || (gv.f ?? 0) !== this.map.floor) continue;
+      const fl = 0.75 + Math.sin(this.time * 7 + gv.uid) * 0.25;
+      L.point(sx(gv.x + 7), sy(gv.y - 5), 52, 0.35 * fl, 'rgba(240,200,96,0.35)', 0.5 * fl);
+    }
+
+    // the roof ending lights its own corners: four beacons, one searchlight
+    if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
+      const sws = this.map.floors?.[0]?.secretSwitches ?? [];
+      HELI_BEACONS.forEach((b, i) => {
+        if (!sws[i]?.found) return;
+        const blink = 0.55 + 0.45 * Math.sin(this.time * 6 + i * 1.7);
+        L.point(sx(b.x), sy(b.y - 4), 64, 0.4 * blink,
+          i % 2 ? 'rgba(90,224,106,0.4)' : 'rgba(224,90,90,0.4)', 0.5 * blink);
+      });
+      if (this.heli.phase >= 2 && this.heli.phase <= 4) {
+        const hp = this._heliPos();
+        L.point(sx(hp.x), sy(hp.y), 240 * hp.scale, 0.45 * hp.light, 'rgba(240,235,190,0.3)', 0.4 * hp.light);
+      }
     }
 
     // armed traps light their own corner of their own storey
@@ -3686,36 +4986,52 @@ export class Game {
     for (const d of this.map.doors) {
       if (!this._vis(d.cx, d.cy, 60)) continue;
       const x = d.tx * T, y = d.ty * T;
+      const hz = d.horizontal;
       if (d.open) {
-        // doorway: just a dark threshold
+        // doorway: a dark threshold, and the leaf swung flat against the wall
         ctx.fillStyle = 'rgba(10,10,14,0.55)';
         ctx.fillRect(x, y, T, T);
         ctx.fillStyle = '#3f2a17';
-        if (d.horizontal) { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
+        if (hz) { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
         else { ctx.fillRect(x - 1, y, 2, T); ctx.fillRect(x + T - 1, y, 2, T); }
+        const side = hz ? (d.ty % 2 ? y + 1 : y + T - 5) : (d.tx % 2 ? x + 1 : x + T - 5);
+        ctx.fillStyle = '#5a3d22';
+        if (hz) ctx.fillRect(x + 2, side, T - 4, 4);
+        else ctx.fillRect(side, y + 2, 4, T - 4);
+        ctx.fillStyle = '#7a5730';
+        if (hz) ctx.fillRect(x + 2, side, T - 4, 1);
+        else ctx.fillRect(side, y + 2, 1, T - 4);
         continue;
       }
-      // boarded up
-      ctx.fillStyle = '#241a12';
+      // closed: a real paneled door standing in a frame -- it used to be a
+      // stack of planks over the opening, which read as a barricade, not a
+      // door you could buy
+      ctx.fillStyle = '#33220f';                      // the frame
+      ctx.fillRect(x - 1, y - 1, T + 2, T + 2);
+      ctx.fillStyle = '#6b4a2b';                      // the slab
       ctx.fillRect(x, y, T, T);
-      const planks = 4;
-      for (let i = 0; i < planks; i++) {
-        if (d.horizontal) {
-          const slot = T / planks;
-          const py = y + i * slot + 0.5;
-          ctx.fillStyle = '#5a3f24';
-          ctx.fillRect(x - 2, py, T + 4, slot - 1.2);
-          ctx.fillStyle = '#7a5730';
-          ctx.fillRect(x - 2, py, T + 4, 1);
-        } else {
-          const slot = T / planks;
-          const px = x + i * slot + 0.5;
-          ctx.fillStyle = '#5a3f24';
-          ctx.fillRect(px, y - 2, slot - 1.2, T + 4);
-          ctx.fillStyle = '#7a5730';
-          ctx.fillRect(px, y - 2, 1, T + 4);
-        }
-      }
+      ctx.fillStyle = 'rgba(48,30,14,0.45)';          // grain, along the slab
+      if (hz) { ctx.fillRect(x, y + 7, T, 1); ctx.fillRect(x, y + 16, T, 1); }
+      else { ctx.fillRect(x + 7, y, 1, T); ctx.fillRect(x + 16, y, 1, T); }
+      const panel = (px, py, pw, ph) => {             // two recessed panels
+        ctx.fillStyle = '#4a3018';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.fillStyle = '#7d5833';
+        ctx.fillRect(px + 1, py + 1, pw - 2, ph - 2);
+        ctx.fillStyle = 'rgba(40,24,10,0.5)';
+        ctx.fillRect(px + 1, py + ph - 2, pw - 2, 1);
+        ctx.fillRect(px + pw - 2, py + 1, 1, ph - 2);
+      };
+      if (hz) { panel(x + 3, y + 3, 8, T - 6); panel(x + 13, y + 3, 8, T - 6); }
+      else { panel(x + 3, y + 3, T - 6, 8); panel(x + 3, y + 13, T - 6, 8); }
+      ctx.fillStyle = '#20222a';                      // hinges
+      if (hz) { ctx.fillRect(x + 1, y + 2, 2, 3); ctx.fillRect(x + 1, y + T - 5, 2, 3); }
+      else { ctx.fillRect(x + 2, y + 1, 3, 2); ctx.fillRect(x + T - 5, y + 1, 3, 2); }
+      ctx.fillStyle = '#c9a24a';                      // the brass knob
+      ctx.beginPath();
+      if (hz) ctx.arc(x + T - 4, y + T / 2, 1.7, 0, Math.PI * 2);
+      else ctx.arc(x + T / 2, y + T - 4, 1.7, 0, Math.PI * 2);
+      ctx.fill();
       // price tag -- a Jammer takes the numbers off everything you buy
       const p = this.player;
       if (!this.jammed && dist(p.pos.x, p.pos.y, d.cx, d.cy) < 90) {
@@ -3984,6 +5300,403 @@ export class Game {
     }
   }
 
+  /** The deck the bird wants: painted on the roof for good, from night one. */
+  drawHeliPad(ctx) {
+    const { x, y } = HELI_PAD;
+    if (!this._vis(x, y, 90)) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(230,225,200,0.5)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 6]);
+    ctx.beginPath(); ctx.arc(x, y, 44, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(230,225,200,0.65)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x - 13, y - 16); ctx.lineTo(x - 13, y + 16);
+    ctx.moveTo(x + 13, y - 16); ctx.lineTo(x + 13, y + 16);
+    ctx.moveTo(x - 13, y); ctx.lineTo(x + 13, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * The flare locker at the pad centre, and the green burn itself: a glowing
+   * pool with a smoke column the crew can home on from the west trees.
+   */
+  drawRoofFlare(ctx) {
+    const H = this.heli;
+    const { x, y } = HELI_PAD;
+    if (!this._vis(x, y, 90)) return;
+    ctx.save();
+    if (H.phase === 1) {
+      // the locker: a small green-striped box waiting for a hand
+      ctx.fillStyle = '#2c3a30';
+      ctx.fillRect(x - 7, y - 6, 14, 12);
+      ctx.strokeStyle = '#5ae06a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 6.5, y - 5.5, 13, 11);
+      const blink = 0.5 + 0.5 * Math.sin(this.time * 4);
+      ctx.fillStyle = `rgba(120,230,130,${0.35 + 0.5 * blink})`;
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+    } else if (H.phase === 2 && H.flare) {
+      const thin = H.t < 108 ? 1 : Math.max(0.15, (116 - H.t) / 8);
+      const pulse = 0.75 + 0.25 * Math.sin(this.time * 5.2);
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 46 * thin + 10);
+      g.addColorStop(0, `rgba(140,240,140,${0.5 * pulse * thin})`);
+      g.addColorStop(0.55, `rgba(70,190,90,${0.28 * pulse * thin})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 46 * thin + 10, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      // the stick itself, hissing on the deck
+      ctx.fillStyle = '#3a4038';
+      ctx.fillRect(x - 2, y - 3, 4, 7);
+      ctx.fillStyle = `rgba(160,255,160,${0.8 * pulse})`;
+      ctx.beginPath(); ctx.arc(x, y - 4, 2.6, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** The roof radio station: a dead shack until somebody pays the scrap. */
+  drawRoofRadio(ctx) {
+    const { x, y } = ROOF_RADIO;
+    if ((this.map.floor ?? 0) !== ROOF_RADIO.f) return;
+    if (!this._vis(x, y, 90)) return;
+    const fixed = !!this.roofRadio?.fixed;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(x, y + 12, 16, 5, 0, 0, TAU); ctx.fill();
+    // the shack
+    ctx.fillStyle = fixed ? '#3b4148' : '#33363b';
+    ctx.fillRect(x - 14, y - 12, 28, 24);
+    ctx.fillStyle = fixed ? '#4b525b' : '#3d4046';
+    ctx.fillRect(x - 14, y - 16, 28, 5);
+    ctx.strokeStyle = '#14171c';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 14.5, y - 16.5, 29, 28);
+    // the mast: bent while it is broken, straight and guy-wired once fixed
+    ctx.strokeStyle = fixed ? '#8b939c' : '#6a6f76';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y - 16);
+    if (fixed) ctx.lineTo(x + 8, y - 40);
+    else { ctx.lineTo(x + 11, y - 28); ctx.lineTo(x + 16, y - 33); }
+    ctx.stroke();
+    if (fixed) {
+      const blink = 0.5 + 0.5 * Math.sin(this.time * 3.4);
+      ctx.fillStyle = `rgba(120,230,130,${0.4 + 0.6 * blink})`;
+      ctx.beginPath(); ctx.arc(x + 8, y - 41, 2.2, 0, TAU); ctx.fill();
+      // the dish turns, slowly, looking for the bird
+      ctx.save();
+      ctx.translate(x - 6, y - 20);
+      ctx.rotate(Math.sin(this.time * 0.7) * 0.5);
+      ctx.fillStyle = '#9aa3ad';
+      ctx.beginPath(); ctx.ellipse(0, 0, 7, 3, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = '#8fe05a';
+      ctx.fillRect(x - 10, y - 6, 3, 3);
+    } else {
+      ctx.fillStyle = '#5a2f2a';
+      ctx.fillRect(x - 10, y - 6, 3, 3);
+      // a dead set sparks now and then, so the roof feels like a job, not a prop
+      if (Math.sin(this.time * 1.7) > 0.985) {
+        ctx.strokeStyle = 'rgba(200,230,255,0.7)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 4, y - 2); ctx.lineTo(x - 1, y + 2); ctx.lineTo(x - 5, y + 4);
+        ctx.stroke();
+      }
+    }
+    ctx.font = 'bold 7px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = fixed ? '#8fe05a' : '#6f6a5c';
+    ctx.fillText(fixed ? 'ROOF RADIO' : 'ROOF RADIO (DEAD)', x, y + 22);
+    ctx.restore();
+  }
+
+  /** Four corner lights, one per dial downstairs: red and green, slow blink. */
+  drawRoofBeacons(ctx) {
+    const sws = this.map.floors?.[0]?.secretSwitches ?? [];
+    HELI_BEACONS.forEach((b, i) => {
+      if (!this._vis(b.x, b.y, 50)) return;
+      const lit = !!sws[i]?.found;
+      ctx.save();
+      ctx.fillStyle = '#23262c';
+      ctx.fillRect(b.x - 4, b.y - 2, 8, 7);
+      const col = i % 2 ? '#5ae06a' : '#e05a5a';
+      if (lit) {
+        const blink = 0.55 + 0.45 * Math.sin(this.time * 6 + i * 1.7);
+        ctx.globalAlpha = blink;
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 3, 0, TAU); ctx.fill();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.45 * blink;
+        const g = ctx.createRadialGradient(b.x, b.y - 4, 0, b.x, b.y - 4, 28);
+        g.addColorStop(0, col);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 28, 0, TAU); ctx.fill();
+      } else {
+        ctx.fillStyle = '#3a3f47';
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 2.4, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    });
+  }
+
+  /** The bird itself: shadow on the deck, searchlight, rotor, nav lights. */
+  drawHeli(ctx) {
+    const H = this.heli;
+    if (H.phase < 2 || H.phase > 4) return;
+    const { x, y, scale, alpha, light } = this._heliPos();
+    if (!this._vis(x, y, 260)) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // the shadow stays on the deck while the bird is high
+    ctx.fillStyle = `rgba(0,0,0,${0.3 * (2 - scale)})`;
+    ctx.beginPath();
+    ctx.ellipse(HELI_PAD.x, HELI_PAD.y + 6, 46 * scale, 15 * scale, 0, 0, TAU);
+    ctx.fill();
+    // searchlight pool, strongest on the way in
+    if (light > 0.05) {
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 130 * scale);
+      g.addColorStop(0, `rgba(240,235,190,${0.32 * light * alpha})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 130 * scale, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    // skids
+    ctx.strokeStyle = '#1d2126'; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.moveTo(-24, 13); ctx.lineTo(18, 13); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-24, 17); ctx.lineTo(18, 17); ctx.stroke();
+    // tail boom and fin
+    ctx.fillStyle = '#39424a';
+    ctx.fillRect(-58, -4, 36, 7);
+    ctx.fillStyle = '#2c343a';
+    ctx.fillRect(-62, -13, 7, 15);
+    // body
+    ctx.fillStyle = '#4a545c';
+    ctx.beginPath(); ctx.ellipse(0, 0, 26, 13, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5d6871';
+    ctx.beginPath(); ctx.ellipse(6, -3, 16, 8, 0, 0, TAU); ctx.fill();
+    // glass
+    ctx.fillStyle = 'rgba(150,200,230,0.55)';
+    ctx.beginPath(); ctx.ellipse(15, -2, 8, 6, 0, 0, TAU); ctx.fill();
+    if (H.phase === 4) {
+      // the people who boarded: two small silhouettes watching the house shrink
+      ctx.fillStyle = 'rgba(28,30,36,0.92)';
+      ctx.beginPath(); ctx.arc(12, -3, 2.6, 0, TAU); ctx.fill();
+      ctx.fillRect(9.4, -1, 5.2, 4.4);
+      ctx.beginPath(); ctx.arc(18.4, -2, 2.3, 0, TAU); ctx.fill();
+      ctx.fillRect(16.1, 0, 4.6, 3.6);
+    }
+    // nav lights
+    const blink = Math.sin(this.time * 8) > 0;
+    ctx.fillStyle = blink ? '#ff5a4a' : '#5a2a24';
+    ctx.fillRect(-28, -2, 3, 3);
+    ctx.fillStyle = blink ? '#5aff7a' : '#245a2e';
+    ctx.fillRect(25, -2, 3, 3);
+    // rotor: two crossing blades and the disc they blur into
+    const rot = this.time * (H.phase === 4 ? 26 : H.phase === 3 ? 17 : 22);
+    ctx.save();
+    ctx.translate(0, -11);
+    ctx.strokeStyle = 'rgba(212,222,232,0.75)';
+    ctx.lineWidth = 2;
+    for (let b = 0; b < 2; b++) {
+      const a = rot + b * Math.PI / 2;
+      const dx = Math.cos(a) * 52, dy = Math.sin(a) * 10;
+      ctx.beginPath(); ctx.moveTo(-dx, -dy); ctx.lineTo(dx, dy); ctx.stroke();
+    }
+    ctx.globalAlpha = 0.14;
+    ctx.strokeStyle = '#d8e2ea';
+    ctx.beginPath(); ctx.ellipse(0, 0, 52, 10, 0, 0, TAU); ctx.stroke();
+    ctx.restore();
+    ctx.restore();
+  }
+
+  /**
+   * What the night left in the fields: a burned-out car at the bottom of the
+   * map and a tank wreck at the southeast corner, both standing in scorched
+   * earth instead of grass. The 'V' tiles under them carry the collision and
+   * the flow field; this carries the rust.
+   */
+  drawWrecks(ctx) {
+    // ---- the car, tiles (30..31, 46): a burnt sedan, nose to the west -----
+    {
+      const x = 31 * T, y = 46.5 * T;
+      if (this._vis(x, y, 110)) {
+        ctx.save();
+        // the ground around it: scorched earth, mud and wheel ruts, wide
+        ctx.fillStyle = 'rgba(52,40,27,0.9)';
+        ctx.beginPath(); ctx.ellipse(x, y + 2, 112, 54, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(36,28,19,0.7)';
+        ctx.beginPath(); ctx.ellipse(x - 10, y + 6, 80, 36, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(30,24,16,0.5)';
+        for (const [mx, my, mr] of [[-100, 18, 20], [90, -20, 24], [70, 28, 17], [-70, -30, 15], [10, 44, 16]]) {
+          ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
+        }
+        ctx.strokeStyle = 'rgba(28,22,15,0.55)';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(x - 120, y + 28); ctx.quadraticCurveTo(x - 34, y + 38, x + 52, y + 32); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x - 112, y + 42); ctx.quadraticCurveTo(x - 16, y + 52, x + 68, y + 46); ctx.stroke();
+        // body: hood, cabin, boot -- a sedan silhouette, not a brick
+        ctx.translate(x, y);
+        ctx.rotate(-0.06);
+        ctx.scale(2, 2);                 // the wrecks read twice as big now
+        ctx.fillStyle = '#191512';                       // shadow under it
+        ctx.beginPath(); ctx.ellipse(0, 4, 34, 13, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#5a3524';                       // rusted paint
+        ctx.fillRect(-32, -9, 64, 18);
+        ctx.fillStyle = '#6b4029';
+        ctx.fillRect(-32, -9, 64, 4);
+        ctx.fillStyle = '#47281a';                       // hood and boot dips
+        ctx.fillRect(-32, -6, 14, 12);
+        ctx.fillRect(20, -6, 12, 12);
+        ctx.fillStyle = '#241a14';                       // the cabin
+        ctx.fillRect(-16, -12, 30, 24);
+        ctx.fillStyle = '#0e1116';                       // glass, most of it gone
+        ctx.fillRect(-14, -10, 8, 20);
+        ctx.fillRect(4, -10, 8, 20);
+        ctx.fillStyle = 'rgba(160,190,210,0.16)';        // what is left of it
+        ctx.fillRect(-14, -10, 3, 7);
+        ctx.fillRect(4, 3, 3, 6);
+        ctx.fillStyle = '#3a2317';                       // scorch over the roof
+        ctx.fillRect(-6, -12, 10, 24);
+        ctx.fillStyle = '#7a4a2e';                       // rust blooms
+        for (const [rx, ry] of [[-26, -4], [12, 4], [-8, 7], [24, -6]]) ctx.fillRect(rx, ry, 4, 3);
+        // wheels: two on, one off and lying by the door
+        ctx.fillStyle = '#101014';
+        ctx.fillRect(-26, 8, 12, 5); ctx.fillRect(14, 8, 12, 5);
+        ctx.fillRect(-26, -13, 12, 5); ctx.fillRect(14, -13, 12, 5);
+        ctx.fillStyle = '#2c2c34';
+        ctx.fillRect(-23, 9, 6, 3); ctx.fillRect(17, 9, 6, 3);
+        ctx.beginPath(); ctx.arc(30, 16, 6, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#3c3c46';
+        ctx.beginPath(); ctx.arc(30, 16, 2.5, 0, TAU); ctx.fill();
+        // the driver's door, torn open across the mud
+        ctx.save();
+        ctx.translate(-4, 10); ctx.rotate(0.9);
+        ctx.fillStyle = '#5a3524';
+        ctx.fillRect(0, 0, 4, 20);
+        ctx.fillStyle = '#0e1116';
+        ctx.fillRect(1, 3, 2, 8);
+        ctx.restore();
+        ctx.restore();
+      }
+    }
+    // ---- the tank, tiles (63..65, 43..44): hull, turret, a thrown track ---
+    {
+      const x = 64.5 * T, y = 44 * T;
+      if (this._vis(x, y, 120)) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(52,40,27,0.9)';
+        ctx.beginPath(); ctx.ellipse(x, y, 124, 62, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(36,28,19,0.7)';
+        ctx.beginPath(); ctx.ellipse(x + 6, y + 4, 92, 44, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(30,24,16,0.5)';
+        for (const [mx, my, mr] of [[-110, 28, 24], [100, 34, 20], [-86, -38, 17], [106, -28, 15], [-20, 56, 18]]) {
+          ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
+        }
+        // the track it threw: a bent steel band in the mud beside it
+        ctx.strokeStyle = '#1c1e22';
+        ctx.lineWidth = 9;
+        ctx.beginPath(); ctx.moveTo(x - 100, y + 46); ctx.quadraticCurveTo(x - 52, y + 60, x + 4, y + 52); ctx.stroke();
+        ctx.strokeStyle = '#33363c';
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 9; i++) ctx.fillRect(x - 96 + i * 12, y + 48 + Math.sin(i) * 4, 4, 3);
+        ctx.translate(x, y);
+        ctx.rotate(0.10);
+        ctx.scale(2, 2);                 // twice the tank, twice the mud around it
+        ctx.fillStyle = '#14161a';                       // shadow
+        ctx.beginPath(); ctx.ellipse(0, 4, 40, 18, 0, 0, TAU); ctx.fill();
+        // tracks: the one still on, with its road wheels
+        ctx.fillStyle = '#17191d';
+        ctx.fillRect(-34, -18, 68, 9);
+        ctx.fillRect(-34, 9, 68, 9);
+        ctx.fillStyle = '#2b2e34';
+        for (let i = 0; i < 6; i++) {
+          ctx.beginPath(); ctx.arc(-28 + i * 11, -13.5, 3, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.arc(-28 + i * 11, 13.5, 3, 0, TAU); ctx.fill();
+        }
+        // hull: sloped front, engine deck behind
+        ctx.fillStyle = '#3f4a38';
+        ctx.fillRect(-30, -10, 60, 20);
+        ctx.fillStyle = '#4c5a44';
+        ctx.fillRect(-30, -10, 60, 5);
+        ctx.fillStyle = '#333d2e';
+        ctx.fillRect(14, -8, 16, 16);
+        ctx.fillStyle = '#2a3326';                       // front glacis
+        ctx.beginPath(); ctx.moveTo(-30, -10); ctx.lineTo(-40, -4); ctx.lineTo(-40, 4); ctx.lineTo(-30, 10); ctx.closePath(); ctx.fill();
+        // turret, turned off the axis, and the bent gun
+        ctx.save();
+        ctx.rotate(-0.24);
+        ctx.fillStyle = '#46543e';
+        ctx.beginPath(); ctx.ellipse(-2, 0, 15, 13, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#526148';
+        ctx.beginPath(); ctx.ellipse(-4, -2, 10, 8, 0, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#2f382a';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(-14, -2); ctx.lineTo(-34, -6); ctx.lineTo(-40, -3); ctx.stroke();
+        ctx.fillStyle = '#242c20';
+        ctx.fillRect(-43, -5, 4, 5);
+        ctx.restore();
+        // the loader's hatch, open; rust and scorch over all of it
+        ctx.fillStyle = '#1d241a';
+        ctx.beginPath(); ctx.ellipse(6, -4, 5, 4, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#5a4a30';
+        for (const [rx, ry] of [[-22, 4], [8, 6], [-10, -6], [20, -4]]) ctx.fillRect(rx, ry, 5, 3);
+        ctx.fillStyle = 'rgba(20,16,12,0.55)';
+        ctx.fillRect(-16, -10, 12, 20);
+        ctx.restore();
+      }
+    }
+  }
+
+  drawSupplies(ctx) {
+    for (const s of this.supplies) {
+      if (s.taken || (s.f ?? 0) !== this.map.floor) continue;
+      if (!this._vis(s.x, s.y, 70)) continue;
+      const falling = s.t < s.fall;
+      const k = falling ? Math.min(1, s.t / s.fall) : 1;
+      const y = s.y - (falling ? (1 - k) * 150 : 0);
+      const sway = falling ? Math.sin(s.t * 3 + s.seed) * 8 * (1 - k) : 0;
+      const x = s.x + sway;
+      ctx.save();
+      ctx.fillStyle = `rgba(0,0,0,${0.3 * k})`;
+      ctx.beginPath(); ctx.ellipse(s.x, s.y + 5, 10 * k, 4 * k, 0, 0, TAU); ctx.fill();
+      if (falling) {
+        ctx.fillStyle = '#c8c2ae';
+        ctx.beginPath(); ctx.arc(x, y - 26, 18, Math.PI, TAU); ctx.fill();
+        ctx.strokeStyle = 'rgba(200,194,174,0.7)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 14, y - 24); ctx.lineTo(x, y - 5);
+        ctx.moveTo(x + 14, y - 24); ctx.lineTo(x, y - 5);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#4d5c43';
+      ctx.fillRect(x - 9, y - 8, 18, 12);
+      ctx.fillStyle = '#3a4634';
+      ctx.fillRect(x - 9, y - 8, 18, 3);
+      ctx.fillStyle = '#d8d4c0';
+      ctx.fillRect(x - 2, y - 8, 4, 12);
+      if (!falling && Math.sin(this.time * 5 + s.seed) > -0.2) {
+        ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(x, y - 12, 0, x, y - 12, 36);
+        g.addColorStop(0, 'rgba(255,90,70,0.5)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x, y - 12, 36, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
   drawSecretSwitches(ctx) {
     for (const sw of this.map.secretSwitches ?? []) {
       if (!this._vis(sw.x, sw.y, 40)) continue;
@@ -4167,6 +5880,71 @@ export class Game {
     return c;
   }
 
+  /**
+   * The weather you feel on the screen itself: the lightning flash, slanted
+   * rain, droplets crawling down the glass, and the fog that eats the map
+   * down to a circle around you. All of it screen-space, all of it cheap.
+   */
+  drawWeatherFx(ctx, vw, vh) {
+    const W = this.wx;
+    if (!W) return;
+    if (W.flash > 0.02) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.min(0.5, W.flash * W.flash * 0.5);
+      ctx.fillStyle = '#cfe0ff';
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+    if (W.kind === 'storm' && settings.get('weather') && this._perfStage < 2) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(190,215,240,0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const d of W.drops) {
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x - d.l * 0.35, d.y + d.l);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (W.wet > 0.03 && settings.get('weather')) {
+      const sheet = wetSheet(vw, vh);
+      ctx.save();
+      ctx.globalAlpha = 0.14 * W.wet;
+      ctx.drawImage(sheet, 0, 0);
+      // three droplets that actually crawl
+      ctx.globalAlpha = 0.3 * W.wet;
+      ctx.strokeStyle = 'rgba(200,220,240,0.7)';
+      ctx.lineWidth = 1.6;
+      for (let i = 0; i < 3; i++) {
+        const x = ((i * 271 + 90) % vw) + Math.sin(this.time * 0.3 + i * 2) * 6;
+        const y0 = (((i * 173) % (vh / 2)) + (this.time * (12 + i * 5)) % (vh / 2)) | 0;
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.quadraticCurveTo(x + 3, y0 + 24, x - 2, y0 + 52);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (W.kind === 'fog' && settings.get('weather')) {
+      const camX = clamp(Math.round(this.cam.x), 0, Math.max(0, this.map.w * T - vw));
+      const camY = clamp(Math.round(this.cam.y), 0, Math.max(0, this.map.h * T - vh));
+      const px = clamp(this.player.pos.x - camX, 0, vw);
+      const py = clamp(this.player.pos.y - camY, 0, vh);
+      ctx.save();
+      ctx.fillStyle = 'rgba(148,158,166,0.14)';
+      ctx.fillRect(0, 0, vw, vh);
+      const grd = ctx.createRadialGradient(px, py, 60, px, py, 430);
+      grd.addColorStop(0, 'rgba(158,168,176,0)');
+      grd.addColorStop(0.55, 'rgba(158,168,176,0.32)');
+      grd.addColorStop(1, 'rgba(168,178,186,0.78)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.restore();
+    }
+  }
+
   drawWeather(ctx, camX, camY) {
     ctx.save();
     for (const l of this.weather.leaves) {
@@ -4211,6 +5989,43 @@ export class Game {
     for (const g of this.map.grenadeCrates) {
       if (!this._vis(g.x, g.y, 50)) continue;
       ctx.save();
+      if (g.kind === 'molotov') {
+        // a crate of bottles with their rags up: fire, and it looks like fire
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(g.x - 8, g.y + 4, 16, 2);
+        ctx.fillStyle = '#5a3a22';
+        ctx.fillRect(g.x - 8, g.y - 4, 16, 8);
+        ctx.fillStyle = '#6b4a2b';
+        ctx.fillRect(g.x - 8, g.y - 4, 16, 2);
+        ctx.fillStyle = '#3a2a18';
+        ctx.fillRect(g.x - 8, g.y - 1, 16, 1);
+        for (const bx of [-5, 0, 5]) {
+          ctx.fillStyle = '#7a3a2a';
+          ctx.fillRect(g.x + bx - 1, g.y - 9, 3, 5);
+          ctx.fillStyle = '#d0603c';
+          ctx.fillRect(g.x + bx - 1, g.y - 11, 3, 2);
+        }
+        this._cratePrice(ctx, g);
+        ctx.restore();
+        continue;
+      }
+      if (g.kind === 'gas') {
+        // grey-green canisters under a hazard band: slow, choke, crawl
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(g.x - 8, g.y + 4, 16, 2);
+        ctx.fillStyle = '#37473a';
+        ctx.fillRect(g.x - 8, g.y - 6, 16, 10);
+        ctx.fillStyle = '#4a5c4a';
+        ctx.fillRect(g.x - 8, g.y - 6, 16, 2);
+        ctx.fillStyle = '#8ab06a';
+        ctx.fillRect(g.x - 8, g.y - 2, 16, 2);
+        ctx.fillStyle = '#20261f';
+        ctx.fillRect(g.x - 5, g.y - 8, 3, 2);
+        ctx.fillRect(g.x + 2, g.y - 8, 3, 2);
+        this._cratePrice(ctx, g);
+        ctx.restore();
+        continue;
+      }
       // two stacked metal ammo cans with a stencilled band -- ammunition,
       // not the mystery crate: the silhouette must not invite the confusion
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -4228,11 +6043,16 @@ export class Game {
       ctx.fillRect(g.x - 8, g.y + 1, 16, 2);
       ctx.fillStyle = '#43503a';
       ctx.fillRect(g.x - 2, g.y + 1, 4, 2);             // stencil gap
-      ctx.font = 'bold 8px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = this.points >= GRENADE_PRICE ? '#f0d98a' : '#6f6a5c';
-      ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 13);
+      this._cratePrice(ctx, g);
       ctx.restore();
     }
+  }
+
+  /** The price tag under a throwable crate, in whichever state the wallet is. */
+  _cratePrice(ctx, g) {
+    ctx.font = 'bold 8px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = this.points >= GRENADE_PRICE ? '#f0d98a' : '#6f6a5c';
+    ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 13);
   }
 }

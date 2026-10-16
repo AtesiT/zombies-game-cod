@@ -51,10 +51,23 @@ settle();
 for (let i = 0; i < 4000; i++) g.tickPerf(5);
 ok(g._perfStage === 0 && near(g.lighting.scale, 0.5), 'a long calm stretch climbs back to HIGH', `stage ${g._perfStage}`);
 
-// 5. one bad frame must not twitch the quality
+// 5. one bad frame must not twitch the quality -- but the governor was made
+// quick on purpose (that is the DLSS5 fix): 20 frames at 80 ms is not a
+// hitch, it is a third of a second at twelve frames a second, and crawling
+// like that SHOULD cost a step now. A hitch is what stays under the budget.
 settings.set('lighting', 2);
-for (let i = 0; i < 20; i++) g.tickPerf(80);
+// (the counters are zeroed by hand between phases: settle() runs real frames,
+// and on a slow CI box a real frame can itself be over 20 ms, which would
+// quietly feed the governor between the phases)
+for (let i = 0; i < 8; i++) g.tickPerf(80);          // 24 units: under the 45 budget
 ok(g._perfStage === 0, 'a brief hitch does not drop quality', `stage ${g._perfStage}`);
+g._slowFrames = 0; g._fastFrames = 0;
+for (let i = 0; i < 40; i++) g.tickPerf(25);         // mildly slow: 40 units, still under
+ok(g._perfStage === 0, 'mildly slow frames do not stack into a drop', `stage ${g._perfStage}`);
+g._slowFrames = 0; g._fastFrames = 0;
+for (let i = 0; i < 20; i++) g.tickPerf(80);         // 60 units: real crawling answers
+ok(g._perfStage >= 1, 'sustained crawling drops a step within a second', `stage ${g._perfStage}`);
+g._slowFrames = 0; g._fastFrames = 0; g._perfStage = 0; g._applyLightScale();
 
 // 6. the player's own pick is a ceiling the governor respects
 settings.set('lighting', 1);

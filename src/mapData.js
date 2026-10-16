@@ -55,10 +55,10 @@ export const MAP_ROWS = [
   "     #........#            r        T T                         r       ",
   "T T  #........#   r                   TT   T  r        r              TT",
   " TT  #######WW#         r            T  T                             T ",
-  "                            r                                        T T",
-  " T                                                                     T",
+  "                            r                                  VVV   T T",
+  " T                                                             VVV     T",
   "    T T T                             r       T    T T TTT              ",
-  "   T T T   T        r                           T TT    TTTT T          ",
+  "   T T T   T        r         VV                T TT    TTTT T          ",
   "  T TT  TTrTT    T   T    TTT  TTTT T    TT    TTTTTTTTT TTT  T         ",
   " T   TrTTTTT  T     TTT T TT  TTT T  T T T T TTTT  TT r TT              ",
   "      T             T  TTTT TTTTTT T             T T   T  T T           "
@@ -116,9 +116,9 @@ export const WALL_BUYS = [
 ];
 
 export const GRENADE_CRATES = [
-  { x: 26, y: 17 },
-  { x: 34, y: 27 },
-  { x: 57, y: 16 }
+  { x: 26, y: 17, kind: 'molotov' },   // fire where you point it
+  { x: 34, y: 27, kind: 'frag' },
+  { x: 57, y: 16, kind: 'gas' },       // slows the horde to a crawl
 ];
 
 // [perkId, tileX, tileY]
@@ -151,8 +151,9 @@ export const STAIRS = [
 
 export const POWER_SWITCH = { x: 7, y: 35 };
 export const WORKBENCH = { x: 58, y: 16 };
-// the bench itself now lives in the attic at the top of the house
-export const WORKBENCH_ROOF = { x: 23, y: 26 };
+// the bench itself now lives in the attic at the top of the house -- inside,
+// out of the weather, past the doorway at (29,22)
+export const WORKBENCH_ROOF = { x: 32, y: 17 };
 export const PAP_SPOT = { x: 53, y: 7 };
 
 export const SECRET_SWITCHES = [
@@ -178,7 +179,8 @@ export const DOOR_PRICES = {
   '36,19': 750,
   '12,24': 750,
   '45,24': 1000,
-  '28,22': 500
+  '28,22': 500,
+  '31,20': 1000
 };
 
 // ---------------------------------------------------------------- storeys ---
@@ -231,10 +233,10 @@ export const FLOORS = [
     "     #........#            r        T T                         r       ",
     "T T  #........#   r                   TT   T  r        r              TT",
     " TT  #######WW#         r            T  T                             T ",
-    "                            r                                        T T",
-    " T                                                                     T",
+    "                            r                                  VVV   T T",
+    " T                                                             VVV     T",
     "    T T T                             r       T    T T TTT              ",
-    "   T T T   T        r                           T TT    TTTT T          ",
+    "   T T T   T        r         VV                T TT    TTTT T          ",
     "  T TT  TTrTT    T   T    TTT  TTTT T    TT    TTTTTTTTT TTT  T         ",
     " T   TrTTTTT  T     TTT T TT  TTT T  T T T T TTTT  TT r TT              ",
     "      T             T  TTTT TTTTTT T             T T   T  T T           "
@@ -380,7 +382,7 @@ export const FLOORS = [
     wallbuys: [
       { x: 30, y: 11, wx: 31, wy: 11, weapon: 'mg42' },
       { x: 16, y: 22, wx: 15, wy: 22, weapon: 'mp40' },
-      { x: 42, y: 16, wx: 43, wy: 16, weapon: 'kar98k' }
+      { x: 42, y: 18, wx: 42, wy: 19, weapon: 'kar98k' }
     ],
     traps: [
       // the north windows, where everything climbs in from the yard
@@ -444,7 +446,7 @@ export const FLOORS = [
     "~~~~~~~~~~~~~~#RRRRRRRrRRRR#.....r..#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRR#........#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRR#........#RRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-    "~~~~~~~~~~~~~~#RRRRRRRRRRRR####.#############~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+    "~~~~~~~~~~~~~~#RRRRRRRRRRRR####D#############~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRccRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
     "~~~~~~~~~~~~~~#RRRRRRRRRRRRRRRRR#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",

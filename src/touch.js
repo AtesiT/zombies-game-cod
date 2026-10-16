@@ -33,14 +33,19 @@ const BUTTONS = [
   { id: 'swap', key: 'KeyQ', label: 'Q', colour: 0x4a5a6b },
   { id: 'sprint', key: 'ShiftLeft', label: '>>', colour: 0x6b5a3a },
   { id: 'grenade', key: 'KeyG', label: 'G', colour: 0x6b3a3a },
-  { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f },
+  // the medkit is the panic button: a bigger circle and a bigger letter,
+  // because it is the one you press with your eyes on the horde
+  { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f, scale: 1.25 },
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
+  { id: 'molotov', key: 'KeyX', label: 'X', colour: 0x8a4a2a },
+  { id: 'gas', key: 'KeyB', label: 'B', colour: 0x4a6b3a },
 ];
 
 // the small ones, laid out in a grid to the left of FIRE: [column, row]
 const GRID = {
   interact: [0, 0], reload: [1, 0], knife: [2, 0],
-  swap: [0, 1], sprint: [1, 1], grenade: [2, 1], medkit: [0, 2],
+  swap: [0, 1], sprint: [1, 1], grenade: [2, 1],
+  medkit: [0, 2], molotov: [1, 2], gas: [2, 2],
 };
 
 export class TouchControls {
@@ -182,13 +187,50 @@ export class TouchControls {
     place(this.buttons.fire, F, F, pad, pad);
     // the rest, in a grid beside it
     for (const [id, [col, row]] of Object.entries(GRID)) {
-      place(this.buttons[id], B, B, pad + F + gap + col * (B + gap), pad + row * (B + gap));
+      const sc = BUTTONS.find((b) => b.id === id)?.scale ?? 1;
+      const BS = B * sc, off = (BS - B) / 2;   // a bigger button stays centred on its cell
+      place(this.buttons[id], BS, BS,
+        pad + F + gap + col * (B + gap) - off, pad + row * (B + gap) - off);
     }
-    place(this.buttons.pause, 44 * k, 30 * k, pad, undefined);
-    this.buttons.pause.style.top = `${pad}px`;
+    // the pause corner: off the physical corner of the glass. On a landscape
+    // PWA phone the very corner is a notch, a rounded edge or nothing at all,
+    // and the button used to live exactly there -- visible, but unpressable
+    const safe = this._safeInsets();
+    place(this.buttons.pause, Math.max(56, 48 * k), Math.max(40, 34 * k), pad + safe.r + 6, undefined);
+    this.buttons.pause.style.top = `${pad + safe.t + 6}px`;
     for (const b of BUTTONS) {
-      this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * k}px`;
+      this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * (b.scale ?? 1) * k}px`;
     }
+  }
+
+  /**
+   * What the device reserves at the edges of the glass (notch, home bar,
+   * rounded corners). viewport-fit=cover is in index.html, so on iOS the
+   * env() values are real; everywhere else they resolve to zero and this
+   * costs one hidden div, once.
+   */
+  _safeInsets() {
+    if (this._safe) return this._safe;
+    let l = 0, t = 0, r = 0, b = 0;
+    try {
+      const probe = this._el('div', {
+        position: 'fixed', left: '0', top: '0', width: '0', height: '0',
+        paddingLeft: 'env(safe-area-inset-left, 0px)',
+        paddingTop: 'env(safe-area-inset-top, 0px)',
+        paddingRight: 'env(safe-area-inset-right, 0px)',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        visibility: 'hidden', pointerEvents: 'none',
+      });
+      (this.root ?? document.body).appendChild(probe);
+      const cs = getComputedStyle(probe);
+      l = parseFloat(cs.paddingLeft) || 0;
+      t = parseFloat(cs.paddingTop) || 0;
+      r = parseFloat(cs.paddingRight) || 0;
+      b = parseFloat(cs.paddingBottom) || 0;
+      probe.remove?.();
+    } catch { /* no DOM, no insets */ }
+    this._safe = { l, t, r, b };
+    return this._safe;
   }
 
   /** Screens this small get the compact layout -- no button lands on a stick. */
@@ -250,7 +292,11 @@ export class TouchControls {
     };
 
     const findButton = (target) => {
-      for (const [id, el] of Object.entries(this.buttons)) if (el === target) return id;
+      let n = target;
+      while (n && n !== this.panel) {
+        for (const [id, el] of Object.entries(this.buttons)) if (el === n) return id;
+        n = n.parentNode;
+      }
       return null;
     };
 
@@ -470,6 +516,8 @@ export class TouchControls {
       reload: !!p.reloading || !!(s && d && s.mag < d.mag && s.reserve > 0),
       swap: !!slots[0] && !!slots[1],
       grenade: (p.grenades ?? 0) > 0,
+      molotov: (p.molotovs ?? 0) > 0,
+      gas: (p.gasbombs ?? 0) > 0,
       medkit: (p.medkits ?? 0) > 0 && p.hp < (p.maxHp ?? 100),
     };
     for (const [id, on] of Object.entries(vis)) {

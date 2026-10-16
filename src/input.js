@@ -18,6 +18,8 @@ export class Input {
     this.mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false, pressed: false, released: false, rdown: false };
     this.wheel = 0;
     this.anyInput = false;
+    // set by a full-screen list that wants the movement keys for itself
+    this.menuLock = false;
     // filled in by the on-screen stick (see src/touch.js); null on desktop
     this.stick = { x: 0, y: 0 };
 
@@ -67,6 +69,10 @@ export class Input {
 
   /** Movement vector from WASD / arrows and the on-screen stick, normalised. */
   moveVector() {
+    // A full-screen menu that still lets you walk is a menu that closes
+    // itself while you read it: the bench sets this, and the arrows belong to
+    // the list until it does.
+    if (this.menuLock) return { x: 0, y: 0 };
     let x = 0, y = 0;
     if (this.isDown('KeyA', 'ArrowLeft')) x -= 1;
     if (this.isDown('KeyD', 'ArrowRight')) x += 1;

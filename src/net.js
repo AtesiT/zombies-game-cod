@@ -13,6 +13,9 @@
 // standing guest is handed the room by the relay.
 import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
+import { Powerup } from './powerups.js';
+import { applyShutters } from './crafting.js';
+import { Totem, Grave, ZThrow } from './haunts.js';
 import { audio } from './audio.js';
 import { clamp, damp, dist } from './util.js';
 import { T } from './art.js';
@@ -20,11 +23,15 @@ import { T } from './art.js';
 const SNAP_HZ = 20;         // world updates per second, host -> guests
 const INPUT_HZ = 30;        // how often a guest reports its hands
 const TIMEOUT = 6;          // seconds of silence before a peer is dropped
-export const MAX_PLAYERS = 4;
+// The room holds as many bodies as the snapshot can carry: the cap used to
+// be four, and a fifth friend standing outside a full room is not a design,
+// it is a queue. Twelve keeps the frames small and the door open.
+export const MAX_PLAYERS = 12;
 
 /** The only keys a phone or a laptop gets to send. Short, bounded, obvious. */
 export const NET_KEYS = [
   'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'Digit1', 'Digit2',
+  'KeyB', 'KeyX',
 ];
 
 const Z_TYPES = Object.keys(ENEMY_TYPES);
@@ -207,6 +214,14 @@ export class Net {
     this.log(want === 'host' ? 'hosting...' : 'joining...');
   }
 
+  /** A code nobody else is using: four letters and digits, no lookalikes. */
+  makeRoomCode() {
+    const abc = 'ABDEFGHJKLMNPQRSTUWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 5; i++) code += abc[Math.floor(Math.random() * abc.length)];
+    return code;
+  }
+
   hostGame(room, name) {
     this.room = room || 'NACHT';
     this.name = name || this.name;
@@ -227,11 +242,25 @@ export class Net {
 
   askForRooms() { this.transport?.send({ t: 'rooms' }); }
 
+  /**
+   * Guest: ask the host to build something. The bench menu itself is local --
+   * it opens the instant E goes down, with no round trip -- but the scrap, the
+   * points and the goods all live in the host's world, so the hammer falls
+   * there. Bounded on purpose: it is a key into RECIPES and nothing else.
+   */
+  requestCraft(id) {
+    const s = String(id ?? '').slice(0, 24);
+    if (!s || !this.active || this.isHost) return;
+    this.send(this.hostId, { m: 'craft', id: s });
+  }
+
   close() {
     if (this.transport) { try { this.transport.send({ t: 'b', m: 'bye' }); } catch { /* gone */ } this.transport.close(); }
     this.transport = null;
     clearInterval(this._ping);
     clearTimeout(this._openT);
+    clearTimeout(this._hiT);
+    clearTimeout(this._joinT);
     this._closed('CLOSED');
   }
 
@@ -262,7 +291,16 @@ export class Net {
       this.roster = [{ id: m.you, name: m.name, host: !!m.host, you: true }, ...(m.peers ?? [])];
       this.state = 'open';
       this.log(m.host ? 'you are the host' : m.busy ? 'room already hosted' : `joined, host is ${m.peers?.[0]?.name ?? '?'}`);
-      if (m.busy) { this.error = 'SOMEBODY ELSE IS HOSTING'; this.role = 'guest'; this.isHost = false; }
+      if (m.busy) {
+        // a second host in somebody else's room is how two games became one:
+        // the room is taken, so hosting here failed -- do NOT drift in as a
+        // guest, just say so and hang up
+        this.error = 'SOMEBODY ELSE IS HOSTING';
+        this.role = 'off'; this.isHost = false; this.state = 'closed';
+        this._status();
+        try { this.transport?.close(); } catch { /* already gone */ }
+        return;
+      }
       // the local body takes the id the relay just handed us, so it never
       // collides with the id a guest arrives under
       if (this.game?.player) { this.game.player.netId = m.you; this.game.player.name = m.name; }
@@ -270,6 +308,26 @@ export class Net {
       // whatever the round counter says
       if (!this.isHost && this.role === 'guest') {
         this.log('asking the host in');
+        // flag and timers go up BEFORE the 'hi' goes out: on a transport that
+        // delivers synchronously the welcome can arrive inside send(), and a
+        // later _welcomed = false would wipe it -- the retry would fire and the
+        // host would admit the same guest twice
+        this._welcomed = false;
+        clearTimeout(this._hiT);
+        this._hiT = setTimeout(() => {
+          if (!this._welcomed && !this.isHost && this.state === 'open') {
+            this.log('no welcome yet, asking again');
+            this.send(this.hostId, { m: 'hi', name: this.name });
+          }
+        }, 2500);
+        clearTimeout(this._joinT);
+        this._joinT = setTimeout(() => {
+          if (!this._welcomed && !this.isHost && this.state === 'open') {
+            this.log('the host never answered');
+            this.error = 'HOST DID NOT LET YOU IN';
+            this.close();
+          }
+        }, 9000);
         this.send(this.hostId, { m: 'hi', name: this.name });
       }
       this._status();
@@ -295,6 +353,9 @@ export class Net {
         // the old host vanished: keep the world, become the authority for it
         this.role = 'host';
         this.isHost = true;
+        this._welcomed = true;
+        clearTimeout(this._hiT);
+        clearTimeout(this._joinT);
         this.peers.clear();
         this.game?.bannerShow?.('HOST LEFT', 'you are running the round now', { dur: 3, colour: '#9fd0e0' });
       }
@@ -319,6 +380,24 @@ export class Net {
     const peer = this.peers.get(from);
     if (!peer) return;
     if (m.m === 'in') { peer.input.apply(m); peer.seen = 0; return; }
+    // a guest at the bench: it chose locally, the host builds and pays for it.
+    // tryCraft looks the id up in RECIPES and refuses anything it does not
+    // know, so this is not a way to reach any other code with a string.
+    if (m.m === 'craft') { this.game?.tryCraft?.(String(m.id ?? '').slice(0, 24), peer.player); return; }
+    // a guest at the debug panel: the row runs on the host, where the world
+    // actually is. GOD is personal -- it arms the guest's own body.
+    if (m.m === 'dbg') {
+      const g2 = this.game;
+      const id = String(m.id ?? '').slice(0, 32);
+      if (!g2) return;
+      if (id === 'god') { peer.player.god = !peer.player.god; return; }
+      if (id === 'ammo') { peer.player._dbgAmmo = !peer.player._dbgAmmo; return; }
+      const known = g2.debugRows?.().some?.((r) => r.id === id);
+      // the body override matters: a guest's +5000 used to land in the HOST's
+      // pocket, because the row ran against whoever was sitting at the keyboard
+      if (known) g2._debugRun(id, peer.player);
+      return;
+    }
     if (m.m === 'bye') { this._dropPeer(from); return; }
   }
 
@@ -329,6 +408,19 @@ export class Net {
     // a room only exists once somebody has opened one, which starts a game --
     // but if the host is somehow still on the menu, get him moving
     if (!g.started) g.begin();
+    // The guest retries his 'hi' when the first welcome never reached him. If
+    // he is already in the room, resend the welcome -- a second body for the
+    // same player is exactly the kind of thing that ends a run.
+    const again = this.peers.get(id);
+    if (again) {
+      this.send(id, {
+        m: 'welcome', you: id, host: this.you, round: g.round,
+        names: this.roster.map((r) => ({ id: r.id, name: r.name })),
+        snap: this.snapshot(),
+      });
+      this._status();
+      return;
+    }
     if (this.peers.size >= MAX_PLAYERS - 1) { this.send(id, { m: 'full' }); return; }
     const name = String(rawName || 'PLAYER').slice(0, 10).toUpperCase() || 'PLAYER';
     const spot = this._spawnSpot();
@@ -412,6 +504,9 @@ export class Net {
     if (m.m === 'welcome') {
       this.you = m.you;
       this.hostId = m.host ?? this.hostId;
+      this._welcomed = true;
+      clearTimeout(this._hiT);
+      clearTimeout(this._joinT);
       this.log('you are in');
       this._names = m.names ?? [];
       this._apply(m.snap, true);
@@ -498,24 +593,26 @@ export class Net {
     const inp = peer.input;
     if (p.dead) return;
 
-    // reviving a downed team-mate comes first: it is the one thing you cannot
-    // do for yourself
-    const downed = g.players.find((o) => o !== p && o.downed && !o.dead
-      && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
-    if (downed && inp.isDown('KeyF')) {
-      peer.reviveT += dt;
-      if (peer.reviveT >= 1.3) {
-        peer.reviveT = 0;
-        g.revive(downed, p);
-      }
-      return;
-    }
-    peer.reviveT = 0;
-
     const it = g.interactionFor?.(p) ?? null;
     if (inp.wasPressed('KeyF', 'KeyE')) g.doInteraction?.(p, it);
+    // the pockets: a guest's frag, bottle and pot fly from the guest's hands,
+    // toward the guest's aim -- the host lends the physics, not the intent
+    if (!p.downed && !p.evac) {
+      if (inp.wasPressed('KeyG')) g.throwFor?.(p, 'frag');
+      if (inp.wasPressed('KeyX')) g.throwFor?.(p, 'molotov');
+      if (inp.wasPressed('KeyB')) g.throwFor?.(p, 'gas');
+      // and a guest can kneel and pull a friend up, exactly like the host:
+      // ten seconds of holding him, five with Quick Revive
+      const fallen = g.players.find((o) => o !== p && o.downed && !o.dead
+        && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
+      if (fallen && inp.isDown('KeyF')) {
+        peer.reviveT = (peer.reviveT ?? 0) + dt;
+        g.reviveNeed = p.perks?.has('quickrevive') ? 5 : 10;
+        g.reviveTarget = fallen;
+        if (peer.reviveT >= g.reviveNeed) { peer.reviveT = 0; g.revive(fallen, p); }
+      } else peer.reviveT = 0;
+    }
     if (inp.isDown('KeyE')) g.rebuildTick?.(dt, p, it); else p._rebuildT = 0;
-    if (inp.wasPressed('KeyG')) g.throwFor?.(p);
     if (inp.wasPressed('KeyH')) g.medkitFor?.(p);
     if (inp.wasPressed('KeyQ')) p.swapActive();
     if (inp.wasPressed('Digit1')) p.setSlot(0);
@@ -545,12 +642,16 @@ export class Net {
           ? Math.atan2(mw.y - p.pos.y, mw.x - p.pos.x)
           : (p?.aim ?? 0);
         this._localAim = aim;
+        // At the bench the pointer is the menu's: a tap on a blueprint must
+        // not also arrive as a trigger pull. Walking is already locked out
+        // locally (input.menuLock), so the vector goes over as zeros.
+        const atBench = !!g.craftOpen;
         this.send(this.hostId, {
           m: 'in',
           mx: r2(walk.x ?? 0), my: r2(walk.y ?? 0),
           a: r2(aim),
-          f: inp.mouse?.down ? 1 : 0,
-          fp: this._fireEdge ? 1 : 0,
+          f: atBench ? 0 : (inp.mouse?.down ? 1 : 0),
+          fp: atBench ? 0 : (this._fireEdge ? 1 : 0),
           k: NET_KEYS.filter((k) => inp.keys?.has(k)),
           kp: [...this._edge],
           w: inp.wheel ?? 0,
@@ -587,6 +688,8 @@ export class Net {
       if (pl.muzzleFlash || pl._muzzle) flags |= 4;
       if (pl.sprinting) flags |= 8;
       if (pl.reloading) flags |= 16;
+      if (pl.evac) flags |= 32;
+      if ((pl.knifeAnim ?? 0) > 0.1) flags |= 64;
       let perkMask = 0;
       for (let i = 0; i < PERK_IDS.length; i++) if (pl.perks?.has(PERK_IDS[i])) perkMask |= (1 << i);
       p.push([
@@ -595,6 +698,9 @@ export class Net {
         pl.slot?.mag ?? 0, pl.slot?.reserve ?? 0, r0(pl.points ?? 0),
         pl.grenades ?? 0, pl.medkits ?? 0, pl.salvage ?? 0, r0(pl.armor ?? 0),
         perkMask, r2(pl.bleedT ?? 0), pl.name ?? '',
+        r2(pl.chillT ?? 0), r2(pl.stunT ?? 0),
+        pl.molotovs ?? 0, pl.gasbombs ?? 0,
+        r2(pl.reloading ? clamp(1 - (pl.reloadTimer / (pl.reloadTotal || 1)), 0, 1) : 0),
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -610,9 +716,49 @@ export class Net {
         ? ['closed', 'spinning', 'offering', 'leaving', 'gone'].indexOf(g.box.state) : 0,
       r2(g.box.timer ?? 0), g.box.weapon ?? ''],
       z, p, b: floors, d: doors,
-      pu: g.powerups.map((u) => [r0(u.x), r0(u.y), u.id, r2(u.life ?? 0)]),
-      gr: g.grenades.map((n) => [r0(n.x ?? n.pos?.x ?? 0), r0(n.y ?? n.pos?.y ?? 0), n.floor ?? 0]),
-      mk: g.monkeys.map((n) => [r0(n.pos?.x ?? 0), r0(n.pos?.y ?? 0), n.floor ?? 0]),
+      pu: g.powerups.map((u) => [r0(u.x), r0(u.y), u.id, r2(u.life ?? 0), u.f ?? 0]),
+      // A guest draws whatever arrives here, so whatever arrives here must be
+      // drawable. Grenades used to come over as bare {x, y} and the renderer
+      // reads pos/rot/fuse: the first frag anybody threw froze every guest on
+      // the spot, which is exactly what "the picture hung and then it died"
+      // looked like from the couch.
+      gr: g.grenades.map((n) => [
+        r0(n.pos?.x ?? n.x ?? 0), r0(n.pos?.y ?? n.y ?? 0), n.floor ?? 0,
+        r2(n.rot ?? 0), r2(n.fuse ?? 0),
+      ]),
+      mk: g.monkeys.map((n) => [r0(n.pos?.x ?? 0), r0(n.pos?.y ?? 0), n.floor ?? 0, r2(n.fuse ?? 0)]),
+      // Hazards a guest must be able to SEE, or the damage they do is magic on
+      // an empty floor. Capped: a flamethrower leaves forty pools behind and
+      // this rides along at twenty a second.
+      fi: g.fires.slice(0, 40).map((n) => [r0(n.x), r0(n.y), r0(n.r), r2(n.life), r2(n.max), n.f ?? 0]),
+      rf: g.rifts.slice(0, 24).map((n) => [
+        r0(n.x), r0(n.y), r0(n.r), r0(n.dmg), r2(n.life), r2(n.max), n.seed ?? 0, n.f ?? 0,
+      ]),
+      ga: g.gases.slice(0, 24).map((n) => [
+        r0(n.x), r0(n.y), r0(n.r), r2(n.life), r2(n.max), n.f ?? 0, r2(n.drift ?? 0),
+      ]),
+      // how deep each window is: steel shutters deepen every window in the
+      // house at once, and a guest whose ceiling stayed at six would draw a
+      // barricade bar past its own end
+      bm: g.map.floors.map((F) => F.barricades.map((b) => b.maxPlanks)),
+      sh: g.workbench?.shuttersUp ? 1 : 0,
+      // ---- the haunt round: everything a guest must be able to DRAW -------
+      // (real class instances on the other side -- see _apply. A stub here is
+      // a frozen picture over there.)
+      tt: g.totems.map((t) => [r0(t.x), r0(t.y), t.f, r0(t.hp), r2(t.life), r2(t.maxLife), t.uid]),
+      gv: g.graves.map((v) => [r0(v.x), r0(v.y), v.f, r0(v.hp), r2(v.life), r2(v.maxLife), v.uid, r2(v.bellT), r2(v.ring)]),
+      zt: g.zThrows.map((z) => [r0(z.sx), r0(z.sy), r0(z.tx), r0(z.ty), z.f, z.throwKind, r2(z.t), r2(z.dur)]),
+      bo: g.bolts.slice(0, 12).map((b) => [r0(b.x0), r0(b.y0), r0(b.x1), r0(b.y1), r2(b.life), r2(b.max), b.f, r2(b.seed)]),
+      wx: [g.wx?.kind ?? '', r2(g.wx?.flash ?? 0), r2(g.wx?.wet ?? 0)],
+      // ---- the roof ending: what a guest must DRAW (beacons read the dial
+      // states below, the bird reads its phase, the crates read their timers)
+      he: [g.heli?.phase ?? 0, r2(g.heli?.t ?? 0), g.heli?.roofRounds ?? 0,
+        g.heli?.flare ? 1 : 0, g.roofRadio?.fixed ? 1 : 0],
+      sc: (g.supplies ?? []).slice(0, 4).map((s) => [
+        r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
+      ]),
+      sw: (g.map.floors?.[0]?.secretSwitches ?? []).map((x) => (x.found ? 1 : 0)),
+      evc: g.evacuated ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
     };
@@ -632,6 +778,26 @@ export class Net {
     if (g.powerOn && !wasOn) g.powerOnAt = g.time;   // lamps warm up over here as well
     g.dogRound = !!s.dg;
     g.gameOver = !!s.go;
+    // the roof ending, painted from the host's numbers: phase timers run on
+    // both sides (see game._heliStep), the phase itself only advances there
+    if (s.evc) g.evacuated = true;
+    if (s.he && g.heli) {
+      g.heli.phase = s.he[0] ?? 0;
+      g.heli.t = s.he[1] ?? 0;
+      g.heli.roofRounds = s.he[2] ?? 0;
+      g.heli.flare = !!s.he[3];
+      if (g.roofRadio) g.roofRadio.fixed = !!s.he[4];
+    }
+    if (s.sc && g.supplies) {
+      g.supplies = s.sc.filter((e) => !e[7]).map((e) => ({
+        x: e[0], y: e[1], f: e[2], t: e[3], fall: e[4] || 2.6, life: e[5], taken: false, seed: e[6] ?? 0,
+      }));
+    }
+    if (s.sw) {
+      const sws = g.map.floors?.[0]?.secretSwitches ?? [];
+      for (let i = 0; i < sws.length; i++) sws[i].found = !!s.sw[i];
+      if (g.egg?.switches) g.egg.found = sws.filter((x) => x.found).length;
+    }
     if (g.timers) { g.timers.instakill = s.ti ?? 0; g.timers.doublepoints = s.tp ?? 0; g.timers.deathmachine = s.dm ?? 0; }
     if (g.map.secretDoorOpen !== undefined) g.map.secretDoorOpen = !!s.sd;
 
@@ -694,10 +860,13 @@ export class Net {
       const t = this._targets.get(`p${id}`) ?? {};
       t.x = e[1]; t.y = e[2]; t.aim = e[3]; t.hp = e[4]; t.maxHp = e[5]; t.floor = e[6];
       t.dead = !!(e[7] & 1); t.downed = !!(e[7] & 2); t.muzzle = !!(e[7] & 4);
-      t.sprinting = !!(e[7] & 8); t.reloading = !!(e[7] & 16);
+      t.sprinting = !!(e[7] & 8); t.reloading = !!(e[7] & 16); t.evac = !!(e[7] & 32);
+      t.knife = !!(e[7] & 64);
       t.weapon = e[8]; t.mag = e[9]; t.reserve = e[10]; t.points = e[11];
       t.grenades = e[12]; t.medkits = e[13]; t.salvage = e[14]; t.armor = e[15];
       t.perkMask = e[16]; t.bleedT = e[17];
+      t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
+      t.molotovs = e[21] ?? 0; t.gasbombs = e[22] ?? 0; t.reloadK = e[23] ?? 0;
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -711,11 +880,85 @@ export class Net {
     }
 
     // ---- loose objects -----------------------------------------------------
-    g.powerups = (s.pu ?? []).map((e) => ({ x: e[0], y: e[1], id: e[2], life: e[3], dead: false, update(dt) { this.life -= dt; } }));
-    g.grenades = (s.gr ?? []).map((e) => ({ x: e[0], y: e[1], floor: e[2], remove: false, update() {}, draw: null }));
-    g.monkeys = (s.mk ?? []).map((e) => ({ pos: { x: e[0], y: e[1] }, floor: e[2], remove: false, update() {}, luring: false }));
+    // Everything below is rebuilt into the shape the *renderer* expects, not
+    // into something merely small on the wire. A stub without a pos, a fuse or
+    // a draw() is an exception waiting for the first frame that looks at it --
+    // and an exception inside the frame loop is a frozen picture.
+    g.powerups = (s.pu ?? []).map((e) => {
+      const pu = new Powerup(e[0], e[1], e[2], e[4] ?? 0);
+      pu.life = e[3] ?? 0;
+      return pu;
+    }).filter((u) => u.def);   // an unknown id off the wire must not freeze the frame loop
+    g.grenades = (s.gr ?? []).map((e) => ({
+      pos: { x: e[0], y: e[1] }, floor: e[2], rot: e[3] ?? 0, fuse: e[4] ?? 1.2,
+      remove: false, update() {},
+    }));
+    g.monkeys = (s.mk ?? []).map((e) => ({
+      pos: { x: e[0], y: e[1] }, floor: e[2], fuse: e[3] ?? 3, r: 4,
+      remove: false, luring: false, update() {},
+      // the guest owns no MonkeyBomb: paint the host's sprite, wobbling on the
+      // fuse the host reports, so the lure is visible where it was thrown
+      draw(ctx, art) {
+        const px = Math.round(this.pos.x), py = Math.round(this.pos.y);
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = '#000';
+        ctx.beginPath(); ctx.ellipse(px, py + 8, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        const wob = Math.sin(this.fuse * 22) * (this.fuse < 1.6 ? 2.2 : 0.9);
+        ctx.save();
+        ctx.translate(px, py + Math.abs(Math.sin(this.fuse * 9)) * -2);
+        ctx.rotate(wob * 0.08);
+        if (art?.monkeybomb) ctx.drawImage(art.monkeybomb, -5, -7);
+        ctx.restore();
+      },
+    }));
     g.fires = (s.fi ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], life: e[3], max: e[4] || e[3], tick: 0, puff: 0, f: e[5] }));
     g.rifts = (s.rf ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], dmg: e[3], life: e[4], max: e[5] || e[4], seed: e[6], f: e[7], tick: 0 }));
+    g.gases = (s.ga ?? []).map((e) => ({ x: e[0], y: e[1], r: e[2], life: e[3], max: e[4] || e[3], f: e[5], drift: e[6] ?? 0, puff: 0 }));
+    if (s.bm) {
+      for (let f = 0; f < g.map.floors.length && f < s.bm.length; f++) {
+        const F = g.map.floors[f], caps = s.bm[f] ?? [];
+        for (let i = 0; i < F.barricades.length && i < caps.length; i++) {
+          F.barricades[i].maxPlanks = caps[i];
+        }
+      }
+    }
+    // shutters bought before this guest arrived, or while his tab was looking
+    // away: deepen the caps without touching the plank counts, which arrived
+    // deepened already
+    if (s.sh && !g.workbench?.shuttersUp) applyShutters(g, false);
+    // ---- the haunt round: rebuilt as real instances, draw() and all --------
+    g.totems = (s.tt ?? []).map((e) => {
+      const t = new Totem(e[0], e[1], e[2], e[6]);
+      t.hp = e[3]; t.life = e[4]; t.maxLife = e[5] || t.maxLife;
+      return t;
+    });
+    g.graves = (s.gv ?? []).map((e) => {
+      const v = new Grave(e[0], e[1], e[2], e[6]);
+      v.hp = e[3]; v.life = e[4]; v.maxLife = e[5] || v.maxLife;
+      v.bellT = e[7] ?? v.bellT; v.ring = e[8] ?? 0;
+      return v;
+    });
+    g.zThrows = (s.zt ?? []).map((e) => {
+      const z = new ZThrow(e[0], e[1], e[2], e[3], e[5], e[4]);
+      z.t = e[6] ?? 0; z.dur = e[7] || z.dur;
+      const k = Math.min(1, z.t / z.dur);
+      z.x = z.sx + (z.tx - z.sx) * k; z.y = z.sy + (z.ty - z.sy) * k;
+      return z;
+    });
+    g.bolts = (s.bo ?? []).map((e) => ({
+      x0: e[0], y0: e[1], x1: e[2], y1: e[3],
+      life: e[4], max: e[5] || 0.22, f: e[6] ?? 0, seed: e[7] ?? 0,
+    }));
+    if (s.wx) {
+      const kind = s.wx[0] || null;
+      if (g.wx && g.wx.kind !== kind) g.setWeatherKind?.(kind);
+      if (g.wx) {
+        if ((s.wx[1] ?? 0) > g.wx.flash) g.wx.flash = s.wx[1];  // a flash only brightens
+        g.wx.wet = Math.max(g.wx.wet, s.wx[2] ?? 0);
+      }
+    }
     this._snapT = 0;
   }
 
@@ -732,6 +975,7 @@ export class Net {
     pl.pos.x = t.x; pl.pos.y = t.y; pl.aim = t.aim; pl.hp = t.hp;
     pl.maxHp = t.maxHp || pl.maxHp; pl.floor = t.floor;
     pl.dead = t.dead; pl.downed = t.downed; pl.bleedT = t.bleedT ?? 0;
+    pl.chillT = t.chillT ?? 0; pl.stunT = t.stunT ?? 0;
     pl.points = t.points; pl.grenades = t.grenades; pl.medkits = t.medkits;
     pl.salvage = t.salvage; pl.armor = t.armor; pl.sprinting = t.sprinting;
     if (t.weapon && pl.slots && pl.slots[pl.active] !== t.weapon) { pl.slots[pl.active] = t.weapon; }
@@ -772,9 +1016,17 @@ export class Net {
       pl.hp = t.hp; pl.maxHp = t.maxHp || pl.maxHp;
       pl.floor = t.floor; pl.dead = t.dead; pl.downed = t.downed;
       pl.bleedT = t.bleedT ?? 0;
+      pl.chillT = t.chillT ?? 0; pl.stunT = t.stunT ?? 0;
       pl.sprinting = t.sprinting; pl.points = t.points;
       pl.grenades = t.grenades; pl.medkits = t.medkits; pl.salvage = t.salvage;
       pl.armor = t.armor;
+      pl.molotovs = t.molotovs ?? pl.molotovs ?? 0;
+      pl.gasbombs = t.gasbombs ?? pl.gasbombs ?? 0;
+      // the reload and the knife are things you SEE: without them a guest
+      // watches his own hands do nothing while the host reloads for him
+      pl.reloading = t.reloading;
+      pl.reloadK = t.reloadK ?? 0;
+      if (t.knife) pl.knifeAnim = Math.max(pl.knifeAnim ?? 0, 0.28);
       if (t.weapon && pl.slots && pl.slots[pl.active] !== t.weapon) pl.slots[pl.active] = t.weapon;
       const slot = pl.loadout?.[pl.slots?.[pl.active]] ?? pl.slot;
       if (slot) { slot.mag = t.mag; slot.reserve = t.reserve; slot.owned = true; }
@@ -788,6 +1040,7 @@ export class Net {
         if (changed) pl.applyPerks?.();
       }
       if (t.muzzle) { pl.muzzleFlash = 0.05; pl._muzzle = 1; } else pl._muzzle = 0;
+      if (!this.isHost) pl.knifeAnim = Math.max(0, (pl.knifeAnim ?? 0) - dt);
       // our own barrel points where we are pointing *now*
       if (pl === g.player && typeof this._localAim === 'number') pl.aim = this._localAim;
     }
@@ -816,6 +1069,23 @@ export class Net {
           packed: m.p ? 1 : (String(m.c ?? '').startsWith('hsl') ? 1 : 0),
         });
         if (m.w !== 'knife') audio.shot?.(m.w ?? 'm1911', 1);
+        else g.players?.forEach?.((o) => {
+          if (o.netId === m.by) o.knifeAnim = Math.max(o.knifeAnim ?? 0, 0.3);
+        });
+        // the flash and the spark belong to the barrel that fired, on every
+        // screen in the room -- the host used to keep them to himself
+        g.particles?.spark?.(m.x0, m.y0, m.a ?? 0, 3, '#ffd98a');
+        g.particles?.smoke?.(m.x0, m.y0, 2);
+        break;
+      case 'boom':
+        // a grenade somewhere in the room: the flash, the shake, the smoke --
+        // all of it used to live only on the host's screen
+        if (this.isHost) break;
+        g.explosionLights?.push?.({ x: m.x, y: m.y, r: (m.r ?? 60) * 2.4, life: 0.4, max: 0.4, f: m.f ?? 0 });
+        g.shake?.(9, 0.42);
+        audio.explosion?.();
+        g.particles?.smoke?.(m.x, m.y - 6, 6);
+        g.particles?.spark?.(m.x, m.y, -Math.PI / 2, 9, '#f6c04a');
         break;
       case 'hit':
         g.particles?.blood?.(m.x, m.y, m.a ?? 0, m.head ? 8 : 5);
@@ -828,17 +1098,17 @@ export class Net {
         g.particles?.chunk?.(m.x, m.y, Math.random() * 6.28, 7);
         if (m.pts) g.popups?.add?.(m.x, m.y - 24, `+${m.pts}`, m.head ? '#f0d98a' : '#e6dcc2', 11);
         break;
-      case 'boom':
-        g.shake?.(6, 0.3);
-        g.explosionLights?.push?.({ x: m.x, y: m.y, r: m.r ?? 120, life: 0.3, max: 0.3, colour: '#f0a040' });
-        g.particles?.smoke?.(m.x, m.y, 12);
-        audio.explode?.();
-        break;
       case 'banner':
         g.bannerShow?.(m.title, m.sub, { dur: m.dur ?? 2.4, colour: m.colour });
         break;
       case 'door': audio.door?.(); break;
       case 'perk': audio.perk?.(); break;
+      case 'craft':
+        // somebody's hammer, everybody's news: the name goes over the body
+        // that built it, and the guest that asked hears the answer
+        g.popups?.add?.(m.x, m.y - 26, m.name ?? '', m.c ?? '#f0d98a', 12);
+        audio.buy?.();
+        break;
       case 'power': audio.powerUp?.(); break;
       case 'down':
         g.bannerShow?.(`${m.name} IS DOWN`, 'get to him', { dur: 2.6, colour: '#c4463a' });

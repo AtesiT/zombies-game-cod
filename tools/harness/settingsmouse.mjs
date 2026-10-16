@@ -53,14 +53,35 @@ inp.mouse.x = bx + bw; inp.mouse.y = ry; inp.mouse.pressed = true;
 g.update(H); inp.endFrame();
 ok(M.settings.get('lighting') === 2, 'slider click at the right end did not land on max');
 
-// ---- 4. the wheel walks the list -------------------------------------------
+// ---- 4. the wheel scrolls the window when the list overflows ---------------
+// (a list that fits the panel whole keeps the old walk-the-selection wheel)
+const L = settingsLayout(g, M.VW, M.VH);
 const before = g.settingsIndex;
+const expView = Math.min(L.over, (g.settingsView ?? L.top) + 2);
 inp.wheel = 2;
 g.update(H); inp.endFrame();
-ok(g.settingsIndex === Math.min(M.SETTING_DEFS.length - 1, before + 2), 'wheel did not walk the list');
-inp.wheel = -99;
+if (L.over > 0) {
+  ok(g.settingsIndex === before, 'the wheel dragged the selection instead of scrolling');
+  ok((g.settingsView ?? 0) === expView, `wheel down did not scroll (view ${g.settingsView}, want ${expView})`);
+  inp.wheel = -99;
+  g.update(H); inp.endFrame();
+  ok((g.settingsView ?? 0) === 0, 'wheel up did not clamp at the top');
+} else {
+  ok(g.settingsIndex === Math.min(M.SETTING_DEFS.length - 1, before + 2), 'wheel did not walk the list');
+  inp.wheel = -99;
+  g.update(H); inp.endFrame();
+  ok(g.settingsIndex === 0, 'wheel up did not clamp at the top');
+}
+// and a hovered mouse must not pin the keyboard's selection
+inp.mouse.x = M.VW / 2; inp.mouse.y = M.VH / 2;
+g.update(H); inp.endFrame();           // the pointer arrives on some row
+const hovered = g.settingsIndex;
+inp.mouse.x = M.VW / 2; inp.mouse.y = M.VH / 2;   // now it rests there
+inp.wheel = 0;
+g.input.pressed.add('ArrowDown');
 g.update(H); inp.endFrame();
-ok(g.settingsIndex === 0, 'wheel up did not clamp at the top');
+ok(g.settingsIndex !== hovered || M.SETTING_DEFS.length === 1,
+  'a resting pointer pinned the arrow keys');
 
 // ---- 5. a click outside the panel does nothing ------------------------------
 const dBefore = M.settings.get('blood');

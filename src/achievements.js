@@ -46,6 +46,7 @@ export const ACHIEVEMENTS = [
   { id: 'skeleton_key', name: 'Skeleton Key', desc: 'Break ten of the Bonewright\u2019s skeletons.', icon: 'K' },
   // ---- the rest of the house ----------------------------------------------
   { id: 'tourist', name: 'Grand Tour', desc: 'Set foot on all three storeys in one run.', icon: 'G' },
+  // Back with the bench: it went bare for a while and took these two with it.
   { id: 'master_crafter', name: 'Master Crafter', desc: 'Craft five things at the workbench.', icon: 'W' },
   { id: 'field_medic', name: 'Field Medic', desc: 'Craft a medkit.', icon: '+' },
   { id: 'big_spender', name: 'Big Spender', desc: 'Hold 10,000 points at once.', icon: '$' },
@@ -55,13 +56,20 @@ export const ACHIEVEMENTS = [
   { id: 'round_40', name: 'Forty Deep', desc: 'Reach round 40.', icon: '40' },
   { id: 'lucky_pull', name: 'Lucky Pull', desc: 'Get a wonder weapon without ever drawing the teddy.', icon: 'L' },
   { id: 'lights_out', name: 'Lights Out', desc: 'Fight a whole round in the dark before the power.', icon: '0' },
+  // ---- the ending, and the night's small kindnesses -------------------------
+  { id: 'leaving_tonight', name: 'Leaving Tonight', desc: 'Light all four beacons, reach round 25, burn the green flare and board the bird.', icon: 'H' },
+  { id: 'care_package', name: 'Care Package', desc: 'Pick up a crate the radio dropped for you.', icon: 'S' },
 ];
 
 const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));
 
 export class Achievements {
   constructor() {
-    this.unlocked = new Set(safeGet(ACH_KEY, []));
+    // Anything on disk that is no longer on the list gets dropped here: a
+    // badge that was retired mid-life would otherwise sit in the set forever
+    // and make the screen read "34 / 33".
+    const saved = safeGet(ACH_KEY, []);
+    this.unlocked = new Set(Array.isArray(saved) ? saved.filter((id) => BY_ID.has(id)) : []);
     this.pending = [];      // queued toasts
     this.banner = null;
     this.bannerT = 0;
@@ -111,7 +119,8 @@ export function submitScore(entry) {
   const board = loadBoard();
   board.push({
     round: entry.round, kills: entry.kills, headshots: entry.headshots,
-    points: entry.points, time: entry.time, date: Date.now(),
+    points: entry.points, time: entry.time, date: entry.date ?? Date.now(),
+    evac: !!entry.evac,          // left the night alive, aboard the bird
   });
   board.sort((a, b) => b.round - a.round || b.points - a.points || b.kills - a.kills);
   const trimmed = board.slice(0, MAX_SCORES);

@@ -32,9 +32,15 @@ export async function load() {
   return {
     Game: game.Game, VW: game.VW, VH: game.VH, Input: input.Input,
     WEAPONS: wep.WEAPONS, WEAPON_ORDER: wep.WEAPON_ORDER, PAP_PRICE: wep.PAP_PRICE,
-    PERKS: perks.PERKS, RECIPE_ORDER: craft.RECIPE_ORDER, ENEMY_TYPES: ent.ENEMY_TYPES,
+    PERKS: perks.PERKS, ENEMY_TYPES: ent.ENEMY_TYPES,
     Zombie: ent.Zombie, Grenade: ent.Grenade, settings: set.settings, SETTING_DEFS: set.SETTING_DEFS,
     TRAP_PRICE: tr.TRAP_PRICE, POWERUPS: pu.POWERUPS ?? {},
+    // the bench: the live table, the six that came off it, and the words it
+    // says when the answer is no
+    RECIPES: craft.RECIPES, recipeIds: craft.recipeIds, SHELVED_RECIPES: craft.SHELVED_RECIPES,
+    Workbench: craft.Workbench, craftRefusal: craft.craftRefusal, craftRowNote: craft.craftRowNote,
+    ACHIEVEMENTS: ach.ACHIEVEMENTS,
     menuRows: hud.menuRows, menuHitTest: hud.menuHitTest, CONTROL_ROWS: hud.CONTROL_ROWS,
+    craftLayout: hud.craftLayout, craftRowAt: hud.craftRowAt,
   };
 }

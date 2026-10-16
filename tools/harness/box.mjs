@@ -1,7 +1,7 @@
 // Headless harness for the Magic Box.
 //
 // The crate has several homes but only ever exists in one place at a time --
-// five on the ground, three on each floor above -- and it packs up and moves
+// five homes, all on the ground floor -- and it packs up and moves
 // once the teddy bear comes for it. That reads, quite reasonably, as "there
 // are several mystery boxes", so these tests pin down that there is exactly
 // one, that it never lands somewhere you cannot stand, and that the arrow at
@@ -74,6 +74,24 @@ const goTo = (g, f) => { g.map.setFloor(f); g.useFloor(f); };
     }
     console.log(`  storey ${f}: ${spots.length} homes, all standable and reachable`);
   }
+}
+
+// ---- 1b. one box for the whole map: upstairs it neither answers nor shows --
+{
+  const g = boot();
+  goTo(g, 1);
+  const s = g.box.spot;
+  g.player.pos.x = s.x + 6; g.player.pos.y = s.y; g.player.floor = 1;
+  ok(g.interactionFor(g.player)?.type !== 'box', 'the box answered from a different floor');
+  const proto = Object.getPrototypeOf(g.box);
+  const orig = proto.draw;
+  let calls = 0;
+  proto.draw = function (c, a) { calls++; return orig.call(this, c, a); };
+  g.update(H);
+  g.draw(nc(M.VW, M.VH).getContext('2d'));
+  proto.draw = orig;
+  ok(calls === 0, `the box drew ${calls} times from the floor above`);
+  console.log('  the crate belongs to the ground floor alone');
 }
 
 // ---- 2. it is drawn once, wherever it happens to be ------------------------
