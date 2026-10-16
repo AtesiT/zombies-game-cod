@@ -177,6 +177,10 @@ for cx, cy, rx, ry, dens in [
 
 # wrecked truck + hay bales in the east field
 fill(60, 30, 62, 31, 'V')
+# the night's leftovers in the fields: a burned-out car at the bottom of the
+# map and a tank wreck bottom-right (game.js paints the detail over the tiles)
+fill(30, 46, 31, 46, 'V')
+fill(63, 43, 65, 44, 'V')
 for (x, y) in [(55, 33), (56, 33), (55, 34), (58, 36), (59, 36), (57, 25), (58, 25)]:
     if g[y][x] == ' ':
         put(x, y, 'c')
@@ -484,7 +488,7 @@ def build_roof():
         # storeys for. It is a generated constant on purpose -- it was hand-added
         # to mapData.js once, and the next regeneration dropped it, leaving
         # map.js importing undefined and the top floor with no bench at all.
-        'bench': (23, 26),
+        'bench': (32, 17),
     }
 
 

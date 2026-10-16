@@ -55,10 +55,10 @@ export const MAP_ROWS = [
   "     #........#            r        T T                         r       ",
   "T T  #........#   r                   TT   T  r        r              TT",
   " TT  #######WW#         r            T  T                             T ",
-  "                            r                                        T T",
-  " T                                                                     T",
+  "                            r                                  VVV   T T",
+  " T                                                             VVV     T",
   "    T T T                             r       T    T T TTT              ",
-  "   T T T   T        r                           T TT    TTTT T          ",
+  "   T T T   T        r         VV                T TT    TTTT T          ",
   "  T TT  TTrTT    T   T    TTT  TTTT T    TT    TTTTTTTTT TTT  T         ",
   " T   TrTTTTT  T     TTT T TT  TTT T  T T T T TTTT  TT r TT              ",
   "      T             T  TTTT TTTTTT T             T T   T  T T           "
@@ -151,8 +151,9 @@ export const STAIRS = [
 
 export const POWER_SWITCH = { x: 7, y: 35 };
 export const WORKBENCH = { x: 58, y: 16 };
-// the bench itself now lives in the attic at the top of the house
-export const WORKBENCH_ROOF = { x: 23, y: 26 };
+// the bench itself now lives in the attic at the top of the house -- inside,
+// out of the weather, past the doorway at (29,22)
+export const WORKBENCH_ROOF = { x: 32, y: 17 };
 export const PAP_SPOT = { x: 53, y: 7 };
 
 export const SECRET_SWITCHES = [
@@ -231,10 +232,10 @@ export const FLOORS = [
     "     #........#            r        T T                         r       ",
     "T T  #........#   r                   TT   T  r        r              TT",
     " TT  #######WW#         r            T  T                             T ",
-    "                            r                                        T T",
-    " T                                                                     T",
+    "                            r                                  VVV   T T",
+    " T                                                             VVV     T",
     "    T T T                             r       T    T T TTT              ",
-    "   T T T   T        r                           T TT    TTTT T          ",
+    "   T T T   T        r         VV                T TT    TTTT T          ",
     "  T TT  TTrTT    T   T    TTT  TTTT T    TT    TTTTTTTTT TTT  T         ",
     " T   TrTTTTT  T     TTT T TT  TTT T  T T T T TTTT  TT r TT              ",
     "      T             T  TTTT TTTTTT T             T T   T  T T           "

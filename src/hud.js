@@ -212,10 +212,10 @@ export class HUD {
   /**
    * A brass arrow at the edge of the screen pointing at the Magic Box.
    *
-   * The crate has five homes on the ground floor and three on each of the
-   * floors above, and it packs up and moves between them once the teddy bear
-   * comes for it -- so people quite reasonably think there are several boxes.
-   * There is one; it just wanders. This is how you find it again. It sits
+   * The crate has five homes, all on the ground floor, and it packs up and
+   * moves between them once the teddy bear comes for it -- so people quite
+   * reasonably think there are several boxes. There is one; it just wanders,
+   * and it never leaves the ground. This is how you find it again. It sits
    * quiet while you are near enough to see it, and flares for a few seconds
    * after it has moved.
    */
@@ -223,6 +223,7 @@ export class HUD {
     this._boxArrowAt = null;
     const box = game.box;
     if (!box || box.state === 'gone') return;
+    if (game.map.floor !== 0 || (game.player?.floor ?? 0) !== 0) return;
     const s = box.spot;
     if (!s) return;
     const sx = s.x - game.cam.x, sy = s.y - game.cam.y;
@@ -764,7 +765,9 @@ export class HUD {
   _health(ctx, game, w, h) {
     const p = game.player;
     const bw = 168, bh = 8;
-    const x = w / 2 - bw / 2, y = h - 44;
+    // up from the very bottom: the ROUND readout lives at h-42..h-16 and the
+    // bar used to sit right across the word
+    const x = w / 2 - bw / 2, y = h - 58;
     const k = p.hp / p.maxHp;
     const col = k > 0.66 ? '#8fae6a' : k > 0.33 ? '#d0a13f' : RED;
     bar(ctx, x, y, bw, bh, k, 'rgba(0,0,0,0.6)', col);
@@ -1482,6 +1485,32 @@ export function drawMenu(ctx, game, w, h) {
   ctx.restore();
 }
 
+/**
+ * The pause screen is a little menu of its own now: five rows you can click
+ * or thumb, each with its old shortcut printed on the right so the keyboard
+ * way is still discoverable. game.js reads the rows through pauseHitTest.
+ */
+export const PAUSE_ROWS = [
+  { label: 'RESUME', hint: 'P / ESC' },
+  { label: 'SETTINGS', hint: 'O' },
+  { label: 'CONTROLS', hint: 'C' },
+  { label: 'RESTART RUN', hint: 'R' },
+  { label: 'RETURN TO MENU', hint: '' },
+];
+
+export function pauseRowRect(i, w, h) {
+  const rw = 268, rh = 30;
+  return { x: w / 2 - rw / 2, y: h * 0.42 + 30 + i * 38, w: rw, h: rh };
+}
+
+export function pauseHitTest(game, w, h, mx, my) {
+  for (let i = 0; i < PAUSE_ROWS.length; i++) {
+    const r = pauseRowRect(i, w, h);
+    if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) return i;
+  }
+  return -1;
+}
+
 export function drawPause(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
@@ -1489,8 +1518,28 @@ export function drawPause(ctx, game, w, h) {
   text(ctx, 'PAUSED', w / 2, h * 0.42, {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
-  text(ctx, 'P / ESC — resume      O — settings      C — controls      R — restart run', w / 2, h * 0.42 + 28, {
-    font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  const m = game.input?.mouse;
+  const hover = m ? pauseHitTest(game, w, h, m.x, m.y) : -1;
+  PAUSE_ROWS.forEach((r, i) => {
+    const rc = pauseRowRect(i, w, h);
+    const hot = i === hover;
+    ctx.fillStyle = hot ? 'rgba(240,217,138,0.14)' : 'rgba(18,22,28,0.66)';
+    ctx.fillRect(rc.x, rc.y, rc.w, rc.h);
+    ctx.strokeStyle = hot ? GOLD : 'rgba(140,150,165,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(rc.x + 0.5, rc.y + 0.5, rc.w - 1, rc.h - 1);
+    text(ctx, r.label, rc.x + 18, rc.y + 20, {
+      font: 'bold 14px "Courier New", monospace', colour: hot ? GOLD : INK, align: 'left',
+    });
+    if (r.hint) {
+      text(ctx, r.hint, rc.x + rc.w - 18, rc.y + 20, {
+        font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+      });
+    }
+  });
+  const last = pauseRowRect(PAUSE_ROWS.length - 1, w, h);
+  text(ctx, 'the shortcuts still work', w / 2, last.y + last.h + 24, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
   ctx.restore();
 }

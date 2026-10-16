@@ -184,11 +184,45 @@ export class TouchControls {
     for (const [id, [col, row]] of Object.entries(GRID)) {
       place(this.buttons[id], B, B, pad + F + gap + col * (B + gap), pad + row * (B + gap));
     }
-    place(this.buttons.pause, 44 * k, 30 * k, pad, undefined);
-    this.buttons.pause.style.top = `${pad}px`;
+    // the pause corner: off the physical corner of the glass. On a landscape
+    // PWA phone the very corner is a notch, a rounded edge or nothing at all,
+    // and the button used to live exactly there -- visible, but unpressable
+    const safe = this._safeInsets();
+    place(this.buttons.pause, Math.max(56, 48 * k), Math.max(40, 34 * k), pad + safe.r + 6, undefined);
+    this.buttons.pause.style.top = `${pad + safe.t + 6}px`;
     for (const b of BUTTONS) {
       this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * k}px`;
     }
+  }
+
+  /**
+   * What the device reserves at the edges of the glass (notch, home bar,
+   * rounded corners). viewport-fit=cover is in index.html, so on iOS the
+   * env() values are real; everywhere else they resolve to zero and this
+   * costs one hidden div, once.
+   */
+  _safeInsets() {
+    if (this._safe) return this._safe;
+    let l = 0, t = 0, r = 0, b = 0;
+    try {
+      const probe = this._el('div', {
+        position: 'fixed', left: '0', top: '0', width: '0', height: '0',
+        paddingLeft: 'env(safe-area-inset-left, 0px)',
+        paddingTop: 'env(safe-area-inset-top, 0px)',
+        paddingRight: 'env(safe-area-inset-right, 0px)',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        visibility: 'hidden', pointerEvents: 'none',
+      });
+      (this.root ?? document.body).appendChild(probe);
+      const cs = getComputedStyle(probe);
+      l = parseFloat(cs.paddingLeft) || 0;
+      t = parseFloat(cs.paddingTop) || 0;
+      r = parseFloat(cs.paddingRight) || 0;
+      b = parseFloat(cs.paddingBottom) || 0;
+      probe.remove?.();
+    } catch { /* no DOM, no insets */ }
+    this._safe = { l, t, r, b };
+    return this._safe;
   }
 
   /** Screens this small get the compact layout -- no button lands on a stick. */
@@ -250,7 +284,11 @@ export class TouchControls {
     };
 
     const findButton = (target) => {
-      for (const [id, el] of Object.entries(this.buttons)) if (el === target) return id;
+      let n = target;
+      while (n && n !== this.panel) {
+        for (const [id, el] of Object.entries(this.buttons)) if (el === n) return id;
+        n = n.parentNode;
+      }
       return null;
     };
 

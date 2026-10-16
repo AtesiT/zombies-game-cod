@@ -651,6 +651,7 @@ export class Net {
       if (pl.muzzleFlash || pl._muzzle) flags |= 4;
       if (pl.sprinting) flags |= 8;
       if (pl.reloading) flags |= 16;
+      if (pl.evac) flags |= 32;
       let perkMask = 0;
       for (let i = 0; i < PERK_IDS.length; i++) if (pl.perks?.has(PERK_IDS[i])) perkMask |= (1 << i);
       p.push([
@@ -816,7 +817,7 @@ export class Net {
       const t = this._targets.get(`p${id}`) ?? {};
       t.x = e[1]; t.y = e[2]; t.aim = e[3]; t.hp = e[4]; t.maxHp = e[5]; t.floor = e[6];
       t.dead = !!(e[7] & 1); t.downed = !!(e[7] & 2); t.muzzle = !!(e[7] & 4);
-      t.sprinting = !!(e[7] & 8); t.reloading = !!(e[7] & 16);
+      t.sprinting = !!(e[7] & 8); t.reloading = !!(e[7] & 16); t.evac = !!(e[7] & 32);
       t.weapon = e[8]; t.mag = e[9]; t.reserve = e[10]; t.points = e[11];
       t.grenades = e[12]; t.medkits = e[13]; t.salvage = e[14]; t.armor = e[15];
       t.perkMask = e[16]; t.bleedT = e[17];

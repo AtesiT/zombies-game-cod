@@ -98,14 +98,14 @@ ok(g.heli.phase === 3, `the inbound glide ended at phase ${g.heli.phase}, want 3
 
 // standing on the pad, the bird offers itself; nowhere else it does not
 g.player.floor = 2;
-g.player.pos.x = 26.5 * 24 + 10; g.player.pos.y = 28.5 * 24;
+g.player.pos.x = 18.5 * 24 + 10; g.player.pos.y = 15.5 * 24;
 let it = g.interactionFor(g.player);
 ok(it?.type === 'heli', `the landed bird offers ${it?.type ?? 'nothing'} on its own pad`);
 g.player.pos.x = 40 * 24;
 it = g.interactionFor(g.player);
 ok(it?.type !== 'heli', 'the bird offers itself from across the roof');
 g.player.floor = 0;
-g.player.pos.x = 26.5 * 24; g.player.pos.y = 28.5 * 24;
+g.player.pos.x = 18.5 * 24; g.player.pos.y = 15.5 * 24;
 it = g.interactionFor(g.player);
 ok(it?.type !== 'heli', 'the bird offers itself from the floor below the pad');
 
@@ -115,9 +115,17 @@ g.player.floor = 2;
 g.draw(nc(M.VW, M.VH).getContext('2d'));
 
 // ---- 5. wheels up: EVACUATED, its own mark on the board --------------------
-g.player.pos.x = 26.5 * 24; g.player.pos.y = 28.5 * 24 + 8;
+g.player.pos.x = 18.5 * 24; g.player.pos.y = 15.5 * 24 + 8;
 g.doInteraction(g.player, { type: 'heli' });
 ok(g.heli.phase === 4, `boarding gives phase ${g.heli.phase}, want 4 (leaving)`);
+ok(g.player.evac === true, 'the one who boarded is still standing on the deck');
+{
+  // the horde cannot grab whoever is already in the cabin
+  const fake = { pos: { x: 100, y: 100 }, floor: 0, dead: false, evac: false, downed: false };
+  g.players.push(fake);
+  ok(g.pickTarget({ pos: { x: 0, y: 0 } }) === fake, 'a zombie still targets the passenger');
+  g.players.pop();
+}
 ok(g.achievements.has('leaving_tonight'), 'boarding did not earn LEAVING TONIGHT');
 for (let i = 0; i < 60 * 6 && g.heli.phase === 4; i++) g._heliStep(H);
 ok(g.heli.phase === 5 && g.gameOver && g.evacuated,
@@ -303,7 +311,7 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   stepBoth(20);
   host.player.floor = 2;
   host.map.setFloor(2); host.useFloor(2);
-  host.player.pos.x = 26.5 * 24; host.player.pos.y = 28.5 * 24 + 6;
+  host.player.pos.x = 18.5 * 24; host.player.pos.y = 15.5 * 24 + 6;
   const hit = host.interactionFor(host.player);
   ok(hit?.type === 'heli', `the host's own body gets ${hit?.type ?? 'nothing'} at the pad`);
   host.doInteraction(host.player, hit);
@@ -318,6 +326,76 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   drawGameOver(nc(M.VW, M.VH).getContext('2d'), guest, M.VW, M.VH);   // must not throw
 
   Math.random = rand;
+}
+
+// ---- 10. the odd jobs that rode along with the bird ------------------------
+{
+  const g5 = boot();
+  // the H is painted on the deck from the very first night, bird or no bird
+  ok(g5.heli.phase === 0, 'a fresh run should have no bird yet');
+  g5.map.setFloor(2); g5.useFloor(2); g5.player.floor = 2;
+  g5.player.pos.x = 18.5 * 24; g5.player.pos.y = 15.5 * 24;
+  g5.draw(nc(M.VW, M.VH).getContext('2d'));      // the empty deck must not throw
+
+  // the bench moved into the attic, out of the weather
+  const wb = g5.map.floors[2].workbench;
+  ok(wb && Math.abs(wb.x - 32.5 * 24) < 1 && Math.abs(wb.y - 17.5 * 24) < 1,
+    `the bench is not in the attic (${wb?.x}, ${wb?.y})`);
+  ok(!g5.map.solidTileOn(2, 32, 17), 'the bench tile is not standable');
+  g5.player.pos.x = wb.x; g5.player.pos.y = wb.y + 12;
+  ok(g5.interactionFor(g5.player)?.type === 'workbench', 'the attic bench does not offer itself');
+
+  // the wrecks in the fields: solid where the metal is, grass around it
+  for (const [tx, ty] of [[30, 46], [31, 46], [63, 43], [64, 43], [65, 43], [63, 44], [64, 44], [65, 44]]) {
+    ok(g5.map.solidTileOn(0, tx, ty), `the wreck at ${tx},${ty} is not solid`);
+  }
+  ok(!g5.map.solidTileOn(0, 29, 46) && !g5.map.solidTileOn(0, 66, 43),
+    'the wrecks spilled solid tiles into the grass');
+  g5.map.setFloor(0); g5.useFloor(0); g5.player.floor = 0;
+  g5.draw(nc(M.VW, M.VH).getContext('2d'));      // wrecks must paint without a word
+
+  // one box for the whole map: upstairs it neither answers nor shows
+  const bs = g5.box.spot;
+  g5.player.pos.x = bs.x + 6; g5.player.pos.y = bs.y;
+  g5.player.floor = 0;
+  ok(g5.interactionFor(g5.player)?.type === 'box', 'the box went quiet on its own floor');
+  g5.map.setFloor(1); g5.useFloor(1); g5.player.floor = 1;
+  g5.player.pos.x = bs.x + 6; g5.player.pos.y = bs.y;
+  ok(g5.interactionFor(g5.player)?.type !== 'box', 'the box answered from the floor above');
+  const proto = Object.getPrototypeOf(g5.box);
+  const orig = proto.draw;
+  let calls = 0;
+  proto.draw = function (c, a) { calls++; return orig.call(this, c, a); };
+  g5.draw(nc(M.VW, M.VH).getContext('2d'));
+  proto.draw = orig;
+  ok(calls === 0, `the box drew ${calls} times through the floorboards`);
+
+  // a broadcast that long has to wrap inside its own box
+  g5.voice = { text: ('the radio is testing the wrapping of a very long transmission '.repeat(4)).trim(), left: 3 };
+  g5._drawVoice(nc(M.VW, M.VH).getContext('2d'), M.VW, M.VH);
+  g5.draw(nc(M.VW, M.VH).getContext('2d'));
+
+  // the pause screen: five clickable rows, and the last one walks you home
+  g5.map.setFloor(0); g5.useFloor(0); g5.player.floor = 0;
+  const { pauseHitTest, PAUSE_ROWS } = await import(SRC + '/hud.js');
+  ok(PAUSE_ROWS.length === 5, `the pause menu has ${PAUSE_ROWS.length} rows, want 5`);
+  g5.paused = true;
+  for (let i = 0; i < 5; i++) {
+    const r = { x: M.VW / 2 - 134, y: M.VH * 0.42 + 30 + i * 38, w: 268, h: 30 };
+    ok(pauseHitTest(g5, M.VW, M.VH, r.x + 20, r.y + 15) === i, `row ${i} is not where it is drawn`);
+  }
+  // click RESUME
+  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = M.VH * 0.42 + 45;
+  g5.input.mouse.pressed = true;
+  g5.update(H); g5.input.endFrame();
+  ok(!g5.paused, 'clicking RESUME did not resume');
+  // click RETURN TO MENU
+  g5.paused = true;
+  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = M.VH * 0.42 + 30 + 4 * 38 + 15;
+  g5.input.mouse.pressed = true;
+  g5.update(H); g5.input.endFrame();
+  ok(!g5.started && g5.scene === 'menu' && !g5.paused,
+    `RETURN TO MENU left started=${g5.started} scene=${g5.scene} paused=${g5.paused}`);
 }
 
 console.log(fails.length ? `\n${fails.length} FAILURES:\n  ${fails.join('\n  ')}` : '\nHELI PASS  the roof ending, the radio and the two-column range all hold');

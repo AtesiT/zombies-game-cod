@@ -63,9 +63,10 @@ the wire is not a cosmetic bug, it is a frozen picture.
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
 FIRE / F / R / Q / sprint / frag / medkit / knife buttons on the right, plus a
-pause button in the corner. A tap anywhere else reaches the game underneath, so
-the menus work with a thumb. `AIM ASSIST` points the barrel at the nearest walker
-while you are not touching the aim stick.
+pause button in the corner — parked off the physical corner of the glass, clear
+of notches and rounded edges, and big enough for a thumb. A tap anywhere else
+reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
+the barrel at the nearest walker while you are not touching the aim stick.
 
 ## Controls
 
@@ -85,6 +86,10 @@ while you are not touching the aim stick.
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
+
+The pause screen is a menu you can click (or thumb): five rows — resume, settings,
+controls, restart the run, return to the front page — each with its old shortcut
+printed on the right, because the keyboard way still works.
 | `F` | Same as `E` — and how you revive a downed team-mate in co-op |
 
 ## The map (72 × 50 tiles)
@@ -117,11 +122,15 @@ One big level instead of a second map:
   windows, six buyable doors including two that let you **walk outside**.
 - **Radio room** (north-east) — reached by a stairwell from room B. Holds the **Pack-a-Punch**.
 - **Shed** (east) — tools and sandbags; the workbench it used to hold moved upstairs.
-- **Roof** — the **workbench** stands on the open deck: anything you want built,
-  you carry the scrap up three storeys for.
+- **Roof** — the west terrace wears a painted **H**: the helipad, on the deck from
+  the very first night, bird or no bird.
+- **Attic** — the board shack on the roof holds the **workbench**: anything you
+  want built, you carry the scrap up three storeys for.
 - **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
-  You can leave the bunker and fight in the open; zombies spawn out here and path in.
+  A burnt-out car sits at the bottom of the field and a gutted tank at the bottom
+  right, each on its own patch of scorched earth. You can leave the bunker and
+  fight in the open; zombies spawn out here and path in.
 
 Stairwells are real portals: step on the tile, walk to its centre, and you pop out at the other
 end (the flow field charges a small cost for it, so zombies use them too).
@@ -140,7 +149,8 @@ slowing webs).
 
 **Mystery Box.** 950 points, five possible locations, spins for ~2.6 s, offers the weapon for
 6.5 s. Pull too many times and the teddy bear steals it — the box relocates. Fire Sale moves it
-and drops the price to 10.
+and drops the price to 10. There is exactly **one** crate in the whole map: all five
+homes are on the ground floor, and upstairs it neither answers nor shows.
 
 **Wonder weapons** (box only): Ray Gun (plasma splash) · Wunderwaffe DG-2 (chains to four
 targets) · Thunder Gun (a cone that throws a whole hallway away) · Winter's Howl (freezes a
@@ -149,7 +159,7 @@ cluster solid) · Monkey Bomb (wind it up, throw it, watch the horde pile on, th
 **Wall buys.** M1911 (start) · MP40 · Thompson · M1897 Trench Gun · PPSh-41 · Kar98k · FG 42 ·
 M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 
-**Workbench.** Kills drop **scrap**, and the bench on the roof spends it. On the bench today:
+**Workbench.** Kills drop **scrap**, and the bench in the attic spends it. On the bench today:
 **Medkit** (8 scrap, +55 HP, up to three carried), **Armour Plate** (14 scrap + 1500 points,
 absorbs the next 60 damage, up to 120) and **Steel Shutters** (30 scrap + 2500 points, once per
 house: every window on every floor takes two more planks — the cap itself rises, and the boards
@@ -211,8 +221,9 @@ loudspeaker: survivors outside the wire, a helicopter that wants thirty quiet mi
 roof beacons: every switch you throw lights one of four corner lamps up on the roof (red and
 green, blinking, visible from the deck). Reach round 30 with all four lit and the board gives
 you a bearing — then hold the roof for three full rounds and the bird comes in over the west
-trees: shadow, searchlight, rotor chop. It lands on the H painted on the south roof block;
-walk up and press E/F to board, and the run ends on a golden **EVACUATED** screen, written to
+trees: shadow, searchlight, rotor chop. It lands on the H painted at the left centre of the
+west terrace; walk up and press E/F to board — the passengers vanish from the deck and ride
+in the cabin — and the run ends on a golden **EVACUATED** screen to its own music, written to
 the leaderboard with its own **EVAC** mark (and a *Leaving Tonight* badge). Fewer than four
 dials at round 30 and the radio simply apologises — the night goes on exactly as before. In
 co-op the ending is shared: whoever boards, everybody flies.

@@ -15,7 +15,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -214,7 +214,7 @@ const DECAL_WASH = 0.22;
 // ---- the helicopter ending: pad, beacons, and the radio's night ------------
 // The pad sits on the south roof block of the campaign's top storey; each of
 // the four secret dials downstairs lights one beacon at the roof corners.
-const HELI_PAD = { x: 26.5 * T, y: 28.5 * T, f: 2 };
+const HELI_PAD = { x: 18.5 * T, y: 15.5 * T, f: 2 };
 const HELI_BEACONS = [
   { x: 15.5 * T, y: 10.5 * T },
   { x: 44.5 * T, y: 10.5 * T },
@@ -531,9 +531,9 @@ export class Game {
     this.decalCtx = this._decalCtx[floor];
     // the bench is in the attic: it exists on the top storey and nowhere else
     this.workbench?.useSpot(this.map.workbench);
-    // the mystery box has a spot on every storey: follow the one we are on,
-    // or it keeps the ground floor's and stands inside a wall upstairs
-    this._boxOnFloor();
+    // the mystery box does NOT come along: it has one home floor -- the
+    // ground -- and the storeys above no longer grow their own copy of it
+    // ("a box per floor" was exactly how people ended up counting several)
   }
 
   /** Is any decal inside this world-space box? Used to skip the blit. */
@@ -616,7 +616,7 @@ export class Game {
   pickTarget(z) {
     let best = null, bd = Infinity;
     for (const p of this.players ?? [this.player]) {
-      if (!p || p.dead) continue;
+      if (!p || p.dead || p.evac) continue;
       let d = dist2(z.pos.x, z.pos.y, p.pos.x, p.pos.y);
       if ((p.floor ?? this.map.floor) !== (z.floor ?? 0)) d *= 5;   // same storey first
       if (p.downed) d *= 2.4;                                        // finish the standing first
@@ -788,6 +788,7 @@ export class Game {
         : (this.net?._spawnSpot?.() ?? this.map.playerStart);
       pl.dead = false;
       pl.downed = false;
+      pl.evac = false;
       pl._deathTold = 0;
       pl._downTold = 0;
       pl.hp = pl.maxHp;
@@ -939,7 +940,8 @@ export class Game {
   _atmosphere(dt) {
     // music -- four times a second is plenty for a 0.9 s cross-fade
     this._musicT = (this._musicT ?? 0) - dt;
-    if (this._musicT <= 0) {
+    // once the bird is coming the victory cue owns the mix (audio.victory)
+    if (this._musicT <= 0 && this.heli.phase < 4) {
       this._musicT = 0.25;
       let alive = 0;
       for (const z of this.zombies) if (!z.dead) alive++;
@@ -1036,21 +1038,36 @@ export class Game {
     if (!this.voice || this.voice.left <= 0) return;
     // fade the last half second out
     const a = Math.min(1, this.voice.left / 0.5);
-    const y = vh - 74;
+    // broadcasts are sentences now, not call-signs: wrap them to the box
+    // (12px Courier is ~7.2px a character; the box is 440 wide, 420 usable)
+    const words = String(this.voice.text).split(/\s+/);
+    const lines = [];
+    let cur = '';
+    for (const wd of words) {
+      const t = cur ? `${cur} ${wd}` : wd;
+      if (t.length > 58 && cur) { lines.push(cur); cur = wd; } else cur = t;
+      while (cur.length > 58) { lines.push(cur.slice(0, 58)); cur = cur.slice(58); }
+    }
+    if (cur) lines.push(cur);
+    const shown = lines.slice(0, 3);
+    const y = vh - 96;
+    const bh = 20 + shown.length * 14;
     ctx.save();
     ctx.globalAlpha = a * 0.55;
     ctx.fillStyle = '#0a0c0e';
-    ctx.fillRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.fillRect(vw / 2 - 220, y - 16, 440, bh);
     ctx.globalAlpha = a;
     ctx.strokeStyle = 'rgba(150,190,220,0.35)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(vw / 2 - 220, y - 16, 440, 30);
+    ctx.strokeRect(vw / 2 - 220, y - 16, 440, bh);
     ctx.restore();
     text(ctx, 'LOUDSPEAKER', vw / 2 - 210, y - 6, {
       font: 'bold 9px "Courier New", monospace', colour: '#7f9cb5', align: 'left', alpha: a,
     });
-    text(ctx, this.voice.text, vw / 2, y + 6, {
-      font: 'bold 12px "Courier New", monospace', colour: '#cfe0ee', align: 'center', alpha: a,
+    shown.forEach((ln, i) => {
+      text(ctx, ln, vw / 2, y + 10 + i * 14, {
+        font: 'bold 12px "Courier New", monospace', colour: '#cfe0ee', align: 'center', alpha: a,
+      });
     });
   }
 
@@ -1515,10 +1532,14 @@ export class Game {
     if (this.rangeMode || H.phase !== 3) return;
     H.phase = 4; H.t = 0;
     audio.evacSting();
+    audio.victory();
     this.shake(6, 1.4);
     this.bannerShow('WHEELS UP', 'you are leaving this night alive', { dur: 3.4, colour: '#f0d98a' });
     this._speak('We have them. Deck is clear, going up. Somebody put the kettle on.');
     this.achievements.unlock('leaving_tonight');
+    // everybody still standing came aboard: from here on they are not on the
+    // roof any more -- they are in the cabin, watching the house shrink
+    for (const pl of this.players ?? []) { if (pl && !pl.dead) pl.evac = true; }
   }
 
   /** The bird is a star over the west trees: the run ends, the board remembers. */
@@ -1534,6 +1555,20 @@ export class Game {
       points: this.stats.points, time: Math.round(this.time), evac: true, date: stamp,
     });
     this.rank = this.board.findIndex((e) => e.date === stamp);
+  }
+
+  /** The pause menu's last row: leave the run and stand at the front door. */
+  _quitToMenu() {
+    if (this.net?.playing || this.net?.active) this.net.close();
+    audio.heliOff();
+    this.paused = false;
+    this.settingsOpen = false;
+    this.controlsOpen = false;
+    this.debugOpen = false;
+    this.craftOpen = false;
+    this.gameOver = false;
+    this.started = false;
+    this.scene = 'menu';
   }
 
   /** Where the bird is right now: inbound glide, on the pad, or climbing out. */
@@ -2050,7 +2085,7 @@ export class Game {
 
     const bs = this.box.spot;
     const db = dist(p.pos.x, p.pos.y, bs.x, bs.y);
-    if (db < 42) {
+    if ((p.floor ?? 0) === 0 && db < 42) {   // the crate only answers on its own floor
       const price = this.box.price();
       offer({
         type: 'box', d: db, price,
@@ -2967,6 +3002,18 @@ export class Game {
     if (this.input.wasPressed('KeyP')) this.paused = !this.paused;
     else if (this.input.wasPressed('Escape') && !this.craftOpen) this.paused = !this.paused;
     if (this.paused) {
+      // the pause screen is a menu you can click (or thumb) now: the rows and
+      // their geometry live in hud.js, the shortcuts still work as before
+      const m = this.input.mouse;
+      const hit = pauseHitTest(this, VW, VH, m.x, m.y);
+      if (m.pressed && hit >= 0) {
+        audio.dryFire();
+        if (hit === 0) this.paused = false;
+        else if (hit === 1) { this.settingsOpen = true; this._wasPaused = true; }
+        else if (hit === 2) { this.controlsOpen = true; this._wasPaused = true; }
+        else if (hit === 3) { this.reset(); this.started = true; this.startRound(1); }
+        else if (hit === 4) this._quitToMenu();
+      }
       if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
@@ -3767,11 +3814,6 @@ export class Game {
     }
   }
 
-  /** The box has spots on every storey; follow the one you are standing on. */
-  _boxOnFloor() {
-    const spots = this.map.boxSpots;
-    if (spots?.length) this.box.useSpots(spots);
-  }
 
   _joinRoom(room) {
     const net = this.net;
@@ -3890,6 +3932,8 @@ export class Game {
     ctx.save();
     ctx.translate(-camX, -camY);
 
+    // what the night left in the fields: painted on the ground, under everybody
+    if (!this.rangeMode && this.map.floor === 0) this.drawWrecks(ctx);
     this.drawBarricades(ctx);
     this.drawDoors(ctx);
     this.drawSecretDoor(ctx);
@@ -4007,7 +4051,7 @@ export class Game {
     this.drawGrenadeCrates(ctx);
     this.drawPerkMachines(ctx);
     if (this.map.rangePads) this.drawRangePads(ctx);
-    this.drawMysteryBox(ctx);
+    if (this.map.floor === 0) this.drawMysteryBox(ctx);   // one box, ground floor, drawn once
     this.drawPowerSwitch(ctx);
     this.drawWorkbench(ctx);
     this.drawPackAPunch(ctx);
@@ -4025,7 +4069,7 @@ export class Game {
     const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
     const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
     for (const pl of (this.players ?? [this.player])) {
-      if (!pl || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
+      if (!pl || pl.evac || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
       list.push({ y: pl.pos.y + 0.5, d: () => pl.draw(ctx, this.art) });
     }
     list.sort((a, b) => a.y - b.y);
@@ -4324,7 +4368,9 @@ export class Game {
       out.push({ x0: x - hw, y0: y - hh, x1: x + hw, y1: y + hb, floor: f });
     };
     const bs = this.box.spot;
-    if (bs && this.box.state !== 'gone') add(bs.x, bs.y, 13, 8, 8);
+    // the crate is solid where it stands -- and it only ever stands on the
+    // ground floor, so upstairs there is no phantom block to walk into
+    if (bs && this.box.state !== 'gone' && this.map.floor === 0) add(bs.x, bs.y, 13, 8, 8);
     for (const ps of this.map.perkSpots ?? []) add(ps.x, ps.y, 10, 13, 13);
     if (this.map.papSpot) add(this.map.papSpot.x, this.map.papSpot.y, 13, 16, 16);
     if (this.map.workbench) add(this.map.workbench.x, this.map.workbench.y, 12, 7, 9);
@@ -4417,10 +4463,13 @@ export class Game {
         const pulse = 0.75 + Math.sin(this.time * 2.4 + ps.x * 0.1) * 0.25;
         L.point(sx(ps.x), sy(ps.y), 96 * pulse, 0.85, hexA(def.colour, 0.30 * pulse), 0.45);
       }
-      // the open box throws light
-      const bs = this.box.spot;
-      L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
-        'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
+      // the open box throws light -- from the ground floor only; it used to
+      // glow through the ceiling of whatever storey you were standing on
+      if (this.map.floor === 0) {
+        const bs = this.box.spot;
+        L.point(sx(bs.x), sy(bs.y), this.box.open ? 150 : 84, 0.8,
+          'rgba(255,225,150,0.30)', this.box.open ? 0.55 : 0.22);
+      }
       // Pack-a-Punch drum. Only the ground floor has one -- and the old
       // `return` here did not skip the drum, it skipped the entire rest of
       // the lighting pass: no darkness, no torch, no muzzle flash, no bloom
@@ -4598,36 +4647,52 @@ export class Game {
     for (const d of this.map.doors) {
       if (!this._vis(d.cx, d.cy, 60)) continue;
       const x = d.tx * T, y = d.ty * T;
+      const hz = d.horizontal;
       if (d.open) {
-        // doorway: just a dark threshold
+        // doorway: a dark threshold, and the leaf swung flat against the wall
         ctx.fillStyle = 'rgba(10,10,14,0.55)';
         ctx.fillRect(x, y, T, T);
         ctx.fillStyle = '#3f2a17';
-        if (d.horizontal) { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
+        if (hz) { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
         else { ctx.fillRect(x - 1, y, 2, T); ctx.fillRect(x + T - 1, y, 2, T); }
+        const side = hz ? (d.ty % 2 ? y + 1 : y + T - 5) : (d.tx % 2 ? x + 1 : x + T - 5);
+        ctx.fillStyle = '#5a3d22';
+        if (hz) ctx.fillRect(x + 2, side, T - 4, 4);
+        else ctx.fillRect(side, y + 2, 4, T - 4);
+        ctx.fillStyle = '#7a5730';
+        if (hz) ctx.fillRect(x + 2, side, T - 4, 1);
+        else ctx.fillRect(side, y + 2, 1, T - 4);
         continue;
       }
-      // boarded up
-      ctx.fillStyle = '#241a12';
+      // closed: a real paneled door standing in a frame -- it used to be a
+      // stack of planks over the opening, which read as a barricade, not a
+      // door you could buy
+      ctx.fillStyle = '#33220f';                      // the frame
+      ctx.fillRect(x - 1, y - 1, T + 2, T + 2);
+      ctx.fillStyle = '#6b4a2b';                      // the slab
       ctx.fillRect(x, y, T, T);
-      const planks = 4;
-      for (let i = 0; i < planks; i++) {
-        if (d.horizontal) {
-          const slot = T / planks;
-          const py = y + i * slot + 0.5;
-          ctx.fillStyle = '#5a3f24';
-          ctx.fillRect(x - 2, py, T + 4, slot - 1.2);
-          ctx.fillStyle = '#7a5730';
-          ctx.fillRect(x - 2, py, T + 4, 1);
-        } else {
-          const slot = T / planks;
-          const px = x + i * slot + 0.5;
-          ctx.fillStyle = '#5a3f24';
-          ctx.fillRect(px, y - 2, slot - 1.2, T + 4);
-          ctx.fillStyle = '#7a5730';
-          ctx.fillRect(px, y - 2, 1, T + 4);
-        }
-      }
+      ctx.fillStyle = 'rgba(48,30,14,0.45)';          // grain, along the slab
+      if (hz) { ctx.fillRect(x, y + 7, T, 1); ctx.fillRect(x, y + 16, T, 1); }
+      else { ctx.fillRect(x + 7, y, 1, T); ctx.fillRect(x + 16, y, 1, T); }
+      const panel = (px, py, pw, ph) => {             // two recessed panels
+        ctx.fillStyle = '#4a3018';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.fillStyle = '#7d5833';
+        ctx.fillRect(px + 1, py + 1, pw - 2, ph - 2);
+        ctx.fillStyle = 'rgba(40,24,10,0.5)';
+        ctx.fillRect(px + 1, py + ph - 2, pw - 2, 1);
+        ctx.fillRect(px + pw - 2, py + 1, 1, ph - 2);
+      };
+      if (hz) { panel(x + 3, y + 3, 8, T - 6); panel(x + 13, y + 3, 8, T - 6); }
+      else { panel(x + 3, y + 3, T - 6, 8); panel(x + 3, y + 13, T - 6, 8); }
+      ctx.fillStyle = '#20222a';                      // hinges
+      if (hz) { ctx.fillRect(x + 1, y + 2, 2, 3); ctx.fillRect(x + 1, y + T - 5, 2, 3); }
+      else { ctx.fillRect(x + 2, y + 1, 3, 2); ctx.fillRect(x + T - 5, y + 1, 3, 2); }
+      ctx.fillStyle = '#c9a24a';                      // the brass knob
+      ctx.beginPath();
+      if (hz) ctx.arc(x + T - 4, y + T / 2, 1.7, 0, Math.PI * 2);
+      else ctx.arc(x + T / 2, y + T - 4, 1.7, 0, Math.PI * 2);
+      ctx.fill();
       // price tag -- a Jammer takes the numbers off everything you buy
       const p = this.player;
       if (!this.jammed && dist(p.pos.x, p.pos.y, d.cx, d.cy) < 90) {
@@ -4896,9 +4961,8 @@ export class Game {
     }
   }
 
-  /** The deck the bird wants: painted as soon as the board has a bearing. */
+  /** The deck the bird wants: painted on the roof for good, from night one. */
   drawHeliPad(ctx) {
-    if (this.heli.phase < 1) return;
     const { x, y } = HELI_PAD;
     if (!this._vis(x, y, 90)) return;
     ctx.save();
@@ -4989,6 +5053,14 @@ export class Game {
     // glass
     ctx.fillStyle = 'rgba(150,200,230,0.55)';
     ctx.beginPath(); ctx.ellipse(15, -2, 8, 6, 0, 0, TAU); ctx.fill();
+    if (H.phase === 4) {
+      // the people who boarded: two small silhouettes watching the house shrink
+      ctx.fillStyle = 'rgba(28,30,36,0.92)';
+      ctx.beginPath(); ctx.arc(12, -3, 2.6, 0, TAU); ctx.fill();
+      ctx.fillRect(9.4, -1, 5.2, 4.4);
+      ctx.beginPath(); ctx.arc(18.4, -2, 2.3, 0, TAU); ctx.fill();
+      ctx.fillRect(16.1, 0, 4.6, 3.6);
+    }
     // nav lights
     const blink = Math.sin(this.time * 8) > 0;
     ctx.fillStyle = blink ? '#ff5a4a' : '#5a2a24';
@@ -5011,6 +5083,107 @@ export class Game {
     ctx.beginPath(); ctx.ellipse(0, 0, 52, 10, 0, 0, TAU); ctx.stroke();
     ctx.restore();
     ctx.restore();
+  }
+
+  /**
+   * What the night left in the fields: a burned-out car at the bottom of the
+   * map and a tank wreck at the southeast corner, both standing in scorched
+   * earth instead of grass. The 'V' tiles under them carry the collision and
+   * the flow field; this carries the rust.
+   */
+  drawWrecks(ctx) {
+    // ---- the car, tiles (30..31, 46), nose to the west ----
+    {
+      const x = 31 * T, y = 46.5 * T;
+      if (this._vis(x, y, 90)) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(58,44,30,0.85)';
+        ctx.beginPath(); ctx.ellipse(x, y + 4, 44, 22, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(40,32,22,0.55)';
+        ctx.beginPath(); ctx.ellipse(x - 30, y + 10, 16, 7, 0.4, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x + 32, y - 6, 13, 6, -0.3, 0, TAU); ctx.fill();
+        // body
+        ctx.fillStyle = '#3a2b20';
+        ctx.fillRect(x - 30, y - 10, 60, 20);
+        ctx.fillStyle = '#4a3626';
+        ctx.fillRect(x - 30, y - 10, 60, 5);
+        // the cabin, stove in
+        ctx.fillStyle = '#2c2118';
+        ctx.fillRect(x - 14, y - 16, 30, 8);
+        ctx.fillStyle = '#171310';
+        ctx.fillRect(x - 11, y - 14, 10, 5);
+        ctx.fillRect(x + 3, y - 14, 10, 5);
+        ctx.fillStyle = 'rgba(150,180,200,0.25)';
+        ctx.fillRect(x - 11, y - 14, 4, 5);
+        // wheels: two left, two burned down to axles
+        ctx.fillStyle = '#1a1712';
+        ctx.beginPath(); ctx.arc(x - 18, y + 10, 6, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 18, y + 10, 6, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#241d15';
+        ctx.fillRect(x - 30, y + 7, 8, 3);
+        // scorch along the flank, and a door hanging open
+        ctx.fillStyle = 'rgba(20,16,12,0.55)';
+        ctx.fillRect(x - 26, y - 6, 22, 8);
+        ctx.fillRect(x + 6, y - 4, 18, 6);
+        ctx.fillStyle = '#33261b';
+        ctx.save();
+        ctx.translate(x - 2, y - 8);
+        ctx.rotate(-0.5);
+        ctx.fillRect(0, 0, 4, 16);
+        ctx.restore();
+        ctx.restore();
+      }
+    }
+    // ---- the tank, tiles (63..65, 43..44), turret traversed askew ----
+    {
+      const x = 64.5 * T, y = 44 * T;
+      if (this._vis(x, y, 120)) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(62,48,32,0.85)';
+        ctx.beginPath(); ctx.ellipse(x, y + 6, 58, 30, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(42,34,22,0.5)';
+        ctx.beginPath(); ctx.ellipse(x - 44, y + 16, 18, 8, 0.3, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x + 46, y + 12, 15, 7, -0.25, 0, TAU); ctx.fill();
+        // one track intact, the other thrown off forward
+        ctx.fillStyle = '#22201a';
+        ctx.fillRect(x - 40, y + 10, 80, 10);
+        ctx.fillStyle = '#2e2b22';
+        for (let i = -38; i < 40; i += 8) ctx.fillRect(x + i, y + 11, 5, 8);
+        ctx.fillStyle = '#1c1a15';
+        ctx.fillRect(x - 44, y - 22, 74, 9);
+        // hull
+        ctx.fillStyle = '#3f4433';
+        ctx.fillRect(x - 34, y - 12, 68, 24);
+        ctx.fillStyle = '#4c5240';
+        ctx.fillRect(x - 34, y - 12, 68, 6);
+        ctx.fillStyle = '#333827';
+        ctx.fillRect(x - 30, y + 6, 60, 5);
+        // turret
+        ctx.save();
+        ctx.translate(x + 2, y - 12);
+        ctx.rotate(-0.22);
+        ctx.fillStyle = '#454b39';
+        ctx.beginPath(); ctx.ellipse(0, 0, 17, 12, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#3a4030';
+        ctx.beginPath(); ctx.ellipse(0, -2, 13, 8, 0, 0, TAU); ctx.fill();
+        // the barrel, bent at the muzzle
+        ctx.strokeStyle = '#2c301f'; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(46, -4); ctx.stroke();
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(46, -4); ctx.lineTo(54, 2); ctx.stroke();
+        // hatch, hanging open
+        ctx.fillStyle = '#22261a';
+        ctx.beginPath(); ctx.ellipse(-4, -4, 6, 4, 0.5, 0, TAU); ctx.fill();
+        ctx.restore();
+        // rust and scorch
+        ctx.fillStyle = 'rgba(90,54,26,0.4)';
+        ctx.fillRect(x - 30, y - 6, 18, 10);
+        ctx.fillRect(x + 14, y - 8, 14, 8);
+        ctx.fillStyle = 'rgba(18,16,12,0.5)';
+        ctx.fillRect(x - 12, y - 10, 20, 6);
+        ctx.restore();
+      }
+    }
   }
 
   /** Crates the radio drops: a canopy on the way down, a red flare once landed. */

@@ -1127,6 +1127,39 @@ export class AudioEngine {
     this._heliDepth.gain.setTargetAtTime(0, t, 0.4);
   }
 
+  /**
+   * Wheels-up music: the fight drains out of the mix and a major-key phrase
+   * climbs where the sad piano used to be. One shot, about ten seconds --
+   * the ending screen wants something that sounds like morning.
+   */
+  victory() {
+    if (!this.ready || this.muted) return;
+    this.setMusic({ calm: 0.55, combat: 0, last: 0, elegy: 0.9 });
+    const t = this.t;
+    // the climb: A minor's root walks up into C major
+    [220, 261.6, 329.6, 392, 523.3, 659.3].forEach((f, i) => this._pianoNote(f, t + 0.4 + i * 0.34, 0.6));
+    // the arrival: the chord struck, low C under it
+    [261.6, 329.6, 392, 523.3].forEach((f, i) => this._pianoNote(f, t + 2.7 + i * 0.07, 0.55));
+    this._pianoNote(130.8, t + 2.7, 0.5);
+    // and a warm pad that swells and lets go over nine seconds
+    const ctx = this.ctx;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.09, t + 2.2);
+    g.gain.linearRampToValueAtTime(0.0001, t + 9.5);
+    g.connect(this.musicBus);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.7;
+    lp.connect(g);
+    for (const [f, det] of [[130.8, 0], [261.6, -4], [329.6, 5], [392, -3], [523.3, 4]]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
+      const og = ctx.createGain(); og.gain.value = f > 400 ? 0.18 : 0.3;
+      o.connect(og).connect(lp);
+      o.start(t); o.stop(t + 9.6);
+    }
+  }
+
   /** Wheels up: the run does not end with a bang but with a climb. */
   evacSting() {
     if (!this.ready || this.muted) return;
