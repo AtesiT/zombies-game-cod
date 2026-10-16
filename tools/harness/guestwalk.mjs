@@ -177,6 +177,7 @@ const trap = host.traps.list[0];
 visit(trap.floor ?? 0, trap.x, trap.y, 'trap');
 visit(2, host.map.floors[2].workbench.x, host.map.floors[2].workbench.y, 'workbench');
 
+
 // ---------------------------------------------------------------------------
 // 2. the guest's hands: knife and grenades must reach the host
 // ---------------------------------------------------------------------------
@@ -287,6 +288,21 @@ for (let i = 0; i < 240 && !clutterErr; i++) {
 }
 ok(clutterErr === '', 'the guest kept drawing while the clutter aged and went off', clutterErr);
 ok(guest.grenades.every((n) => n.pos && Number.isFinite(n.fuse)), 'grenades stayed drawable to the end');
+
+// ---------------------------------------------------------------------------
+// 3. the roof offers, last: they change the round, so they must not disturb
+//    the hand tests above
+// ---------------------------------------------------------------------------
+console.log('--- the roof offers ---');
+visit(2, 40.5 * 24, 12.5 * 24, 'radio');
+for (const sw of host.map.secretSwitches) sw.found = true;
+host.egg.found = 4;
+host.jumpToRound(25);
+for (let i = 0; i < 5; i++) { step(host, 1, 'host'); step(guest, 1, 'guest'); }
+visit(2, 18.5 * 24, 15.5 * 24, 'flare');
+host.heli.phase = 3;
+for (let i = 0; i < 30; i++) { step(host, 1, 'host'); step(guest, 1, 'guest'); }
+visit(2, 18.5 * 24 + 8, 15.5 * 24, 'heli');
 
 if (fails.length) {
   console.error(`\nGUESTWALK FAIL (${fails.length})`);

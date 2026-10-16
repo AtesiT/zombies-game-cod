@@ -33,7 +33,9 @@ const BUTTONS = [
   { id: 'swap', key: 'KeyQ', label: 'Q', colour: 0x4a5a6b },
   { id: 'sprint', key: 'ShiftLeft', label: '>>', colour: 0x6b5a3a },
   { id: 'grenade', key: 'KeyG', label: 'G', colour: 0x6b3a3a },
-  { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f },
+  // the medkit is the panic button: a bigger circle and a bigger letter,
+  // because it is the one you press with your eyes on the horde
+  { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f, scale: 1.25 },
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
   { id: 'molotov', key: 'KeyX', label: 'X', colour: 0x8a4a2a },
   { id: 'gas', key: 'KeyB', label: 'B', colour: 0x4a6b3a },
@@ -185,7 +187,10 @@ export class TouchControls {
     place(this.buttons.fire, F, F, pad, pad);
     // the rest, in a grid beside it
     for (const [id, [col, row]] of Object.entries(GRID)) {
-      place(this.buttons[id], B, B, pad + F + gap + col * (B + gap), pad + row * (B + gap));
+      const sc = BUTTONS.find((b) => b.id === id)?.scale ?? 1;
+      const BS = B * sc, off = (BS - B) / 2;   // a bigger button stays centred on its cell
+      place(this.buttons[id], BS, BS,
+        pad + F + gap + col * (B + gap) - off, pad + row * (B + gap) - off);
     }
     // the pause corner: off the physical corner of the glass. On a landscape
     // PWA phone the very corner is a notch, a rounded edge or nothing at all,
@@ -194,7 +199,7 @@ export class TouchControls {
     place(this.buttons.pause, Math.max(56, 48 * k), Math.max(40, 34 * k), pad + safe.r + 6, undefined);
     this.buttons.pause.style.top = `${pad + safe.t + 6}px`;
     for (const b of BUTTONS) {
-      this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * k}px`;
+      this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * (b.scale ?? 1) * k}px`;
     }
   }
 

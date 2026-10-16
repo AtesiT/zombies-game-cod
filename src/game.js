@@ -1,5 +1,5 @@
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
-import { T, buildArt } from './art.js';
+import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
@@ -224,6 +224,10 @@ const HELI_BEACONS = [
 // heli.phase: 0 off, 1 armed (four beacons lit, the board has a bearing),
 // 2 inbound, 3 landed, 4 wheels up, 5 gone (the run ended EVACUATED)
 const HELI_PHASE_NAMES = ['OFF', 'ARMED', 'INBOUND', 'LANDED', 'LEAVING', 'GONE'];
+// the roof radio station: scrap fixes it, then every second round a crate
+// comes down on the pad. It sits on the east roof block, clear of the pad.
+const ROOF_RADIO = { x: 40.5 * T, y: 12.5 * T, f: 2 };
+const ROOF_RADIO_PRICE = 25;
 // where the four dials hide, in the radio's careful words (switch order)
 const SWITCH_HINTS = [
   'the west end, by the stair that climbs',
@@ -344,7 +348,8 @@ export class Game {
     this.wx = { kind: null, t: 0, flash: 0, strikeT: 4, thunderAt: -1, wet: 0, drops: [], forecast: null };
     this._storySaid = {};   // the survivors outside say each thing only once
     // ---- the radio's night and the bird waiting behind it -------------------
-    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
+    this.roofRadio = { fixed: false };
     this.supplies = [];        // crates the radio drops: real, walkable loot
     this.radioNext = 9;        // the first broadcast: a fixed round, so booting
                                // a run never moves the dice the world rolls on
@@ -454,6 +459,8 @@ export class Game {
   rebuildFlow() {
     const live = (this.players ?? [this.player]).filter((pl) => pl && !pl.dead);
     if (!live.length) return;
+    this.map.trail = this.trail ?? null;
+    this.map.trailT = this.time;
     const floorOf = (pl) => pl.floor ?? this.map.floor;
     const done = new Set();
 
@@ -635,6 +642,7 @@ export class Game {
     });
     const entered = on && !rec.linkOn;
     rec.linkOn = on;
+    if (entered) this._noteLinkTrail(on);
     if (!entered || rec.linkCd > 0) return;
     rec.linkCd = 0.6;
     const other = on.a.floor === (p.floor ?? this.map.floor) ? on.b : on.a;
@@ -798,6 +806,7 @@ export class Game {
       pl.dead = false;
       pl.downed = false;
       pl.evac = false;
+      pl.evacVote = false;
       pl._deathTold = 0;
       pl._downTold = 0;
       if ((this.players?.length ?? 1) > 1 && pl !== this.player) {
@@ -836,6 +845,7 @@ export class Game {
     this.spawnTimer = 0.35;
     this._fusionCd = 6;
     this.workbench.onRoundStart();
+    if (this.roofRadio?.fixed && n % 2 === 0 && !this.rangeMode) this.dropRoofSupply();
     if (plan.dog) {
       this.bannerShow(`ROUND ${n}`, 'something is out there', { dur: 2.6, big: true, colour: '#e0705a' });
       audio.dogRound();
@@ -851,6 +861,7 @@ export class Game {
     // bearing, without them it apologises -- either way it has more to say
     // than the old story beat, so that one only speaks if the board stayed
     // silent (the bird is already spoken for, or this is the range)
+    this._heliArmCheck();          // 25 + four dials: the pad arms with the round
     if (n === 30 && !this._heliRoundStart(n)) this.sayStory(30);
     if (n >= 10) this.achievements.unlock('round_10');
     if (n >= 20) this.achievements.unlock('round_20');
@@ -867,7 +878,6 @@ export class Game {
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
     this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
     audio.roundSting(false);
-    this._heliRoundEnd();
   }
 
   get zombiesLeft() {
@@ -1436,12 +1446,7 @@ export class Game {
     if (this.rangeMode) return false;
     const H = this.heli;
     if (n !== 30 || H.phase !== 0) return false;
-    if (this.egg?.complete) {
-      H.phase = 1; H.t = 0;
-      this._speak('Four beacons, four lights -- we have a bearing on you. The bird wants three quiet rounds off the deck. Hold the roof and it is yours.');
-      this.bannerShow('A BEARING AT LAST', 'three rounds on the roof, then the bird lands', { dur: 3.8, colour: '#f0d98a' });
-      return true;
-    }
+    if (this.egg?.complete) return false;   // the arm check in _heliStep owns it now
     if (!H.sorry) {
       H.sorry = true;
       this._speak('The bird was fuelled and ready. Then the board went dark -- too few beacons, no bearing on this house. Find the four dials, survivor. We are sorry.');
@@ -1451,31 +1456,16 @@ export class Game {
   }
 
   /**
-   * The roof tally: a round counts toward the bird only if its last seconds
-   * were spent off the deck. Come down and the count starts over -- the crew
-   * cannot fish anybody out of the yard.
+   * Round 25 with four lit dials arms the pad -- no calendar ritual, no three
+   * rounds of holding the roof. Whatever order you did it in, this notices.
    */
-  _heliRoundEnd() {
+  _heliArmCheck() {
     const H = this.heli;
-    if (this.rangeMode || (H.phase !== 1 && H.phase !== 2)) return;
-    const onRoof = (this.players ?? [this.player])
-      .some((pl) => pl && !pl.dead && (pl.floor ?? 0) === HELI_PAD.f);
-    if (onRoof) {
-      H.roofRounds++;
-      if (H.roofRounds >= 3 && H.phase === 1) {
-        H.phase = 2; H.t = 0;
-        this._speak('That is three. Bird is inbound over the west trees -- it comes in loud and low, keep your head down.');
-        this.bannerShow('INBOUND', 'the bird is coming in over the west trees', { dur: 3.6, colour: '#f0d98a' });
-        this.shake(3, 1.2);
-      } else if (H.phase === 1) {
-        this._speak(H.roofRounds === 1
-          ? 'One round off the deck and your beacons still burn. The crew sees you. Two more.'
-          : 'Two. Hold one more round on that roof and we are coming for you.');
-      }
-    } else if (H.roofRounds > 0) {
-      H.roofRounds = 0;
-      this._speak('You came off the roof. The bird cannot pick you out of the yard -- get back up there and hold.');
-    }
+    if (this.rangeMode || H.phase !== 0) return;
+    if (!this.egg?.complete || this.round < 25) return;
+    H.phase = 1; H.t = 0;
+    this._speak('Four beacons lit and the round counter past twenty-five -- we have a bearing and a bird. There is a flare locker at the centre of the pad. Light it: green smoke is what the crew homes on.');
+    this.bannerShow('THE PAD IS ARMED', 'light the green flare at the centre of the pad', { dur: 4.4, colour: '#f0d98a' });
   }
 
   /**
@@ -1487,13 +1477,30 @@ export class Game {
     const H = this.heli;
     const auth = !this.net?.playing || this.net.isHost;
     H.t += dt;
+    this._heliArmCheck();
     if (H.phase === 2) {
-      this._heliSnd = true;
-      audio.heli(Math.min(1, 0.25 + H.t / 9));
-      if (H.t >= 9 && auth) {
+      // two minutes of green smoke: the bird is a dot for most of it, then
+      // the smoke thins as the wings come in over the west trees
+      const thin = H.t < 108 ? 1 : Math.max(0, (116 - H.t) / 8);
+      if (H.flare && thin > 0 && Math.random() < dt * 26 * thin) {
+        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1);
+      }
+      this._heliSnd = H.t > 108;
+      if (this._heliSnd) audio.heli(Math.min(1, 0.25 + (H.t - 108) / 12));
+      if (H.t >= 60 && !H._said60 && auth) {
+        H._said60 = 1;
+        this._speak('One minute out. That smoke is on our scope the whole way in -- keep the pad clear.');
+      }
+      if (H.t >= 108 && !H._said108 && auth) {
+        H._said108 = 1;
+        this._speak('Smoke is thinning, wings on the west trees -- it comes in loud and low, keep your head down.');
+        this.bannerShow('INBOUND', 'the smoke clears, the bird comes in', { dur: 3.6, colour: '#f0d98a' });
+        this.shake(3, 1.2);
+      }
+      if (H.t >= 120 && auth) {
         H.phase = 3; H.t = 0;
         this.shake(5, 0.9);
-        this.bannerShow('THE BIRD IS DOWN', 'walk over and press E to get in', { dur: 3.6, colour: '#f0d98a' });
+        this.bannerShow('THE BIRD IS DOWN', 'walk over and press E to vote yourself aboard', { dur: 3.6, colour: '#f0d98a' });
       }
     } else if (H.phase === 3) {
       this._heliSnd = true;
@@ -1549,26 +1556,79 @@ export class Game {
   evacuate(p) {
     const H = this.heli;
     if (this.rangeMode || H.phase !== 3) return;
-    if (this.net?.playing && !this.net.isHost) { if (p) p.evac = true; return; }
-    if (p) p.evac = true;
+    if (this.net?.playing && !this.net.isHost) {
+      // the guest's E already travelled over the wire and the host ran this
+      // very method on this very body (net._remoteInteract); the flip here is
+      // only so the pad answers instantly -- the snapshot is the authority
+      p.evacVote = !p.evacVote;
+      return;
+    }
+    // E at the bird is a VOTE, not a seat: a hand raised can be taken back,
+    // and nobody is bundled aboard until the room has actually agreed
+    p.evacVote = !p.evacVote;
     const alive = (this.players ?? []).filter((o) => o && !o.dead);
-    const waiting = alive.filter((o) => !o.evac);
-    if (alive.length > 1 && waiting.length) {
-      this.bannerShow(`${alive.length - waiting.length}/${alive.length} ABOARD`,
-        `${waiting.map((o) => o.name).join(', ')} still on the deck`,
-        { dur: 2.4, colour: '#f0d98a' });
+    const yes = alive.filter((o) => o.evacVote).length;
+    const need = Math.floor(alive.length / 2) + 1;      // strictly more than half
+    if (alive.length > 1 && yes < need) {
+      const nay = alive.filter((o) => !o.evacVote).map((o) => o.name).join(', ');
+      this.bannerShow(`EVAC VOTE ${yes}/${alive.length}`,
+        `${p.evacVote ? 'you are in' : 'you are out'} -- ${need} hands needed${nay ? `, ${nay} not yet` : ''}`,
+        { dur: 2.6, colour: '#f0d98a' });
+      audio.deny();
       return;
     }
     H.phase = 4; H.t = 0;
     audio.evacSting();
     audio.victory();
     this.shake(6, 1.4);
-    this.bannerShow('WHEELS UP', 'you are leaving this night alive', { dur: 3.4, colour: '#f0d98a' });
+    this.bannerShow('WHEELS UP', 'the room agreed -- everybody aboard', { dur: 3.4, colour: '#f0d98a' });
     this._speak('We have them. Deck is clear, going up. Somebody put the kettle on.');
     this.achievements.unlock('leaving_tonight');
     // everybody still standing came aboard: from here on they are not on the
     // roof any more -- they are in the cabin, watching the house shrink
     for (const pl of this.players ?? []) { if (pl && !pl.dead) pl.evac = true; }
+  }
+
+  /** Green smoke over the roof: the two-minute burn begins. */
+  _lightFlare(p) {
+    const H = this.heli;
+    if (this.rangeMode || H.phase !== 1) return;
+    H.phase = 2; H.t = 0; H.flare = true; H._said60 = 0; H._said108 = 0;
+    this.shake(3, 0.8);
+    audio.powerUp();
+    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1);
+    this.bannerShow('FLARE LIT', 'green smoke over the roof -- the bird lands in 2:00', { dur: 4.2, colour: '#8fdc6a' });
+    this._speak('Green over the roof, we see it. Two minutes out -- keep the pad clear and your heads down.');
+    this.net?.emit('flare', {});
+  }
+
+  /**
+   * The roof radio: scrap now, supply crates every second round forever.
+   * It is a roof fixture from night one, dead silent until somebody pays.
+   */
+  _fixRoofRadio(p) {
+    if (this.roofRadio?.fixed) return;
+    if ((p.salvage ?? 0) < ROOF_RADIO_PRICE) {
+      this.popups.add(p.pos.x, p.pos.y - 34, `NEED ${ROOF_RADIO_PRICE} SCRAP`, '#9fd0e0', 12);
+      return;
+    }
+    p.salvage -= ROOF_RADIO_PRICE;
+    this.roofRadio.fixed = true;
+    audio.powerUp();
+    this.bannerShow('THE ROOF RADIO LIVES', 'a crate will fall every second round', { dur: 3.6, colour: '#9fd0e0' });
+    this._speak('Somebody got the roof set talking again. Mark it: every second round from here, a crate comes down on your pad.');
+    this.net?.emit('radiofix', {});
+  }
+
+  /** The crate the roof radio called in: it lands on the pad, under canopy. */
+  dropRoofSupply() {
+    this.supplies.push({
+      x: HELI_PAD.x + randRange(-46, 46),
+      y: HELI_PAD.y + randRange(-30, 30),
+      f: HELI_PAD.f, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
+    });
+    this.bannerShow('SUPPLY RUN', 'the roof radio called it in -- crate on the pad', { dur: 2.8, colour: '#f2e26a' });
+    audio.radioStart();
   }
 
   /** The bird is a star over the west trees: the run ends, the board remembers. */
@@ -1616,7 +1676,8 @@ export class Game {
     const pad = HELI_PAD;
     let x = pad.x, y = pad.y, scale = 1, alpha = 1, light = 0;
     if (H.phase === 2) {
-      const k = Math.min(1, H.t / 9);
+      const k = Math.max(0, Math.min(1, (H.t - 111) / 9));
+      if (k <= 0) return { x: pad.x, y: pad.y, scale: 0.35, alpha: 0, light: 0 };
       x = pad.x - (1 - k) * 1500;
       y = pad.y - (1 - k) * 520;
       scale = 0.35 + k * 0.65;      // altitude reads as size from straight up
@@ -1640,7 +1701,7 @@ export class Game {
     this.zombies = [];
     this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
     this.fires = []; this.gases = []; this.rifts = [];
-    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
     this.supplies = [];
     audio.heliOff();
     this.respawnQueue = 0;
@@ -1720,6 +1781,9 @@ export class Game {
         }
         this.shake(9, 0.5);
         this.explosionLights.push({ x: p.pos.x, y: p.pos.y, r: 900, life: 0.7, max: 0.7, f: this.fxFloor });
+        // the white-out is the loudest picture in the game: a guest used to
+        // read about it and see nothing
+        this.netEmit('boom', { x: Math.round(p.pos.x), y: Math.round(p.pos.y), r: 220, f: this.fxFloor });
         this.bannerShow('NUKE', n ? `${n} down` : 'the air crackles', { dur: 2.4, colour: '#8fe05a' });
         audio.nuke();
         break;
@@ -1771,6 +1835,8 @@ export class Game {
     this.shake(11, 0.42);
     this.explosionLights.push({ x, y, r: r * 2.4, life: 0.4, max: 0.4, f: this.fxFloor });
     this.splat(x, y, r * 0.5, 0.25, '#1a1512');
+    // the guest used to watch a grenade go off in silence: no flash, no shake
+    this.netEmit('boom', { x: Math.round(x), y: Math.round(y), r: Math.round(r), f: this.fxFloor });
   }
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
@@ -2193,6 +2259,14 @@ export class Game {
       const d = dist(p.pos.x, p.pos.y, HELI_PAD.x, HELI_PAD.y);
       if (d < 58) offer({ type: 'heli', d, price: 0, affordable: true });
     }
+    if (this.heli.phase === 1 && !this.rangeMode && (p.floor ?? 0) === HELI_PAD.f) {
+      const d = dist(p.pos.x, p.pos.y, HELI_PAD.x, HELI_PAD.y);
+      if (d < 46) offer({ type: 'flare', d, price: 0, affordable: true });
+    }
+    if (!this.rangeMode && !this.roofRadio?.fixed && (p.floor ?? 0) === ROOF_RADIO.f) {
+      const d = dist(p.pos.x, p.pos.y, ROOF_RADIO.x, ROOF_RADIO.y);
+      if (d < 40) offer({ type: 'radio', d, price: ROOF_RADIO_PRICE, affordable: (p.salvage ?? 0) >= ROOF_RADIO_PRICE });
+    }
 
     if (this.map.secretDoorOpen) {
       for (const l of this.map.secretLoot) {
@@ -2211,6 +2285,8 @@ export class Game {
     if (!it || !p || p.dead || p.downed) return;
 
     if (it.type === 'heli') { this.evacuate(p); return; }
+    if (it.type === 'flare') { this._lightFlare(p); return; }
+    if (it.type === 'radio') { this._fixRoofRadio(p); return; }
 
     if (it.type === 'wallbuy') {
       const def = WEAPONS[it.weapon];
@@ -2411,9 +2487,9 @@ export class Game {
       if (this.egg.found >= 4 && !this._beaconTold) {
         this._beaconTold = 1;
         this.bannerShow('FOUR BEACONS LIT',
-          'at round 30 the board gives a bearing -- then hold the roof three rounds',
+          'reach round 25 and the pad arms -- then light the green flare',
           { dur: 4.2, colour: '#9fd0e0' });
-        this._speak('Four beacons on the deck and still counting. Board cuts the bearing at round thirty. Until then the roof is just a roof.');
+        this._speak('Four beacons on the deck and still counting. Get to round twenty-five and the board cuts a bearing -- then light the green flare on the pad and hold on for two minutes.');
       }
       if (this.egg.complete && this.egg.state === 'idle') {
         this.egg.start();
@@ -2488,6 +2564,7 @@ export class Game {
     if (!entered || this._linkCd > 0) return;
     const other = on.a.floor === this.map.floor ? on.b : on.a;
     const to = { x: (other.tx + 0.5) * T, y: (other.ty + 0.5) * T };
+    this._noteLinkTrail(on);
     this.goToFloor(other.floor, to, on);
   }
 
@@ -2507,6 +2584,7 @@ export class Game {
 
   goToFloor(n, to, link) {
     const from = { x: this.player.pos.x, y: this.player.pos.y };
+    this._noteLinkTrail(link);
     this.map.setFloor(n);
     this.player.floor = n;
     this.useFloor(n);
@@ -2536,6 +2614,23 @@ export class Game {
     this.floorsVisited?.add(n);
     if (this.floorsVisited?.size >= 3) this.achievements.unlock('tourist');
     this.rebuildFlow();
+  }
+
+  /**
+   * The horde reads your footsteps: every hatch you drop through and every
+   * window you climb goes into this trail, and the flow field prefers it for
+   * a while -- so fleeing through the east hatch does not send them west.
+   */
+  noteTrail(floor, tx, ty) {
+    const tr = this.trail ?? (this.trail = new Map());
+    tr.set(`${floor}:${ty * this.map.w + tx}`, this.time);
+    if (tr.size > 96) for (const [k, t] of tr) if (this.time - t > 60) tr.delete(k);
+  }
+
+  _noteLinkTrail(link) {
+    if (!link) return;
+    this.noteTrail(link.a.floor, link.a.tx, link.a.ty);
+    this.noteTrail(link.b.floor, link.b.tx, link.b.ty);
   }
 
   onPlayerTeleport(from, to) {
@@ -2841,9 +2936,10 @@ export class Game {
     ];
   }
 
-  /** Do the thing on that row. */
-  _debugRun(id) {
-    const p = this.player;
+  /** Do the thing on that row. `remote` is a guest's body: the row runs on
+   *  the host, but the buff belongs to whoever pressed it. */
+  _debugRun(id, remote) {
+    const p = remote ?? this.player;
     if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
     switch (id) {
       case 'where':
@@ -2865,8 +2961,9 @@ export class Game {
         break;
       case 'callbird':
         if (this.heli.phase !== 4) {
-          this.heli.phase = 2; this.heli.t = 0; this.heli.roofRounds = 3;
-          this.bannerShow('DEBUG', 'bird inbound to the roof', { dur: 1.6, colour: '#8fa8bd' });
+          this.heli.phase = 2; this.heli.t = 0; this.heli.flare = true;
+          this.heli._said60 = 0; this.heli._said108 = 0;
+          this.bannerShow('DEBUG', 'flare burning, bird inbound', { dur: 1.6, colour: '#8fa8bd' });
         }
         break;
       case 'supply':
@@ -2877,7 +2974,7 @@ export class Game {
       case 'ammo': this.debug.ammo = !this.debug.ammo; break;
       case 'paths': this.debug.paths = !this.debug.paths; break;
       case 'points':
-        this.addPoints(5000, p.pos.x, p.pos.y - 26, '#f0d98a');
+        this.addPoints(5000, p.pos.x, p.pos.y - 26, '#f0d98a', p);
         break;
       case 'perks':
         this.powerOn = true;
@@ -2903,6 +3000,18 @@ export class Game {
         this.flowTimer = 0;
         break;
       case 'floor': {
+        if (remote) {
+          // a guest's body hops the link itself; goToFloor is the host's chair
+          const n = ((p.floor ?? 0) + 1) % this.map.floors.length;
+          const lk = (this.map.links ?? []).find((l) => l.a.floor === n || l.b.floor === n);
+          if (!lk) break;
+          const dest = lk.a.floor === n ? lk.a : lk.b;
+          p.floor = n;
+          p.pos.x = (dest.tx + 0.5) * T; p.pos.y = (dest.ty + 0.5) * T;
+          p.vel.x = 0; p.vel.y = 0;
+          this.rebuildFlow();
+          break;
+        }
         const n = (this.map.floor + 1) % 3;
         const lk = (this.map.links ?? []).find((l) => l.a.floor === n)
           ?? (this.map.links ?? []).find((l) => l.b.floor === n);
@@ -3166,13 +3275,22 @@ export class Game {
     if (this.input) this.input.menuLock = this.craftOpen;
     this._fxOn(this.player);
     this.player.update(dt, this, this.input);
-    if (this.debug.ammo) {
-      for (const id in this.player.loadout) {
-        const sl = this.player.loadout[id], w = WEAPONS[id];
+    // footprints through the openings: whichever window or hatch a living body
+    // is standing in goes on the trail the horde reads when it paths to you
+    for (const pl of this.players ?? []) {
+      if (!pl || pl.dead) continue;
+      const f = pl.floor ?? this.map.floor;
+      const tx = Math.floor(pl.pos.x / T), ty = Math.floor(pl.pos.y / T);
+      if (this.map.tileOn(f, tx, ty) === TILE.WINDOW) this.noteTrail(f, tx, ty);
+    }
+    for (const pl of this.players ?? [this.player]) {
+      if (!pl || !(this.debug.ammo || pl._dbgAmmo)) continue;
+      for (const id in pl.loadout) {
+        const sl = pl.loadout[id], w = WEAPONS[id];
         if (!sl.owned || !w) continue;
         sl.mag = w.mag; sl.reserve = w.maxReserve;
       }
-      this.player.grenades = Math.max(this.player.grenades, 4);
+      pl.grenades = Math.max(pl.grenades ?? 0, 4);
     }
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
 
@@ -3709,7 +3827,8 @@ export class Game {
     this.traps = new Traps();
     // the roof finale belongs to the campaign night it was earned in: a new
     // map (including the range) never inherits a bird, a tally or a crate
-    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
+    this.roofRadio = { fixed: false };
     this.supplies = [];
     this._heliSnd = false;
     audio.heliOff();
@@ -4246,6 +4365,8 @@ export class Game {
     if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
       this.drawHeliPad(ctx);
       this.drawRoofBeacons(ctx);
+      this.drawRoofFlare(ctx);
+      this.drawRoofRadio(ctx);
       this.drawHeli(ctx);
     }
     this.drawPowerups(ctx);
@@ -5199,6 +5320,102 @@ export class Game {
     ctx.restore();
   }
 
+  /**
+   * The flare locker at the pad centre, and the green burn itself: a glowing
+   * pool with a smoke column the crew can home on from the west trees.
+   */
+  drawRoofFlare(ctx) {
+    const H = this.heli;
+    const { x, y } = HELI_PAD;
+    if (!this._vis(x, y, 90)) return;
+    ctx.save();
+    if (H.phase === 1) {
+      // the locker: a small green-striped box waiting for a hand
+      ctx.fillStyle = '#2c3a30';
+      ctx.fillRect(x - 7, y - 6, 14, 12);
+      ctx.strokeStyle = '#5ae06a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - 6.5, y - 5.5, 13, 11);
+      const blink = 0.5 + 0.5 * Math.sin(this.time * 4);
+      ctx.fillStyle = `rgba(120,230,130,${0.35 + 0.5 * blink})`;
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+    } else if (H.phase === 2 && H.flare) {
+      const thin = H.t < 108 ? 1 : Math.max(0.15, (116 - H.t) / 8);
+      const pulse = 0.75 + 0.25 * Math.sin(this.time * 5.2);
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 46 * thin + 10);
+      g.addColorStop(0, `rgba(140,240,140,${0.5 * pulse * thin})`);
+      g.addColorStop(0.55, `rgba(70,190,90,${0.28 * pulse * thin})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 46 * thin + 10, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      // the stick itself, hissing on the deck
+      ctx.fillStyle = '#3a4038';
+      ctx.fillRect(x - 2, y - 3, 4, 7);
+      ctx.fillStyle = `rgba(160,255,160,${0.8 * pulse})`;
+      ctx.beginPath(); ctx.arc(x, y - 4, 2.6, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** The roof radio station: a dead shack until somebody pays the scrap. */
+  drawRoofRadio(ctx) {
+    const { x, y } = ROOF_RADIO;
+    if ((this.map.floor ?? 0) !== ROOF_RADIO.f) return;
+    if (!this._vis(x, y, 90)) return;
+    const fixed = !!this.roofRadio?.fixed;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(x, y + 12, 16, 5, 0, 0, TAU); ctx.fill();
+    // the shack
+    ctx.fillStyle = fixed ? '#3b4148' : '#33363b';
+    ctx.fillRect(x - 14, y - 12, 28, 24);
+    ctx.fillStyle = fixed ? '#4b525b' : '#3d4046';
+    ctx.fillRect(x - 14, y - 16, 28, 5);
+    ctx.strokeStyle = '#14171c';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 14.5, y - 16.5, 29, 28);
+    // the mast: bent while it is broken, straight and guy-wired once fixed
+    ctx.strokeStyle = fixed ? '#8b939c' : '#6a6f76';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y - 16);
+    if (fixed) ctx.lineTo(x + 8, y - 40);
+    else { ctx.lineTo(x + 11, y - 28); ctx.lineTo(x + 16, y - 33); }
+    ctx.stroke();
+    if (fixed) {
+      const blink = 0.5 + 0.5 * Math.sin(this.time * 3.4);
+      ctx.fillStyle = `rgba(120,230,130,${0.4 + 0.6 * blink})`;
+      ctx.beginPath(); ctx.arc(x + 8, y - 41, 2.2, 0, TAU); ctx.fill();
+      // the dish turns, slowly, looking for the bird
+      ctx.save();
+      ctx.translate(x - 6, y - 20);
+      ctx.rotate(Math.sin(this.time * 0.7) * 0.5);
+      ctx.fillStyle = '#9aa3ad';
+      ctx.beginPath(); ctx.ellipse(0, 0, 7, 3, 0, 0, TAU); ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = '#8fe05a';
+      ctx.fillRect(x - 10, y - 6, 3, 3);
+    } else {
+      ctx.fillStyle = '#5a2f2a';
+      ctx.fillRect(x - 10, y - 6, 3, 3);
+      // a dead set sparks now and then, so the roof feels like a job, not a prop
+      if (Math.sin(this.time * 1.7) > 0.985) {
+        ctx.strokeStyle = 'rgba(200,230,255,0.7)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 4, y - 2); ctx.lineTo(x - 1, y + 2); ctx.lineTo(x - 5, y + 4);
+        ctx.stroke();
+      }
+    }
+    ctx.font = 'bold 7px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = fixed ? '#8fe05a' : '#6f6a5c';
+    ctx.fillText(fixed ? 'ROOF RADIO' : 'ROOF RADIO (DEAD)', x, y + 22);
+    ctx.restore();
+  }
+
   /** Four corner lights, one per dial downstairs: red and green, slow blink. */
   drawRoofBeacons(ctx) {
     const sws = this.map.floors?.[0]?.secretSwitches ?? [];
@@ -5317,20 +5534,21 @@ export class Game {
         ctx.save();
         // the ground around it: scorched earth, mud and wheel ruts, wide
         ctx.fillStyle = 'rgba(52,40,27,0.9)';
-        ctx.beginPath(); ctx.ellipse(x, y + 2, 62, 30, 0, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x, y + 2, 112, 54, 0, 0, TAU); ctx.fill();
         ctx.fillStyle = 'rgba(36,28,19,0.7)';
-        ctx.beginPath(); ctx.ellipse(x - 6, y + 4, 44, 20, 0, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x - 10, y + 6, 80, 36, 0, 0, TAU); ctx.fill();
         ctx.fillStyle = 'rgba(30,24,16,0.5)';
-        for (const [mx, my, mr] of [[-58, 10, 12], [52, -12, 14], [40, 16, 10], [-40, -18, 9]]) {
+        for (const [mx, my, mr] of [[-100, 18, 20], [90, -20, 24], [70, 28, 17], [-70, -30, 15], [10, 44, 16]]) {
           ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
         }
         ctx.strokeStyle = 'rgba(28,22,15,0.55)';
-        ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(x - 70, y + 16); ctx.quadraticCurveTo(x - 20, y + 22, x + 30, y + 18); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(x - 66, y + 24); ctx.quadraticCurveTo(x - 10, y + 30, x + 40, y + 26); ctx.stroke();
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(x - 120, y + 28); ctx.quadraticCurveTo(x - 34, y + 38, x + 52, y + 32); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x - 112, y + 42); ctx.quadraticCurveTo(x - 16, y + 52, x + 68, y + 46); ctx.stroke();
         // body: hood, cabin, boot -- a sedan silhouette, not a brick
         ctx.translate(x, y);
         ctx.rotate(-0.06);
+        ctx.scale(2, 2);                 // the wrecks read twice as big now
         ctx.fillStyle = '#191512';                       // shadow under it
         ctx.beginPath(); ctx.ellipse(0, 4, 34, 13, 0, 0, TAU); ctx.fill();
         ctx.fillStyle = '#5a3524';                       // rusted paint
@@ -5378,22 +5596,23 @@ export class Game {
       if (this._vis(x, y, 120)) {
         ctx.save();
         ctx.fillStyle = 'rgba(52,40,27,0.9)';
-        ctx.beginPath(); ctx.ellipse(x, y, 70, 36, 0, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x, y, 124, 62, 0, 0, TAU); ctx.fill();
         ctx.fillStyle = 'rgba(36,28,19,0.7)';
-        ctx.beginPath(); ctx.ellipse(x + 4, y + 2, 52, 26, 0, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(x + 6, y + 4, 92, 44, 0, 0, TAU); ctx.fill();
         ctx.fillStyle = 'rgba(30,24,16,0.5)';
-        for (const [mx, my, mr] of [[-64, 16, 14], [58, 20, 12], [-50, -22, 10], [62, -16, 9]]) {
+        for (const [mx, my, mr] of [[-110, 28, 24], [100, 34, 20], [-86, -38, 17], [106, -28, 15], [-20, 56, 18]]) {
           ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
         }
         // the track it threw: a bent steel band in the mud beside it
         ctx.strokeStyle = '#1c1e22';
-        ctx.lineWidth = 6;
-        ctx.beginPath(); ctx.moveTo(x - 58, y + 26); ctx.quadraticCurveTo(x - 30, y + 34, x + 2, y + 30); ctx.stroke();
+        ctx.lineWidth = 9;
+        ctx.beginPath(); ctx.moveTo(x - 100, y + 46); ctx.quadraticCurveTo(x - 52, y + 60, x + 4, y + 52); ctx.stroke();
         ctx.strokeStyle = '#33363c';
-        ctx.lineWidth = 2;
-        for (let i = 0; i < 7; i++) ctx.fillRect(x - 56 + i * 8, y + 27 + Math.sin(i) * 3, 3, 2);
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 9; i++) ctx.fillRect(x - 96 + i * 12, y + 48 + Math.sin(i) * 4, 4, 3);
         ctx.translate(x, y);
         ctx.rotate(0.10);
+        ctx.scale(2, 2);                 // twice the tank, twice the mud around it
         ctx.fillStyle = '#14161a';                       // shadow
         ctx.beginPath(); ctx.ellipse(0, 4, 40, 18, 0, 0, TAU); ctx.fill();
         // tracks: the one still on, with its road wheels

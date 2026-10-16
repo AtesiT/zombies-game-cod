@@ -391,8 +391,11 @@ export class Net {
       const id = String(m.id ?? '').slice(0, 32);
       if (!g2) return;
       if (id === 'god') { peer.player.god = !peer.player.god; return; }
+      if (id === 'ammo') { peer.player._dbgAmmo = !peer.player._dbgAmmo; return; }
       const known = g2.debugRows?.().some?.((r) => r.id === id);
-      if (known) g2._debugRun(id);
+      // the body override matters: a guest's +5000 used to land in the HOST's
+      // pocket, because the row ran against whoever was sitting at the keyboard
+      if (known) g2._debugRun(id, peer.player);
       return;
     }
     if (m.m === 'bye') { this._dropPeer(from); return; }
@@ -749,7 +752,8 @@ export class Net {
       wx: [g.wx?.kind ?? '', r2(g.wx?.flash ?? 0), r2(g.wx?.wet ?? 0)],
       // ---- the roof ending: what a guest must DRAW (beacons read the dial
       // states below, the bird reads its phase, the crates read their timers)
-      he: [g.heli?.phase ?? 0, r2(g.heli?.t ?? 0), g.heli?.roofRounds ?? 0],
+      he: [g.heli?.phase ?? 0, r2(g.heli?.t ?? 0), g.heli?.roofRounds ?? 0,
+        g.heli?.flare ? 1 : 0, g.roofRadio?.fixed ? 1 : 0],
       sc: (g.supplies ?? []).slice(0, 4).map((s) => [
         r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
       ]),
@@ -781,6 +785,8 @@ export class Net {
       g.heli.phase = s.he[0] ?? 0;
       g.heli.t = s.he[1] ?? 0;
       g.heli.roofRounds = s.he[2] ?? 0;
+      g.heli.flare = !!s.he[3];
+      if (g.roofRadio) g.roofRadio.fixed = !!s.he[4];
     }
     if (s.sc && g.supplies) {
       g.supplies = s.sc.filter((e) => !e[7]).map((e) => ({
@@ -1071,6 +1077,16 @@ export class Net {
         g.particles?.spark?.(m.x0, m.y0, m.a ?? 0, 3, '#ffd98a');
         g.particles?.smoke?.(m.x0, m.y0, 2);
         break;
+      case 'boom':
+        // a grenade somewhere in the room: the flash, the shake, the smoke --
+        // all of it used to live only on the host's screen
+        if (this.isHost) break;
+        g.explosionLights?.push?.({ x: m.x, y: m.y, r: (m.r ?? 60) * 2.4, life: 0.4, max: 0.4, f: m.f ?? 0 });
+        g.shake?.(9, 0.42);
+        audio.explosion?.();
+        g.particles?.smoke?.(m.x, m.y - 6, 6);
+        g.particles?.spark?.(m.x, m.y, -Math.PI / 2, 9, '#f6c04a');
+        break;
       case 'hit':
         g.particles?.blood?.(m.x, m.y, m.a ?? 0, m.head ? 8 : 5);
         // the marker belongs to the hands that squeezed the trigger, not to
@@ -1081,12 +1097,6 @@ export class Net {
         g.splat?.(m.x, m.y, 10, 0.5);
         g.particles?.chunk?.(m.x, m.y, Math.random() * 6.28, 7);
         if (m.pts) g.popups?.add?.(m.x, m.y - 24, `+${m.pts}`, m.head ? '#f0d98a' : '#e6dcc2', 11);
-        break;
-      case 'boom':
-        g.shake?.(6, 0.3);
-        g.explosionLights?.push?.({ x: m.x, y: m.y, r: m.r ?? 120, life: 0.3, max: 0.3, colour: '#f0a040' });
-        g.particles?.smoke?.(m.x, m.y, 12);
-        audio.explode?.();
         break;
       case 'banner':
         g.bannerShow?.(m.title, m.sub, { dur: m.dur ?? 2.4, colour: m.colour });

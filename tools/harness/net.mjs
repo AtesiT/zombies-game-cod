@@ -274,6 +274,45 @@ const one = solo.roundPlan(5).total;
 const two = host.roundPlan(5).total;
 ok(two > one, `two players get ${two} walkers, one gets ${one}`);
 
+// ---- 11b. a guest's debug panel buffs the guest, not the host --------------
+{
+  const hp0 = host.player.points;
+  const mp0 = mate.points;
+  guest.net.send(guest.net.hostId, { m: 'dbg', id: 'points' });   // what the menu does
+  for (let i = 0; i < 30; i++) { step(host, 1); step(guest, 1); }
+  ok(mate.points === mp0 + 5000, `the guest's +5000 paid the guest ${mate.points - mp0}`);
+  ok(host.player.points === hp0, `the guest's +5000 paid the host ${host.player.points - hp0}`);
+
+  guest.net.send(guest.net.hostId, { m: 'dbg', id: 'perks' });
+  for (let i = 0; i < 30; i++) { step(host, 1); step(guest, 1); }
+  ok((mate.perks?.size ?? 0) > 0, 'EVERY PERK on a guest buffed nobody');
+  ok((host.player.perks?.size ?? 0) === 0, 'EVERY PERK on a guest buffed the host');
+
+  guest.net.send(guest.net.hostId, { m: 'dbg', id: 'ammo' });
+  mate.loadout.m1911.mag = 1;
+  for (let i = 0; i < 10; i++) { step(host, 1); step(guest, 1); }
+  const w1911 = (await import(SRC + '/weapons.js')).WEAPONS.m1911;
+  ok(mate.loadout.m1911.mag === w1911.mag, `INFINITE AMMO left the guest's magazine at ${mate.loadout.m1911.mag}`);
+  ok(host.player.loadout.m1911.mag !== w1911.mag || host.player.loadout.m1911.mag > 1,
+    'INFINITE AMMO on a guest topped up the host as well');
+  guest.net.send(guest.net.hostId, { m: 'dbg', id: 'ammo' });    // put it back
+  // and the badge stays personal: god arms the guest's body only
+  guest.net.send(guest.net.hostId, { m: 'dbg', id: 'god' });
+  for (let i = 0; i < 10; i++) { step(host, 1); step(guest, 1); }
+  ok(mate.god === true && host.player.god !== true, 'GOD MODE on a guest armed the host');
+}
+
+// ---- 11c. the guest sees the grenade go off --------------------------------
+{
+  const lights0 = guest.explosionLights.length;
+  const booms0 = (guest._boomCount = guest._boomCount ?? 0);
+  host.explosion(host.player.pos.x + 30, host.player.pos.y, 90);
+  for (let i = 0; i < 20; i++) { step(host, 1); step(guest, 1); }
+  ok(guest.explosionLights.length > lights0 || guest.shakeT > 0,
+    'the guest watched a grenade go off with no flash and no shake');
+  ok(guest.explosionLights.length >= lights0, 'the guest flash arrived with a negative count');
+}
+
 // ---- 12. solo still ends the way it always did ----------------------------
 solo.begin();
 solo.player.hp = 1;

@@ -191,6 +191,7 @@ export class HUD {
     this._health(ctx, game, w, h);
     this._perks(ctx, game, w, h);
     this._timers(ctx, game, w, h);
+    this._heliEta(ctx, game, w, h);
     this._scrap(ctx, game, w, h);
     // While a Jammer is close the picture it takes away is everything that
     // thinks for you: the prompts, the prices, the little map in the corner.
@@ -455,6 +456,26 @@ export class HUD {
       ctx.restore();
       y += 18;
     }
+  }
+
+  /** While the flare burns, the roof carries a countdown everybody can read. */
+  _heliEta(ctx, game, w, h) {
+    const H = game.heli;
+    if (!H || H.phase !== 2 || game.rangeMode) return;
+    const left = Math.max(0, 120 - H.t);
+    const mm = Math.floor(left / 60), ss = Math.floor(left % 60);
+    const thin = H.t < 108 ? 1 : Math.max(0.2, (116 - H.t) / 8);
+    ctx.save();
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(`BIRD IN ${mm}:${String(ss).padStart(2, '0')}`, w / 2 + 1, 31);
+    ctx.fillStyle = thin < 1 ? '#f0d98a' : '#8fdc6a';
+    ctx.fillText(`BIRD IN ${mm}:${String(ss).padStart(2, '0')}`, w / 2, 30);
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(159,208,224,0.85)';
+    ctx.fillText('green smoke over the pad', w / 2, 42);
+    ctx.restore();
   }
 
   // ------------------------------------------------------------ scrap/medkits --
@@ -851,7 +872,18 @@ export class HUD {
     } else if (it.type === 'loot') {
       lines.push('[E] OPEN THE CACHE');
     } else if (it.type === 'heli') {
-      lines.push('[E/F] BOARD THE HELICOPTER');
+      const alive = (game.players ?? [game.player]).filter((o) => o && !o.dead).length;
+      if (alive > 1) {
+        const yes = (game.players ?? []).filter((o) => o && !o.dead && o.evacVote).length;
+        lines.push(`[E/F] ${game.player.evacVote ? 'LOWER YOUR HAND' : 'VOTE TO LEAVE'}  ${yes}/${alive}`);
+        lines.push(`${Math.floor(alive / 2) + 1} of you have to agree`);
+      } else lines.push('[E/F] BOARD THE HELICOPTER');
+    } else if (it.type === 'flare') {
+      lines.push('[E/F] LIGHT THE GREEN FLARE  2:00 TO LANDING');
+    } else if (it.type === 'radio') {
+      lines.push(it.affordable
+        ? `[E/F] FIX THE ROOF RADIO  ${it.price} SCRAP`
+        : `ROOF RADIO — NEEDS ${it.price} SCRAP`);
     }
     let y = h - 108;
     for (const l of lines) {
@@ -1536,7 +1568,7 @@ export const PAUSE_ROWS = [
 
 export function pauseRowRect(i, w, h) {
   const rw = 268, rh = 30;
-  return { x: w / 2 - rw / 2, y: h * 0.42 + 30 + i * 38, w: rw, h: rh };
+  return { x: w / 2 - rw / 2, y: h * 0.30 + 30 + i * 38, w: rw, h: rh };
 }
 
 export function pauseHitTest(game, w, h, mx, my) {
@@ -1551,7 +1583,7 @@ export function drawPause(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
-  text(ctx, 'PAUSED', w / 2, h * 0.42, {
+  text(ctx, 'PAUSED', w / 2, h * 0.30, {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
   const m = game.input?.mouse;
@@ -1697,7 +1729,7 @@ export function drawDebug(ctx, game, w, h) {
       font: 'bold 12px "Courier New", monospace',
       colour: sel ? INK : INK_DIM,
     });
-    text(ctx, r.value, cx + cw - 18, y + 1, {
+    text(ctx, r.value, cx + cw - 18, y + Math.round(p.rowH * 0.72), {
       font: 'bold 12px "Courier New", monospace',
       colour: r.value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
       align: 'right',

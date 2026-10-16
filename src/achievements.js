@@ -57,7 +57,7 @@ export const ACHIEVEMENTS = [
   { id: 'lucky_pull', name: 'Lucky Pull', desc: 'Get a wonder weapon without ever drawing the teddy.', icon: 'L' },
   { id: 'lights_out', name: 'Lights Out', desc: 'Fight a whole round in the dark before the power.', icon: '0' },
   // ---- the ending, and the night's small kindnesses -------------------------
-  { id: 'leaving_tonight', name: 'Leaving Tonight', desc: 'Light all four beacons, hold the roof, and board the helicopter.', icon: 'H' },
+  { id: 'leaving_tonight', name: 'Leaving Tonight', desc: 'Light all four beacons, reach round 25, burn the green flare and board the bird.', icon: 'H' },
   { id: 'care_package', name: 'Care Package', desc: 'Pick up a crate the radio dropped for you.', icon: 'S' },
 ];
 

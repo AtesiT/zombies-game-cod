@@ -238,6 +238,11 @@ for (const [sw, sh, wantCompact] of [[800, 500, false], [480, 300, true], [1600,
     ok(!overlaps(boxes.move, b), `${id} sits on top of the walking stick at ${sw}x${sh}`);
     ok(!overlaps(boxes.aim, b), `${id} sits on top of the aiming stick at ${sw}x${sh}`);
   }
+  // the medkit is the panic button: bigger circle, bigger letter
+  if (boxes.medkit && boxes.knife) {
+    const wm = boxes.medkit.x1 - boxes.medkit.x0, wk = boxes.knife.x1 - boxes.knife.x0;
+    ok(wm > wk * 1.1, `the medkit button is not bigger than its neighbours (${wm} vs ${wk})`);
+  }
   for (const [id, b] of Object.entries(boxes)) {
     if (id === 'move' || id === 'aim' || id === 'fire' || id === 'pause') continue;
     for (const [id2, b2] of Object.entries(boxes)) {

@@ -8,8 +8,9 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 > (первая карта Nacht der Untoten). 15 видов оружия, 8 перков, Mystery Box с wonder-оружием,
 > пауэр-апы, 26 типов врагов (тотемы, могилы, призраки с саблей, снеговик, рыцарь, молнии),
 > погода с грозой и туманом, говорящий громкоговоритель, генератор электричества, верстак с крафтом, пасхальное яйцо,
-> радиособытия с ящиками снабжения, финал с вертолётом (4 рубильника = 4 маяка на крыше,
-> 3 раунда наверху — и экран EVACUATED с особой отметкой в рекордах),
+> радиособытия с ящиками снабжения, радиостанция на крыше (починил за скрап — ящики каждые
+> два раунда), финал с вертолётом (раунд 25 + 4 маяка, зелёный фальшфейер, 2 минуты до посадки,
+> в кооперативе — голосование большинства, экран EVACUATED с особой отметкой в рекордах),
 > достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
@@ -134,10 +135,14 @@ One big level instead of a second map:
   the very first night, bird or no bird.
 - **Attic** — the board shack on the roof holds the **workbench**: anything you
   want built, you carry the scrap up three storeys for.
+- **Roof radio** (east roof block) — a dead set with a bent mast from night one.
+  **25 scrap** straightens the mast: from then on, every second round a supply
+  crate drops onto the pad (points, salvage, every magazine topped up).
 - **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
   A burnt-out car sits at the bottom of the field and a gutted tank at the bottom
-  right, each on its own patch of scorched earth. You can leave the bunker and
+  right — both at twice their old size, each sunk in its own wide patch of mud,
+  wheel ruts and thrown track. You can leave the bunker and
   fight in the open; zombies spawn out here and path in.
 
 Stairwells are real portals: step on the tile, walk to its centre, and you pop out at the other
@@ -222,19 +227,23 @@ as often), fog (a veil with a hole of visibility around you), or nothing.
 **The loudspeaker.** From round 10 somebody talks — lines tied to events, not timers: a first
 sighting of a new horror, a totem rising, a grave being dug, a storm rolling in, a door you are
 about to buy ("that one leads nowhere good"). And at rounds 25/30/35 the voice is no longer the
-loudspeaker: survivors outside the wire, a helicopter that wants thirty quiet minutes, and a
+loudspeaker: survivors outside the wire, a helicopter that wants a lit pad and two minutes, and a
 "look up" over the roof.
 
-**The ending — EVACUATED.** The night can actually be left. The four secret dials double as
-roof beacons: every switch you throw lights one of four corner lamps up on the roof (red and
-green, blinking, visible from the deck). Reach round 30 with all four lit and the board gives
-you a bearing — then hold the roof for three full rounds and the bird comes in over the west
-trees: shadow, searchlight, rotor chop. It lands on the H painted at the left centre of the
-west terrace; walk up and press E/F to board — the passengers vanish from the deck and ride
-in the cabin — and the run ends on a golden **EVACUATED** screen to its own music, written to
-the leaderboard with its own **EVAC** mark (and a *Leaving Tonight* badge). Fewer than four
-dials at round 30 and the radio simply apologises — the night goes on exactly as before. In
-co-op the ending is shared: whoever boards, everybody flies.
+**The ending — EVACUATED.** The night can actually be left, and it no longer asks you to
+stand around counting rounds. The four secret dials double as roof beacons: every switch you
+throw lights one of four corner lamps up on the roof (red and green, blinking, visible from
+the deck). Reach **round 25** with all four lit — in whatever order, the pad notices on its
+own — and the crew gives you a bearing and a green flare in a locker at the centre of the H.
+Press E/F on it and a green smoke column goes up: the smoke is what the bird homes on, and
+the clock starts. Two minutes later the smoke thins, the rotor comes in over the west
+trees — shadow, searchlight, chop — and the bird sets down on the pad. Walk up and press
+E/F and the run ends on a golden **EVACUATED** screen to its own music, written to the
+leaderboard with its own **EVAC** mark (and a *Leaving Tonight* badge). Four dials finished
+after round 25 arm it just the same; fewer than four at round 30 and the radio simply
+apologises — the night goes on exactly as before. In co-op the ending is a **vote**: E at
+the landed bird raises (or lowers) your hand, more than half of the bodies alive have to
+agree, and once they do everybody still standing flies.
 
 **The radio's night.** From round 9, every 5–7 rounds the receiver catches a broadcast:
 sitreps ("sector D is lost"), the numbers station, a minute of silence for the ones who did

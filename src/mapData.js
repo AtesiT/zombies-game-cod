@@ -382,7 +382,7 @@ export const FLOORS = [
     wallbuys: [
       { x: 30, y: 11, wx: 31, wy: 11, weapon: 'mg42' },
       { x: 16, y: 22, wx: 15, wy: 22, weapon: 'mp40' },
-      { x: 42, y: 16, wx: 43, wy: 16, weapon: 'kar98k' }
+      { x: 42, y: 18, wx: 42, wy: 19, weapon: 'kar98k' }
     ],
     traps: [
       // the north windows, where everything climbs in from the yard

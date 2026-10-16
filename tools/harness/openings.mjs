@@ -107,6 +107,21 @@ for (let f = 0; f < 3; f++) {
 g.map.setFloor(0);
 g.useFloor(0);
 
+// ---- the wall buys: every gun hangs on an actual wall, next to its spot ----
+for (let f = 0; f < g.map.floors.length; f++) {
+  const F = g.map.floors[f];
+  for (const wb of F.wallBuys) {
+    const wall = F.tiles[wb.wy * g.map.w + wb.wx];
+    const sx = Math.round(wb.x / 24 - 0.5), sy = Math.round(wb.y / 24 - 0.5);
+    const stand = F.tiles[sy * g.map.w + sx];
+    if (wall !== 2) fails.push(`floor ${f}: ${wb.weapon} hangs on tile ${wall} at (${wb.wx},${wb.wy}), not a wall`);
+    if (stand === 2) fails.push(`floor ${f}: ${wb.weapon} stands inside a wall at (${sx},${sy})`);
+    if (Math.abs(wb.wx - sx) + Math.abs(wb.wy - sy) !== 1) {
+      fails.push(`floor ${f}: ${wb.weapon}'s wall is not beside its standing spot`);
+    }
+  }
+}
+
 if (fails.length) {
   console.log('OPENINGS FAIL:');
   for (const f of fails) console.log('  -', f);

@@ -18,6 +18,10 @@ const COST_DIAG = 141;
 const COST_WINDOW = 4000;   // zombies would rather walk round than chew boards
 const COST_PROP = 3000;     // ...and rather walk round a crate than lean on one
 const COST_STAIR = 300;     // stairwells are a shortcut, not an obstacle
+// How long the horde remembers the way YOU came: a window you climbed through
+// or a hatch you dropped through stays the interesting route for this many
+// seconds, and the flow field stops preferring the door or the west stair.
+const TRAIL_T = 45;
 
 const MAX_PLANKS = 6;
 
@@ -173,7 +177,10 @@ export class GameMap {
     while (q.length) {
       const f = q.shift();
       if (f === to) break;
-      for (const l of this.linksOn(f)) {
+      // your latest hatch first: the horde climbs where you climbed, and only
+      // falls back to the other stair when you have not used one lately
+      const ls = this.linksOn(f).slice().sort((x, y) => this._linkTrailT(y, f) - this._linkTrailT(x, f));
+      for (const l of ls) {
         const other = l.a.floor === f ? l.b : l.a;
         if (prev.has(other.floor)) continue;
         prev.set(other.floor, { link: l, from: f });
@@ -186,6 +193,23 @@ export class GameMap {
     let step = prev.get(to);
     while (step && step.from !== from) { cur = step.from; step = prev.get(cur); }
     return step ? { link: step.link, toFloor: cur } : null;
+  }
+
+  /** When the player last used an endpoint of this link on `floor`, or 0. */
+  _linkTrailT(link, floor) {
+    const tr = this.trail;
+    if (!tr || !(this.trailT >= 0)) return 0;
+    const end = link.a.floor === floor ? link.a : link.b;
+    const t = tr.get(`${floor}:${end.ty * this.w + end.tx}`) ?? 0;
+    return this.trailT - t <= TRAIL_T ? t : 0;
+  }
+
+  /** Has the player walked this tile of this storey lately? */
+  _trailHas(floor, ti) {
+    const tr = this.trail;
+    if (!tr) return false;
+    const t = tr.get(`${floor}:${ti}`);
+    return t != null && this.trailT - t <= TRAIL_T;
   }
 
   /** The landing tile (world pixels) of `link` on `floor`. */
@@ -743,7 +767,9 @@ export class GameMap {
         if (blocked && blocked.has(ni)) propCost = COST_PROP;
         if (dx && dy && (this.solidAt(cx + dx, cy) || this.solidAt(cx, cy + dy))) continue;
         let extra = 0;
-        if (t === TILE.WINDOW) extra = COST_WINDOW;
+        // a window YOU came through lately is a way in, not a detour: the
+        // horde follows your route instead of politely queueing at the door
+        if (t === TILE.WINDOW) extra = this._trailHas(this.floor, ni) ? 80 : COST_WINDOW;
         else if (t === TILE.DOOR) {
           // A shut door is simply not a way through. That is the whole point of
           // buying them: the horde has to break a window and run the long way

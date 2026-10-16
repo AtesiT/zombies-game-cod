@@ -659,7 +659,7 @@ function paintExterior(ctx, px, py, rng) {
   const tx = Math.floor(px / T), ty = Math.floor(py / T);
   const mud = _groundNoise(Math.floor(tx / 2), Math.floor(ty / 2));
   const lush = _groundNoise(Math.floor((tx + 11) / 3), Math.floor((ty + 5) / 3));
-  if (mud < 0.17) {
+  if (mud < 0.02) {   // a tenth of the old mud: the field was ankle-deep
     // a mud patch: wet, trodden, darker at the heart, shining where it pools
     ctx.fillStyle = rng() < 0.5 ? '#3a3025' : '#443a2c';
     ctx.fillRect(px, py, T, T);
@@ -682,11 +682,11 @@ function paintExterior(ctx, px, py, rng) {
   speckle(ctx, px, py, 14, rng, 0.2, 0.04);
 
   // dead grass tufts -- and where the ground is rich, a thick stand of it
-  const tufts = lush > 0.78 ? 9 + ((rng() * 5) | 0) : (rng() * 5) | 0;
+  const tufts = lush > 0.98 ? 9 + ((rng() * 5) | 0) : (rng() * 5) | 0;   // thick stands: a tenth as many
   for (let i = 0; i < tufts; i++) {
     const x = px + ((rng() * T) | 0);
     const y = py + ((rng() * T) | 0);
-    const tall = lush > 0.78;
+    const tall = lush > 0.98;
     ctx.fillStyle = rng() < 0.5 ? C.grass : C.grass2;
     ctx.fillRect(x, y, 1, tall ? 3 + ((rng() * 2) | 0) : 2);
     ctx.fillRect(x - 1, y + 1, 1, 1);

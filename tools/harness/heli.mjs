@@ -66,38 +66,54 @@ function boot(campaign = true) {
   g.draw(nc(M.VW, M.VH).getContext('2d'));
 }
 
-// ---- 2. round 30 with four beacons: the board gets a bearing ---------------
+// ---- 2. round 25 with four beacons arms the pad, in either order -----------
 const g = boot();
 M.settings.set('weather', true);
 ok(g.heli && g.heli.phase === 0, 'a fresh run starts with no bird');
 for (const sw of g.map.secretSwitches) sw.found = true;
 g.egg.found = g.egg.switches.length;
-g.jumpToRound(30);
-ok(g.heli.phase === 1, `four lit dials at round 30 give phase ${g.heli.phase}, want 1 (armed)`);
-ok(!!g.voice?.text?.length, 'the bearing was not spoken');
-ok(g.heli.roofRounds === 0, 'roof rounds start at zero');
+g.jumpToRound(24);
+for (let i = 0; i < 5; i++) g._heliStep(H);
+ok(g.heli.phase === 0, `four dials at round 24 armed the pad early (phase ${g.heli.phase})`);
+g.jumpToRound(25);
+for (let i = 0; i < 5; i++) g._heliStep(H);
+ok(g.heli.phase === 1, `round 25 with four lit dials gives phase ${g.heli.phase}, want 1 (armed)`);
+ok(!!g.voice?.text?.length, 'the arming was not spoken');
+{
+  // the other order: the dials finished late, at round 40 -- arms on the spot
+  const ga = boot();
+  ga.jumpToRound(40);
+  for (let i = 0; i < 5; i++) ga._heliStep(H);
+  ok(ga.heli.phase === 0, 'round 40 without the dials armed anything');
+  for (const sw of ga.map.secretSwitches) sw.found = true;
+  ga.egg.found = ga.egg.switches.length;
+  for (let i = 0; i < 5; i++) ga._heliStep(H);
+  ok(ga.heli.phase === 1, `dials finished at round 40 give phase ${ga.heli.phase}, want 1`);
+}
 
-// ---- 3. the roof tally: three full rounds off the deck, no cheating --------
+// ---- 3. the flare: green smoke and two minutes, no roof vigil --------------
+g.map.setFloor(2); g.useFloor(2);
 g.player.floor = 2;
-g.endRound();
-ok(g.heli.roofRounds === 1, `one round on the roof counted ${g.heli.roofRounds}`);
-g.endRound();
-ok(g.heli.roofRounds === 2, `two rounds on the roof counted ${g.heli.roofRounds}`);
-g.player.floor = 0;                      // came down: the count starts over
-g.endRound();
-ok(g.heli.roofRounds === 0, 'leaving the roof did not reset the tally');
-g.player.floor = 2;
-g.startRound(31); g.endRound();
-g.startRound(32); g.endRound();
-g.startRound(33); g.endRound();
-ok(g.heli.phase === 2, `three held rounds give phase ${g.heli.phase}, want 2 (inbound)`);
+g.player.pos.x = 18.5 * 24 + 8; g.player.pos.y = 15.5 * 24;
+let flareIt = g.interactionFor(g.player);
+ok(flareIt?.type === 'flare', `the armed pad offers ${flareIt?.type ?? 'nothing'} at its centre`);
+g.doInteraction(g.player, flareIt);
+ok(g.heli.phase === 2 && g.heli.flare === true,
+  `lighting the flare gives phase ${g.heli.phase} flare ${g.heli.flare}, want 2 and true`);
+ok(g._heliPos().alpha === 0, 'the bird is already visible two minutes out');
+g.heli.t = 112;                          // the last nine seconds: wings appear
+ok(g._heliPos().alpha > 0, 'the bird never appears over the west trees');
+g.heli.t = 119.5;
+for (let i = 0; i < 40; i++) g._heliStep(H);
+ok(g.heli.phase === 3, `the two-minute burn ended at phase ${g.heli.phase}, want 3 (landed)`);
+ok(g.heli.roofRounds === 0, 'somebody still counts rounds on the roof');
 
-// ---- 4. the bird flies in and lands ----------------------------------------
-for (let i = 0; i < 60 * 10 && g.heli.phase === 2; i++) g._heliStep(H);
-ok(g.heli.phase === 3, `the inbound glide ended at phase ${g.heli.phase}, want 3 (landed)`);
-
-// standing on the pad, the bird offers itself; nowhere else it does not
+// the roof picture: pad, beacons, rotor -- and the evac screen after
+g.map.setFloor(2); g.useFloor(2);
 g.player.floor = 2;
+g.draw(nc(M.VW, M.VH).getContext('2d'));
+
+// ---- 4b. the standing offer: on the pad, and nowhere else ------------------
 g.player.pos.x = 18.5 * 24 + 10; g.player.pos.y = 15.5 * 24;
 let it = g.interactionFor(g.player);
 ok(it?.type === 'heli', `the landed bird offers ${it?.type ?? 'nothing'} on its own pad`);
@@ -108,16 +124,37 @@ g.player.floor = 0;
 g.player.pos.x = 18.5 * 24; g.player.pos.y = 15.5 * 24;
 it = g.interactionFor(g.player);
 ok(it?.type !== 'heli', 'the bird offers itself from the floor below the pad');
-
-// the roof picture: pad, beacons, rotor -- and the evac screen after
-g.map.setFloor(2); g.useFloor(2);
 g.player.floor = 2;
-g.draw(nc(M.VW, M.VH).getContext('2d'));
 
-// ---- 5. wheels up: EVACUATED, its own mark on the board --------------------
+// ---- 5. wheels up: a majority vote, then EVACUATED -------------------------
+{
+  // three bodies: one yes is not a majority, two are
+  const gv = boot();
+  gv.heli.phase = 3;
+  const mate = (dx) => {
+    const m = new (Object.getPrototypeOf(gv.player).constructor)(gv.map, gv.player.pos.x + dx, gv.player.pos.y);
+    m.game = gv; m.netId = 900 + gv.players.length; m.name = 'MATE'; m.floor = 0;
+    gv.players.push(m);
+    return m;
+  };
+  const m1 = mate(40), m2 = mate(-40);
+  gv.evacuate(gv.player);
+  ok(gv.heli.phase === 3 && !gv.player.evac,
+    `one yes of three lifted the bird (phase ${gv.heli.phase}) or seated a voter (evac ${gv.player.evac})`);
+  gv.evacuate(m1);
+  ok(gv.heli.phase === 4, `two yeses of three give phase ${gv.heli.phase}, want 4 (leaving)`);
+  ok(gv.players.every((o) => o.evac), 'somebody was left standing on the deck');
+  gv.players.length = 1;
+  gv.player.evac = false; gv.player.evacVote = false; gv.heli.phase = 3;
+  // and a raised hand can be taken back
+  gv.evacuate(m1);
+  ok(gv.player.evacVote === false, 'a second press did not take the vote back');
+  gv.evacuate(gv.player);
+  ok(gv.heli.phase === 4, 'the lone survivor could not leave alone');
+}
 g.player.pos.x = 18.5 * 24; g.player.pos.y = 15.5 * 24 + 8;
 g.doInteraction(g.player, { type: 'heli' });
-ok(g.heli.phase === 4, `boarding gives phase ${g.heli.phase}, want 4 (leaving)`);
+ok(g.heli.phase === 4, `a lone survivor is his own majority: phase ${g.heli.phase}, want 4`);
 ok(g.player.evac === true, 'the one who boarded is still standing on the deck');
 // boot() stubs hurt() to always land, so ask the real prototype instead
 ok(Object.getPrototypeOf(g.player).hurt.call(g.player, 99, 0, 0, g) === false,
@@ -142,7 +179,7 @@ for (let i = 0; i < 60 * 6 && g.heli.phase === 4; i++) g._heliStep(H);
 ok(g.heli.phase === 5 && g.gameOver && g.evacuated,
   `the climb-out ended phase=${g.heli.phase} over=${g.gameOver} evac=${g.evacuated}`);
 ok(g.board?.[0]?.evac === true, 'the evac run is not marked on the board');
-ok(g.board?.[0]?.round === 33, `the board remembers round ${g.board?.[0]?.round}, want 33`);
+ok(g.board?.[0]?.round === 25, `the board remembers round ${g.board?.[0]?.round}, want 25`);
 ok(g.rank >= 0, 'the evac run did not find its rank');
 g.overT = 2;
 drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not throw
@@ -392,25 +429,82 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
 
   // the pause screen: five clickable rows, and the last one walks you home
   g5.map.setFloor(0); g5.useFloor(0); g5.player.floor = 0;
-  const { pauseHitTest, PAUSE_ROWS } = await import(SRC + '/hud.js');
+  const { pauseHitTest, PAUSE_ROWS, pauseRowRect } = await import(SRC + '/hud.js');
   ok(PAUSE_ROWS.length === 5, `the pause menu has ${PAUSE_ROWS.length} rows, want 5`);
   g5.paused = true;
   for (let i = 0; i < 5; i++) {
-    const r = { x: M.VW / 2 - 134, y: M.VH * 0.42 + 30 + i * 38, w: 268, h: 30 };
+    const r = pauseRowRect(i, M.VW, M.VH);
     ok(pauseHitTest(g5, M.VW, M.VH, r.x + 20, r.y + 15) === i, `row ${i} is not where it is drawn`);
   }
   // click RESUME
-  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = M.VH * 0.42 + 45;
+  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = pauseRowRect(0, M.VW, M.VH).y + 15;
   g5.input.mouse.pressed = true;
   g5.update(H); g5.input.endFrame();
   ok(!g5.paused, 'clicking RESUME did not resume');
   // click RETURN TO MENU
   g5.paused = true;
-  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = M.VH * 0.42 + 30 + 4 * 38 + 15;
+  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = pauseRowRect(4, M.VW, M.VH).y + 15;
   g5.input.mouse.pressed = true;
   g5.update(H); g5.input.endFrame();
   ok(!g5.started && g5.scene === 'menu' && !g5.paused,
     `RETURN TO MENU left started=${g5.started} scene=${g5.scene} paused=${g5.paused}`);
+}
+
+// ---- 8. the roof radio: scrap in, a crate every second round ---------------
+{
+  const g6 = boot();
+  g6.map.setFloor(2); g6.useFloor(2); g6.player.floor = 2;
+  g6.player.pos.x = 40.5 * 24; g6.player.pos.y = 12.5 * 24;
+  let it6 = g6.interactionFor(g6.player);
+  ok(it6?.type === 'radio' && !it6.affordable,
+    `the dead radio offers ${it6?.type ?? 'nothing'} and refuses ${g6.player.salvage} scrap`);
+  g6.player.salvage = 25;
+  it6 = g6.interactionFor(g6.player);
+  ok(!!it6?.affordable, '25 scrap does not cover the radio');
+  g6.doInteraction(g6.player, it6);
+  ok(g6.roofRadio.fixed === true && g6.player.salvage === 0,
+    `the radio took the scrap: fixed=${g6.roofRadio.fixed} salvage=${g6.player.salvage}`);
+  const crates0 = g6.supplies.length;
+  g6.startRound(g6.round + 1);                       // an even round: a crate
+  ok(g6.supplies.length === crates0 + 1 && g6.supplies[g6.supplies.length - 1].f === 2,
+    'the even round brought no crate to the roof');
+  g6.startRound(g6.round + 1);                       // an odd round: silence
+  ok(g6.supplies.length === crates0 + 1, 'a crate fell on an odd round');
+  g6.map.setFloor(2); g6.useFloor(2); g6.player.floor = 2;
+  g6.draw(nc(M.VW, M.VH).getContext('2d'));          // the shack must draw
+}
+
+// ---- 9. the horde reads your footsteps --------------------------------------
+{
+  const g7 = boot();
+  const west = g7.map.links[0], east = g7.map.links[1];
+  ok(g7.map.hopTowards(0, 1)?.link === west, 'the west stair is not the default way up');
+  g7.noteTrail(east.a.floor, east.a.tx, east.a.ty);
+  g7.noteTrail(east.b.floor, east.b.tx, east.b.ty);
+  g7.map.trail = g7.trail; g7.map.trailT = g7.time;
+  ok(g7.map.hopTowards(0, 1)?.link === east, 'the horde ignored the hatch you came through');
+  // and a window you climbed is a way in, not a 4000-cost detour
+  const wtx = 20, wty = 19;
+  ok(!g7.map._trailHas(0, wty * g7.map.w + wtx), 'an unwalked window reads as walked');
+  g7.noteTrail(0, wtx, wty);
+  ok(g7.map._trailHas(0, wty * g7.map.w + wtx), 'the window you came through left no trail');
+}
+
+// ---- 10. a window you walked through is cheaper for the horde -------------
+{
+  const g8 = boot();
+  const F0b = g8.map.floors[0];
+  let wi = -1;
+  for (let i = 0; i < F0b.tiles.length; i++) if (F0b.tiles[i] === 3) { wi = i; break; }
+  ok(wi >= 0, 'the map has no windows to crawl through');
+  g8.map.trail = null; g8.map.trailT = g8.time;
+  g8.rebuildFlow();
+  const bare = F0b.dist[wi];
+  g8.noteTrail(0, wi % g8.map.w, (wi / g8.map.w) | 0);
+  g8.rebuildFlow();
+  const lit = F0b.dist[wi];
+  ok(Number.isFinite(bare) && lit < bare,
+    `a window you crawled through is not cheaper to cross (${bare} -> ${lit})`);
 }
 
 console.log(fails.length ? `\n${fails.length} FAILURES:\n  ${fails.join('\n  ')}` : '\nHELI PASS  the roof ending, the radio and the two-column range all hold');
