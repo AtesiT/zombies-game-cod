@@ -836,6 +836,8 @@ export class HUD {
       lines.push(it.sw.found ? 'SIGNAL LOCKED' : '[E] TURN THE DIAL');
     } else if (it.type === 'loot') {
       lines.push('[E] OPEN THE CACHE');
+    } else if (it.type === 'heli') {
+      lines.push('[E/F] BOARD THE HELICOPTER');
     }
     let y = h - 108;
     for (const l of lines) {
@@ -1468,7 +1470,7 @@ export function drawMenu(ctx, game, w, h) {
     }
     const board = loadBoard();
     if (board.length) {
-      text(ctx, `BEST ROUND  ${board[0].round}   (${board[0].kills} kills)`, w / 2, y + 4, {
+      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, y + 4, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
       });
     }
@@ -1830,15 +1832,24 @@ export function drawCursor(ctx, game) {
 }
 
 export function drawGameOver(ctx, game, w, h) {
+  // The same screen wears two faces: the night got you, or you got out.
+  const evac = !!game.evacuated;
   ctx.save();
-  ctx.fillStyle = `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
+  ctx.fillStyle = evac
+    ? `rgba(8,13,7,${Math.min(0.85, game.overT * 0.7)})`
+    : `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
   ctx.fillRect(0, 0, w, h);
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
 
-  text(ctx, 'YOU DIED', w / 2, h * 0.16, {
-    font: 'bold 40px "Courier New", monospace', colour: '#c2503c', align: 'center',
+  text(ctx, evac ? 'EVACUATED' : 'YOU DIED', w / 2, h * 0.16, {
+    font: 'bold 40px "Courier New", monospace', colour: evac ? '#f0d98a' : '#c2503c', align: 'center',
   });
+  if (evac) {
+    text(ctx, 'the bird lifted with you aboard -- the night stays behind', w / 2, h * 0.16 + 26, {
+      font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  }
 
   const s = game.stats;
   const acc = s.shots ? Math.round((s.hits / s.shots) * 100) : 0;
@@ -1868,7 +1879,7 @@ export function drawGameOver(ctx, game, w, h) {
     board.slice(0, 5).forEach((e, i) => {
       const col = i === (game.rank ?? -1) ? GOLD : INK_DIM;
       text(ctx, `${i + 1}.`, w / 2 - 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
-      text(ctx, `ROUND ${e.round}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `ROUND ${e.round}${e.evac ? ' EVAC' : ''}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
       text(ctx, `${e.kills} kills`, w / 2 - 10, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
       text(ctx, `${e.points} pts`, w / 2 + 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'right' });
       y += 15;
@@ -1877,7 +1888,7 @@ export function drawGameOver(ctx, game, w, h) {
 
   if (game.overT > 1.1) {
     const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
-    text(ctx, 'PRESS R OR CLICK TO TRY AGAIN', w / 2, h * 0.86, {
+    text(ctx, evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN', w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
     });
   }

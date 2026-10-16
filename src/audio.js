@@ -1084,6 +1084,57 @@ export class AudioEngine {
     this._rainGain.gain.linearRampToValueAtTime(on ? 0.075 * vol : 0.0001, t + (on ? 1.6 : 2.2));
   }
 
+  /**
+   * The bird: a looping rotor chop. `level` 0..1 turns the whole thing --
+   * volume, chop depth and rotor rate -- so one call site can fade the
+   * helicopter in from over the west trees and out again on the way up.
+   */
+  heli(level = 1) {
+    if (!this.ready || this.muted) return;
+    if (!this._heliSrc) {
+      const n = this._noiseSrc();
+      n.playbackRate.value = 0.7;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 230; lp.Q.value = 0.6;
+      const g = this.ctx.createGain();
+      g.gain.value = 0.0001;
+      // the chop: a slow LFO riding straight on the gain
+      const lfo = this.ctx.createOscillator();
+      lfo.type = 'sine'; lfo.frequency.value = 7.5;
+      const depth = this.ctx.createGain();
+      depth.gain.value = 0.0;
+      lfo.connect(depth); depth.connect(g.gain);
+      n.connect(lp).connect(g).connect(this.ambientBus);
+      n.start(); lfo.start();
+      this._heliSrc = n; this._heliGain = g; this._heliDepth = depth; this._heliLfo = lfo;
+    }
+    const t = this.t;
+    const v = Math.max(0, Math.min(1, level));
+    this._heliGain.gain.cancelScheduledValues(t);
+    this._heliGain.gain.setValueAtTime(Math.max(0.0001, this._heliGain.gain.value), t);
+    this._heliGain.gain.linearRampToValueAtTime(0.0001 + 0.11 * v, t + 0.4);
+    this._heliDepth.gain.setTargetAtTime(0.06 * v, t, 0.15);
+    this._heliLfo.frequency.setTargetAtTime(5.5 + 3.5 * v, t, 0.3);
+  }
+
+  /** Rotor off: the bird is gone, or it never came. */
+  heliOff() {
+    if (!this.ready || !this._heliGain) return;
+    const t = this.t;
+    this._heliGain.gain.cancelScheduledValues(t);
+    this._heliGain.gain.setValueAtTime(Math.max(0.0001, this._heliGain.gain.value), t);
+    this._heliGain.gain.linearRampToValueAtTime(0.0001, t + 1.4);
+    this._heliDepth.gain.setTargetAtTime(0, t, 0.4);
+  }
+
+  /** Wheels up: the run does not end with a bang but with a climb. */
+  evacSting() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    [392, 523, 659, 784].forEach((f, i) => this._tone('triangle', f, f, t + i * 0.18, 1.5, 0.11));
+    this._tone('sine', 131, 196, t, 2.4, 0.13);
+  }
+
   /** Shocker: the light climbing the rod. */
   zapCharge(vol = 0.8) {
     if (!this.ready || this.muted) return;

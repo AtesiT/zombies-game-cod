@@ -242,9 +242,13 @@ export class GameMap {
       });
     });
 
-    // one button per creature down the west side, controls on the east
-    F.rangePads = Object.keys(ENEMY_TYPES).map((t, i) => ({
-      x: 6.5 * T, y: (8 + i * 2 + 0.5) * T, type: t,
+    // the creature buttons run down the west side IN TWO COLUMNS, controls on
+    // the east: the roster outgrew one column (26 faces at two tiles a button
+    // walked the last six straight off the bottom of the floor)
+    const rangeTypes = Object.keys(ENEMY_TYPES);
+    const rangeHalf = Math.ceil(rangeTypes.length / 2);
+    F.rangePads = rangeTypes.map((t, i) => ({
+      x: (i < rangeHalf ? 4.5 : 8.5) * T, y: (8 + (i % rangeHalf) * 2 + 0.5) * T, type: t,
     }));
     F.rangePads.push({ x: 65.5 * T, y: 8.5 * T, pad: 'clear' });
     F.rangePads.push({ x: 65.5 * T, y: 10.5 * T, pad: 'freeze' });

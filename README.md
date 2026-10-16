@@ -8,6 +8,8 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 > (первая карта Nacht der Untoten). 15 видов оружия, 8 перков, Mystery Box с wonder-оружием,
 > пауэр-апы, 26 типов врагов (тотемы, могилы, призраки с саблей, снеговик, рыцарь, молнии),
 > погода с грозой и туманом, говорящий громкоговоритель, генератор электричества, верстак с крафтом, пасхальное яйцо,
+> радиособытия с ящиками снабжения, финал с вертолётом (4 рубильника = 4 маяка на крыше,
+> 3 раунда наверху — и экран EVACUATED с особой отметкой в рекордах),
 > достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
@@ -205,6 +207,24 @@ about to buy ("that one leads nowhere good"). And at rounds 25/30/35 the voice i
 loudspeaker: survivors outside the wire, a helicopter that wants thirty quiet minutes, and a
 "look up" over the roof.
 
+**The ending — EVACUATED.** The night can actually be left. The four secret dials double as
+roof beacons: every switch you throw lights one of four corner lamps up on the roof (red and
+green, blinking, visible from the deck). Reach round 30 with all four lit and the board gives
+you a bearing — then hold the roof for three full rounds and the bird comes in over the west
+trees: shadow, searchlight, rotor chop. It lands on the H painted on the south roof block;
+walk up and press E/F to board, and the run ends on a golden **EVACUATED** screen, written to
+the leaderboard with its own **EVAC** mark (and a *Leaving Tonight* badge). Fewer than four
+dials at round 30 and the radio simply apologises — the night goes on exactly as before. In
+co-op the ending is shared: whoever boards, everybody flies.
+
+**The radio's night.** From round 9, every 5–7 rounds the receiver catches a broadcast:
+sitreps ("sector D is lost"), the numbers station, a minute of silence for the ones who did
+not reach morning, a roll call that uses *your* name, a careful hint at one of the dials you
+have not found — a storm forecast that the next round's sky actually honours, and a real
+supply drop: a crate comes down on a parachute by the mystery-box spots, smokes and blinks a
+red flare for ~100 s, and pays 1500 points, 12 salvage and full magazines (*Care Package*).
+Broadcasts never repeat back to back, and rounds 25/30/35 belong to the survivors.
+
 A blast does not always take the head — sometimes it takes the legs. Grenades, monkey bombs and
 Ray Gun splashes will drop a zombie onto its elbows instead: a **Crawler** keeps coming at 70 %
 speed with a third of its health and a much smaller silhouette, so it is easy to miss and annoying
@@ -302,7 +322,7 @@ everything is reachable from the player start, the roof bench included) and rewr
 
 See [`docs/IDEAS.md`](docs/IDEAS.md) — it tracks what is already in (items 1–7 plus the
 Pack-a-Punch / two-slot / trap / Crawler / Shrieker batch, the helmet / napalm / gas zombies, the
-second floor and the roof, settings and the last-zombie sound) and carries a large fresh backlog:
-wearable gizmos, a second crafting bench, teleporters and rooftop escapes, a story told through a
-keeper's diary and radio chatter, a full rooftop evacuation finale, weapon mods, daily challenges,
-gamepad support and proper smoke tests.
+second floor and the roof, settings, the last-zombie sound, the haunt roster and the loudspeaker,
+and now the rooftop evacuation finale with the radio's night) and carries a large fresh backlog:
+wearable gizmos, a second crafting bench, teleporters, a story told through a keeper's diary,
+weapon mods, daily challenges, gamepad support and proper smoke tests.

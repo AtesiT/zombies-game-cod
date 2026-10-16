@@ -56,6 +56,9 @@ export const ACHIEVEMENTS = [
   { id: 'round_40', name: 'Forty Deep', desc: 'Reach round 40.', icon: '40' },
   { id: 'lucky_pull', name: 'Lucky Pull', desc: 'Get a wonder weapon without ever drawing the teddy.', icon: 'L' },
   { id: 'lights_out', name: 'Lights Out', desc: 'Fight a whole round in the dark before the power.', icon: '0' },
+  // ---- the ending, and the night's small kindnesses -------------------------
+  { id: 'leaving_tonight', name: 'Leaving Tonight', desc: 'Light all four beacons, hold the roof, and board the helicopter.', icon: 'H' },
+  { id: 'care_package', name: 'Care Package', desc: 'Pick up a crate the radio dropped for you.', icon: 'S' },
 ];
 
 const BY_ID = new Map(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -116,7 +119,8 @@ export function submitScore(entry) {
   const board = loadBoard();
   board.push({
     round: entry.round, kills: entry.kills, headshots: entry.headshots,
-    points: entry.points, time: entry.time, date: Date.now(),
+    points: entry.points, time: entry.time, date: entry.date ?? Date.now(),
+    evac: !!entry.evac,          // left the night alive, aboard the bird
   });
   board.sort((a, b) => b.round - a.round || b.points - a.points || b.kills - a.kills);
   const trimmed = board.slice(0, MAX_SCORES);

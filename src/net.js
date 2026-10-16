@@ -709,6 +709,14 @@ export class Net {
       zt: g.zThrows.map((z) => [r0(z.sx), r0(z.sy), r0(z.tx), r0(z.ty), z.f, z.throwKind, r2(z.t), r2(z.dur)]),
       bo: g.bolts.slice(0, 12).map((b) => [r0(b.x0), r0(b.y0), r0(b.x1), r0(b.y1), r2(b.life), r2(b.max), b.f, r2(b.seed)]),
       wx: [g.wx?.kind ?? '', r2(g.wx?.flash ?? 0), r2(g.wx?.wet ?? 0)],
+      // ---- the roof ending: what a guest must DRAW (beacons read the dial
+      // states below, the bird reads its phase, the crates read their timers)
+      he: [g.heli?.phase ?? 0, r2(g.heli?.t ?? 0), g.heli?.roofRounds ?? 0],
+      sc: (g.supplies ?? []).slice(0, 4).map((s) => [
+        r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
+      ]),
+      sw: (g.map.floors?.[0]?.secretSwitches ?? []).map((x) => (x.found ? 1 : 0)),
+      evc: g.evacuated ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
     };
@@ -728,6 +736,24 @@ export class Net {
     if (g.powerOn && !wasOn) g.powerOnAt = g.time;   // lamps warm up over here as well
     g.dogRound = !!s.dg;
     g.gameOver = !!s.go;
+    // the roof ending, painted from the host's numbers: phase timers run on
+    // both sides (see game._heliStep), the phase itself only advances there
+    if (s.evc) g.evacuated = true;
+    if (s.he && g.heli) {
+      g.heli.phase = s.he[0] ?? 0;
+      g.heli.t = s.he[1] ?? 0;
+      g.heli.roofRounds = s.he[2] ?? 0;
+    }
+    if (s.sc && g.supplies) {
+      g.supplies = s.sc.filter((e) => !e[7]).map((e) => ({
+        x: e[0], y: e[1], f: e[2], t: e[3], fall: e[4] || 2.6, life: e[5], taken: false, seed: e[6] ?? 0,
+      }));
+    }
+    if (s.sw) {
+      const sws = g.map.floors?.[0]?.secretSwitches ?? [];
+      for (let i = 0; i < sws.length; i++) sws[i].found = !!s.sw[i];
+      if (g.egg?.switches) g.egg.found = sws.filter((x) => x.found).length;
+    }
     if (g.timers) { g.timers.instakill = s.ti ?? 0; g.timers.doublepoints = s.tp ?? 0; g.timers.deathmachine = s.dm ?? 0; }
     if (g.map.secretDoorOpen !== undefined) g.map.secretDoorOpen = !!s.sd;
 

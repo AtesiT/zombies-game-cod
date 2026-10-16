@@ -211,6 +211,60 @@ const DECAL_SCALE = 0.5;
 const DECAL_MAX = 260;
 const DECAL_WASH = 0.22;
 
+// ---- the helicopter ending: pad, beacons, and the radio's night ------------
+// The pad sits on the south roof block of the campaign's top storey; each of
+// the four secret dials downstairs lights one beacon at the roof corners.
+const HELI_PAD = { x: 26.5 * T, y: 28.5 * T, f: 2 };
+const HELI_BEACONS = [
+  { x: 15.5 * T, y: 10.5 * T },
+  { x: 44.5 * T, y: 10.5 * T },
+  { x: 15.5 * T, y: 30.5 * T },
+  { x: 31.5 * T, y: 30.5 * T },
+];
+// heli.phase: 0 off, 1 armed (four beacons lit, the board has a bearing),
+// 2 inbound, 3 landed, 4 wheels up, 5 gone (the run ended EVACUATED)
+const HELI_PHASE_NAMES = ['OFF', 'ARMED', 'INBOUND', 'LANDED', 'LEAVING', 'GONE'];
+// where the four dials hide, in the radio's careful words (switch order)
+const SWITCH_HINTS = [
+  'the west end, by the stair that climbs',
+  'the east wing, past the long room',
+  'the southeast yard, beyond the shed',
+  'the north wall, at the tree line',
+];
+// Every 5-7 rounds somebody finds your frequency. No repeats back to back;
+// two of these are not flavour at all: the forecast binds the next round's
+// sky, and the crate really lands somewhere by the boxes.
+const RADIO_EVENTS = [
+  { id: 'sitrep1', text: () => 'Sector D is lost. Repeat: sector D is lost. If you can hear this, you are further than the army got.' },
+  { id: 'sitrep2', text: () => 'They are counting your rounds over the wire. Every magazine that answers is one more night somebody else gets to see.' },
+  { id: 'sitrep3', text: () => 'The convoy turned back at the bridge. We are not coming in. But we are not leaving you either -- keep talking to us.' },
+  { id: 'rollcall', text: (g) => `${(g.player?.name ?? '') || 'Survivor'}, this is actual. We have you on the board, alone and lit up like a fuse. Keep burning.` },
+  { id: 'numbers', text: () => 'Four. Nine. One. Seven. Zero. ... The numbers do not mean anything. Or they mean everything. We stopped asking at midnight.' },
+  { id: 'quiet', text: () => 'A moment for the ones who did not reach morning. The wire remembers every name, even the ones we never learned.' },
+  {
+    id: 'hint',
+    cond: (g) => !g.rangeMode && !g.egg?.complete && (g.map.secretSwitches?.some((sw) => !sw.found) ?? false),
+    text: (g) => {
+      const open = (g.map.secretSwitches ?? []).filter((sw) => !sw.found);
+      const one = open[randInt(0, open.length - 1)];
+      const where = SWITCH_HINTS[one?.id ?? 0] ?? 'somewhere in the house';
+      return `One of the four dials is awake tonight -- ${where}. Four lit beacons and the board can give you a bearing. That is all we are allowed to say.`;
+    },
+  },
+  {
+    id: 'stormwarn',
+    cond: (g) => !g.rangeMode && settings.get('weather'),
+    text: () => 'Barometer is falling hard out here. Whatever you planned for the next round -- plan it wet, and plan it loud.',
+    fx: (g) => { g.wx.forecast = 'storm'; },
+  },
+  {
+    id: 'supply',
+    cond: (g) => !g.rangeMode,
+    text: () => 'We pushed a crate out of the bird ten minutes ago. Red flare, look for the smoke by the boxes. It will not wait all night.',
+    fx: (g) => g.dropSupply(),
+  },
+];
+
 export class Game {
   constructor(input) {
     this.input = input;
@@ -286,8 +340,17 @@ export class Game {
     this._hauntId = 0;
     this.hordeThin = false; // half the round is gone: nobody hides any more
     // ---- weather: a roll of the sky, once per round ------------------------
-    this.wx = { kind: null, t: 0, flash: 0, strikeT: 4, thunderAt: -1, wet: 0, drops: [] };
+    this.wx = { kind: null, t: 0, flash: 0, strikeT: 4, thunderAt: -1, wet: 0, drops: [], forecast: null };
     this._storySaid = {};   // the survivors outside say each thing only once
+    // ---- the radio's night and the bird waiting behind it -------------------
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.supplies = [];        // crates the radio drops: real, walkable loot
+    this.radioNext = 9;        // the first broadcast: a fixed round, so booting
+                               // a run never moves the dice the world rolls on
+    this._radioLast = '';
+    this._radioHeard = 0;
+    this.evacuated = false;    // the run ended aboard the helicopter
+    this._heliSnd = false;
     this.rifts = [];      // Rift Splitter floor hazards
     this.gases = [];
     this.inFire = 0;
@@ -762,7 +825,13 @@ export class Game {
     }
     this.rollWeather(n);
     // the survivors outside: the loudspeaker stops being a stranger
-    if (n === 25 || n === 30 || n === 35) this.sayStory(n);
+    if (n === 25 || n === 35) this.sayStory(n);
+    this._radioNight(n);
+    // round 30 belongs to the board itself: with four beacons it gives you a
+    // bearing, without them it apologises -- either way it has more to say
+    // than the old story beat, so that one only speaks if the board stayed
+    // silent (the bird is already spoken for, or this is the range)
+    if (n === 30 && !this._heliRoundStart(n)) this.sayStory(30);
     if (n >= 10) this.achievements.unlock('round_10');
     if (n >= 20) this.achievements.unlock('round_20');
     if (n >= 30) this.achievements.unlock('round_30');
@@ -778,6 +847,7 @@ export class Game {
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
     this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
     audio.roundSting(false);
+    this._heliRoundEnd();
   }
 
   get zombiesLeft() {
@@ -1222,6 +1292,13 @@ export class Game {
   /** Once per round the sky is rolled: storm, fog, or business as usual. */
   rollWeather(n) {
     if (this.rangeMode || !settings.get('weather') || n < 3) { this.setWeatherKind(null); return; }
+    // the radio called it last round: the sky keeps its promise
+    if (this.wx.forecast) {
+      const k = this.wx.forecast;
+      this.wx.forecast = null;
+      this.setWeatherKind(k);
+      return;
+    }
     const stormP = Math.min(0.26, 0.14 + n * 0.003);
     const r = Math.random();
     if (r < stormP) this.setWeatherKind('storm');
@@ -1286,6 +1363,202 @@ export class Game {
     this.voice = { text: line, left: hold };
   }
 
+  /** One line over the wire, with the subtitle channel and a cooldown to match. */
+  _speak(text, pitch = 0.9) {
+    const hold = audio.voice(text, { pitch });
+    this.voice = { text, left: hold };
+    this._voiceCd = Math.max(this._voiceCd ?? 0, 10);
+  }
+
+  /**
+   * The radio's night: every 5-7 rounds somebody finds your frequency --
+   * sitreps, a roll call by name, the numbers station, a careful hint at one
+   * of the four dials, a storm forecast that binds the next round's sky, or a
+   * crate really pushed out of a bird. It never talks over the story rounds.
+   */
+  _radioNight(n) {
+    if (this.rangeMode || n < 8 || n < this.radioNext) return;
+    if (n === 25 || n === 30 || n === 35) { this.radioNext = n + 1; return; }
+    if (this.heli.phase >= 2) return;      // inbound or landed: the crew talks now
+    this.radioNext = n + 5 + randInt(0, 2);
+    const pool = RADIO_EVENTS.filter((e) => e.id !== this._radioLast && (!e.cond || e.cond(this)));
+    if (!pool.length) return;
+    const ev = pool[randInt(0, pool.length - 1)];
+    this._radioLast = ev.id;
+    this._radioHeard++;
+    audio.radioStart();
+    this._speak(ev.text(this));
+    if (ev.fx) ev.fx(this);
+    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0' });
+  }
+
+  /**
+   * Round 30: the board either has a bearing on you, or it apologises.
+   * Returns true when it took the wire (so the old story beat stays quiet).
+   */
+  _heliRoundStart(n) {
+    if (this.rangeMode) return false;
+    const H = this.heli;
+    if (n !== 30 || H.phase !== 0) return false;
+    if (this.egg?.complete) {
+      H.phase = 1; H.t = 0;
+      this._speak('Four beacons, four lights -- we have a bearing on you. The bird wants three quiet rounds off the deck. Hold the roof and it is yours.');
+      this.bannerShow('A BEARING AT LAST', 'three rounds on the roof, then the bird lands', { dur: 3.8, colour: '#f0d98a' });
+      return true;
+    }
+    if (!H.sorry) {
+      H.sorry = true;
+      this._speak('The bird was fuelled and ready. Then the board went dark -- too few beacons, no bearing on this house. Find the four dials, survivor. We are sorry.');
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The roof tally: a round counts toward the bird only if its last seconds
+   * were spent off the deck. Come down and the count starts over -- the crew
+   * cannot fish anybody out of the yard.
+   */
+  _heliRoundEnd() {
+    const H = this.heli;
+    if (this.rangeMode || (H.phase !== 1 && H.phase !== 2)) return;
+    const onRoof = (this.players ?? [this.player])
+      .some((pl) => pl && !pl.dead && (pl.floor ?? 0) === HELI_PAD.f);
+    if (onRoof) {
+      H.roofRounds++;
+      if (H.roofRounds >= 3 && H.phase === 1) {
+        H.phase = 2; H.t = 0;
+        this._speak('That is three. Bird is inbound over the west trees -- it comes in loud and low, keep your head down.');
+        this.bannerShow('INBOUND', 'the bird is coming in over the west trees', { dur: 3.6, colour: '#f0d98a' });
+        this.shake(3, 1.2);
+      } else if (H.phase === 1) {
+        this._speak(H.roofRounds === 1
+          ? 'One round off the deck and your beacons still burn. The crew sees you. Two more.'
+          : 'Two. Hold one more round on that roof and we are coming for you.');
+      }
+    } else if (H.roofRounds > 0) {
+      H.roofRounds = 0;
+      this._speak('You came off the roof. The bird cannot pick you out of the yard -- get back up there and hold.');
+    }
+  }
+
+  /**
+   * The bird and the crates, ticked on both sides of the wire: the phases
+   * themselves advance only on the authority, but the guest runs the same
+   * timers so the rotor and the inbound glide stay smooth between snapshots.
+   */
+  _heliStep(dt) {
+    const H = this.heli;
+    const auth = !this.net?.playing || this.net.isHost;
+    H.t += dt;
+    if (H.phase === 2) {
+      this._heliSnd = true;
+      audio.heli(Math.min(1, 0.25 + H.t / 9));
+      if (H.t >= 9 && auth) {
+        H.phase = 3; H.t = 0;
+        this.shake(5, 0.9);
+        this.bannerShow('THE BIRD IS DOWN', 'walk over and press E to get in', { dur: 3.6, colour: '#f0d98a' });
+      }
+    } else if (H.phase === 3) {
+      this._heliSnd = true;
+      audio.heli(0.5);
+    } else if (H.phase === 4) {
+      this._heliSnd = true;
+      audio.heli(Math.min(1, 0.5 + H.t * 0.16));
+      if (H.t >= 4.5 && auth) { H.phase = 5; this._finishEvac(); }
+    } else if (this._heliSnd) {
+      this._heliSnd = false;
+      audio.heliOff();
+    }
+    for (let i = this.supplies.length - 1; i >= 0; i--) {
+      const s = this.supplies[i];
+      s.t += dt;
+      if (s.taken) { this.supplies.splice(i, 1); continue; }
+      if (s.t <= s.fall) continue;                 // still under the canopy
+      s.life -= dt;
+      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1);
+      if (s.life <= 0) { this.supplies.splice(i, 1); continue; }   // the night takes it back
+      if (!auth) continue;                          // the host hands out the contents
+      for (const pl of this.players ?? [this.player]) {
+        if (!pl || pl.dead || pl.downed || (pl.floor ?? 0) !== (s.f ?? 0)) continue;
+        if (dist(pl.pos.x, pl.pos.y, s.x, s.y) < 24) { this._takeSupply(s, pl); break; }
+      }
+      if (s.taken) this.supplies.splice(i, 1);      // gone the moment it is opened
+    }
+  }
+
+  /** The crate the radio promised: it lands by the boxes and it is real. */
+  dropSupply() {
+    const spots = this.map.floors?.[0]?.boxSpots ?? [];
+    const spot = spots.length ? spots[randInt(0, spots.length - 1)] : this.map.playerStart;
+    this.supplies.push({
+      x: clamp(spot.x + randRange(-30, 30), T, this.map.w * T - T),
+      y: clamp(spot.y + randRange(-30, 30), T, this.map.h * T - T),
+      f: 0, t: 0, fall: 2.6, life: 100, taken: false, seed: Math.random() * 100,
+    });
+  }
+
+  _takeSupply(s, pl) {
+    s.taken = true;
+    pl.points = (pl.points ?? 0) + 1500;
+    pl.salvage = (pl.salvage ?? 0) + 12;
+    pl.refillAllReserve?.();
+    this.popups.add(pl.pos.x, pl.pos.y - 40, '+1500 CARE PACKAGE', '#f2e26a', 13);
+    this.bannerShow('CARE PACKAGE', 'points, salvage, every magazine topped up', { dur: 2.8, colour: '#f2e26a' });
+    audio.powerUp();
+    if (pl === this.player) this.achievements.unlock('care_package');
+  }
+
+  /** E at the landed bird: the ending the whole radio night was for. */
+  evacuate(p) {
+    const H = this.heli;
+    if (this.rangeMode || H.phase !== 3) return;
+    H.phase = 4; H.t = 0;
+    audio.evacSting();
+    this.shake(6, 1.4);
+    this.bannerShow('WHEELS UP', 'you are leaving this night alive', { dur: 3.4, colour: '#f0d98a' });
+    this._speak('We have them. Deck is clear, going up. Somebody put the kettle on.');
+    this.achievements.unlock('leaving_tonight');
+  }
+
+  /** The bird is a star over the west trees: the run ends, the board remembers. */
+  _finishEvac() {
+    this.gameOver = true;
+    this.evacuated = true;
+    this.overT = 0;
+    audio.heliOff();
+    if (this.net?.playing && !this.net.isHost) return;   // a guest gets its screen off the snapshot
+    const stamp = Date.now();
+    this.board = submitScore({
+      round: this.round, kills: this.stats.kills, headshots: this.stats.headshots,
+      points: this.stats.points, time: Math.round(this.time), evac: true, date: stamp,
+    });
+    this.rank = this.board.findIndex((e) => e.date === stamp);
+  }
+
+  /** Where the bird is right now: inbound glide, on the pad, or climbing out. */
+  _heliPos() {
+    const H = this.heli;
+    const pad = HELI_PAD;
+    let x = pad.x, y = pad.y, scale = 1, alpha = 1, light = 0;
+    if (H.phase === 2) {
+      const k = Math.min(1, H.t / 9);
+      x = pad.x - (1 - k) * 1500;
+      y = pad.y - (1 - k) * 520;
+      scale = 0.35 + k * 0.65;      // altitude reads as size from straight up
+      light = k;
+    } else if (H.phase === 3) {
+      light = 0.5;
+    } else if (H.phase === 4) {
+      const k = Math.min(1, H.t / 4.5);
+      y = pad.y - k * 560;
+      scale = 1 - k * 0.6;
+      alpha = 1 - k * 0.85;
+      light = 1 - k;
+    }
+    return { x, y, scale, alpha, light };
+  }
+
   /** Debug: drop whatever is happening and stand in round n instead. */
   jumpToRound(n) {
     n = clamp(Math.round(n) || 1, 1, 99);
@@ -1293,6 +1566,9 @@ export class Game {
     this.zombies = [];
     this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
     this.fires = []; this.gases = []; this.rifts = [];
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.supplies = [];
+    audio.heliOff();
     this.respawnQueue = 0;
     this.intermission = 0;
     this.startRound(n);
@@ -1824,6 +2100,11 @@ export class Game {
       if (d < 32) offer({ type: 'switch', sw, d, price: 0, affordable: !sw.found });
     }
 
+    if (this.heli.phase === 3 && !this.rangeMode && (p.floor ?? 0) === HELI_PAD.f) {
+      const d = dist(p.pos.x, p.pos.y, HELI_PAD.x, HELI_PAD.y);
+      if (d < 58) offer({ type: 'heli', d, price: 0, affordable: true });
+    }
+
     if (this.map.secretDoorOpen) {
       for (const l of this.map.secretLoot) {
         const d = dist(p.pos.x, p.pos.y, l.x, l.y);
@@ -1839,6 +2120,8 @@ export class Game {
   doInteraction(p = this.player, it = null) {
     it = it ?? this.interactionFor(p);
     if (!it || !p || p.dead || p.downed) return;
+
+    if (it.type === 'heli') { this.evacuate(p); return; }
 
     if (it.type === 'wallbuy') {
       const def = WEAPONS[it.weapon];
@@ -2419,6 +2702,8 @@ export class Game {
       { id: 'round', label: 'END THE ROUND', value: 'GO' },
       { id: 'roundpick', label: 'PICK A ROUND (enter: +1)', value: String(this._dbgRound ?? this.round) },
       { id: 'roundgo', label: 'JUMP TO THE PICKED ROUND', value: 'GO' },
+      { id: 'callbird', label: 'CALL THE BIRD', value: HELI_PHASE_NAMES[this.heli?.phase ?? 0] },
+      { id: 'supply', label: 'DROP A SUPPLY CRATE', value: 'GO' },
     ];
   }
 
@@ -2443,6 +2728,16 @@ export class Game {
         break;
       case 'roundgo':
         this.jumpToRound(this._dbgRound ?? this.round);
+        break;
+      case 'callbird':
+        if (this.heli.phase !== 4) {
+          this.heli.phase = 2; this.heli.t = 0; this.heli.roofRounds = 3;
+          this.bannerShow('DEBUG', 'bird inbound to the roof', { dur: 1.6, colour: '#8fa8bd' });
+        }
+        break;
+      case 'supply':
+        this.dropSupply();
+        this.bannerShow('DEBUG', 'crate on the wire', { dur: 1.6, colour: '#8fa8bd' });
         break;
       case 'god': this.debug.god = !this.debug.god; break;
       case 'ammo': this.debug.ammo = !this.debug.ammo; break;
@@ -2651,9 +2946,13 @@ export class Game {
 
     if (this.gameOver) {
       this.overT += dt;
+      // the ending -- death or EVACUATED -- is something the other machine
+      // has to see too: keep pumping snapshots while this screen is up
+      if (this.net?.active && this.net.isHost) this.net.step(dt);
       this.particles.update(dt, this.map);
       this.popups.update(dt);
       if (this.overT > 1.1 && (this.input.wasPressed('KeyR') || this.input.mouse.pressed)) {
+        if (this.net?.playing && !this.net.isHost) this.net.close();
         this.reset();
         this.started = true;
         this.startRound(1);
@@ -2972,6 +3271,7 @@ export class Game {
     }
 
     this._stepHaunts(dt);
+    this._heliStep(dt);
 
     // ---- the last few: the map goes quiet and starts breathing -------------
     const aliveNow = this.zombies.reduce((n, z) => n + (z.dead ? 0 : 1), 0);
@@ -3185,6 +3485,12 @@ export class Game {
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches ?? []);
     this.traps = new Traps();
+    // the roof finale belongs to the campaign night it was earned in: a new
+    // map (including the range) never inherits a bird, a tally or a crate
+    this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false };
+    this.supplies = [];
+    this._heliSnd = false;
+    audio.heliOff();
 
     // a brand new body: the range must not lend its racks, perks or god-mode
     // to a campaign run, nor the campaign its wounds to the range
@@ -3506,6 +3812,7 @@ export class Game {
     // bells, hums, snowballs and the rain on the glass: the timers and the
     // kinematics are the guest's to run, the consequences are not (isAuth)
     this._stepHaunts(dt);
+    this._heliStep(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
       this.map.setFloor(pl.floor);
       this.useFloor(pl.floor);
@@ -3543,7 +3850,15 @@ export class Game {
       this.shakeT -= dt;
       if (this.shakeT <= 0) { this.shakeMag = 0; this.shakeT = 0; }
     }
-    if (this.gameOver) this.overT += dt;
+    if (this.gameOver) {
+      this.overT += dt;
+      if (this.overT > 1.1 && (this.input?.wasPressed('KeyR') || this.input?.mouse?.pressed)) {
+        this.net?.close?.();
+        this.reset();
+        this.started = true;
+        this.startRound(1);
+      }
+    }
     this._lateUpdate(dt);
   }
 
@@ -3698,6 +4013,12 @@ export class Game {
     this.drawPackAPunch(ctx);
     this.drawSecretSwitches(ctx);
     this.drawSecretLoot(ctx);
+    this.drawSupplies(ctx);
+    if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
+      this.drawHeliPad(ctx);
+      this.drawRoofBeacons(ctx);
+      this.drawHeli(ctx);
+    }
     this.drawPowerups(ctx);
 
     // 3. actors, sorted by feet depth
@@ -4136,6 +4457,21 @@ export class Game {
       L.point(sx(gv.x + 7), sy(gv.y - 5), 52, 0.35 * fl, 'rgba(240,200,96,0.35)', 0.5 * fl);
     }
 
+    // the roof ending lights its own corners: four beacons, one searchlight
+    if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
+      const sws = this.map.floors?.[0]?.secretSwitches ?? [];
+      HELI_BEACONS.forEach((b, i) => {
+        if (!sws[i]?.found) return;
+        const blink = 0.55 + 0.45 * Math.sin(this.time * 6 + i * 1.7);
+        L.point(sx(b.x), sy(b.y - 4), 64, 0.4 * blink,
+          i % 2 ? 'rgba(90,224,106,0.4)' : 'rgba(224,90,90,0.4)', 0.5 * blink);
+      });
+      if (this.heli.phase >= 2 && this.heli.phase <= 4) {
+        const hp = this._heliPos();
+        L.point(sx(hp.x), sy(hp.y), 240 * hp.scale, 0.45 * hp.light, 'rgba(240,235,190,0.3)', 0.4 * hp.light);
+      }
+    }
+
     // armed traps light their own corner of their own storey
     for (const t of this.traps.on(this.map.floor)) {
       if (!t.running) continue;
@@ -4556,6 +4892,163 @@ export class Game {
       ctx.fillText(`${PAP_PRICE}`, x + 1, y + 25);
       ctx.fillStyle = ok ? '#8fe05a' : '#6f6a5c';
       ctx.fillText(`${PAP_PRICE}`, x, y + 24);
+      ctx.restore();
+    }
+  }
+
+  /** The deck the bird wants: painted as soon as the board has a bearing. */
+  drawHeliPad(ctx) {
+    if (this.heli.phase < 1) return;
+    const { x, y } = HELI_PAD;
+    if (!this._vis(x, y, 90)) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(230,225,200,0.5)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 6]);
+    ctx.beginPath(); ctx.arc(x, y, 44, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(230,225,200,0.65)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x - 13, y - 16); ctx.lineTo(x - 13, y + 16);
+    ctx.moveTo(x + 13, y - 16); ctx.lineTo(x + 13, y + 16);
+    ctx.moveTo(x - 13, y); ctx.lineTo(x + 13, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Four corner lights, one per dial downstairs: red and green, slow blink. */
+  drawRoofBeacons(ctx) {
+    const sws = this.map.floors?.[0]?.secretSwitches ?? [];
+    HELI_BEACONS.forEach((b, i) => {
+      if (!this._vis(b.x, b.y, 50)) return;
+      const lit = !!sws[i]?.found;
+      ctx.save();
+      ctx.fillStyle = '#23262c';
+      ctx.fillRect(b.x - 4, b.y - 2, 8, 7);
+      const col = i % 2 ? '#5ae06a' : '#e05a5a';
+      if (lit) {
+        const blink = 0.55 + 0.45 * Math.sin(this.time * 6 + i * 1.7);
+        ctx.globalAlpha = blink;
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 3, 0, TAU); ctx.fill();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.45 * blink;
+        const g = ctx.createRadialGradient(b.x, b.y - 4, 0, b.x, b.y - 4, 28);
+        g.addColorStop(0, col);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 28, 0, TAU); ctx.fill();
+      } else {
+        ctx.fillStyle = '#3a3f47';
+        ctx.beginPath(); ctx.arc(b.x, b.y - 4, 2.4, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    });
+  }
+
+  /** The bird itself: shadow on the deck, searchlight, rotor, nav lights. */
+  drawHeli(ctx) {
+    const H = this.heli;
+    if (H.phase < 2 || H.phase > 4) return;
+    const { x, y, scale, alpha, light } = this._heliPos();
+    if (!this._vis(x, y, 260)) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // the shadow stays on the deck while the bird is high
+    ctx.fillStyle = `rgba(0,0,0,${0.3 * (2 - scale)})`;
+    ctx.beginPath();
+    ctx.ellipse(HELI_PAD.x, HELI_PAD.y + 6, 46 * scale, 15 * scale, 0, 0, TAU);
+    ctx.fill();
+    // searchlight pool, strongest on the way in
+    if (light > 0.05) {
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 130 * scale);
+      g.addColorStop(0, `rgba(240,235,190,${0.32 * light * alpha})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 130 * scale, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    // skids
+    ctx.strokeStyle = '#1d2126'; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.moveTo(-24, 13); ctx.lineTo(18, 13); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-24, 17); ctx.lineTo(18, 17); ctx.stroke();
+    // tail boom and fin
+    ctx.fillStyle = '#39424a';
+    ctx.fillRect(-58, -4, 36, 7);
+    ctx.fillStyle = '#2c343a';
+    ctx.fillRect(-62, -13, 7, 15);
+    // body
+    ctx.fillStyle = '#4a545c';
+    ctx.beginPath(); ctx.ellipse(0, 0, 26, 13, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5d6871';
+    ctx.beginPath(); ctx.ellipse(6, -3, 16, 8, 0, 0, TAU); ctx.fill();
+    // glass
+    ctx.fillStyle = 'rgba(150,200,230,0.55)';
+    ctx.beginPath(); ctx.ellipse(15, -2, 8, 6, 0, 0, TAU); ctx.fill();
+    // nav lights
+    const blink = Math.sin(this.time * 8) > 0;
+    ctx.fillStyle = blink ? '#ff5a4a' : '#5a2a24';
+    ctx.fillRect(-28, -2, 3, 3);
+    ctx.fillStyle = blink ? '#5aff7a' : '#245a2e';
+    ctx.fillRect(25, -2, 3, 3);
+    // rotor: two crossing blades and the disc they blur into
+    const rot = this.time * (H.phase === 4 ? 26 : H.phase === 3 ? 17 : 22);
+    ctx.save();
+    ctx.translate(0, -11);
+    ctx.strokeStyle = 'rgba(212,222,232,0.75)';
+    ctx.lineWidth = 2;
+    for (let b = 0; b < 2; b++) {
+      const a = rot + b * Math.PI / 2;
+      const dx = Math.cos(a) * 52, dy = Math.sin(a) * 10;
+      ctx.beginPath(); ctx.moveTo(-dx, -dy); ctx.lineTo(dx, dy); ctx.stroke();
+    }
+    ctx.globalAlpha = 0.14;
+    ctx.strokeStyle = '#d8e2ea';
+    ctx.beginPath(); ctx.ellipse(0, 0, 52, 10, 0, 0, TAU); ctx.stroke();
+    ctx.restore();
+    ctx.restore();
+  }
+
+  /** Crates the radio drops: a canopy on the way down, a red flare once landed. */
+  drawSupplies(ctx) {
+    for (const s of this.supplies) {
+      if (s.taken || (s.f ?? 0) !== this.map.floor) continue;
+      if (!this._vis(s.x, s.y, 70)) continue;
+      const falling = s.t < s.fall;
+      const k = falling ? Math.min(1, s.t / s.fall) : 1;
+      const y = s.y - (falling ? (1 - k) * 150 : 0);
+      const sway = falling ? Math.sin(s.t * 3 + s.seed) * 8 * (1 - k) : 0;
+      const x = s.x + sway;
+      ctx.save();
+      ctx.fillStyle = `rgba(0,0,0,${0.3 * k})`;
+      ctx.beginPath(); ctx.ellipse(s.x, s.y + 5, 10 * k, 4 * k, 0, 0, TAU); ctx.fill();
+      if (falling) {
+        ctx.fillStyle = '#c8c2ae';
+        ctx.beginPath(); ctx.arc(x, y - 26, 18, Math.PI, TAU); ctx.fill();
+        ctx.strokeStyle = 'rgba(200,194,174,0.7)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 14, y - 24); ctx.lineTo(x, y - 5);
+        ctx.moveTo(x + 14, y - 24); ctx.lineTo(x, y - 5);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#4d5c43';
+      ctx.fillRect(x - 9, y - 8, 18, 12);
+      ctx.fillStyle = '#3a4634';
+      ctx.fillRect(x - 9, y - 8, 18, 3);
+      ctx.fillStyle = '#d8d4c0';
+      ctx.fillRect(x - 2, y - 8, 4, 12);
+      if (!falling && Math.sin(this.time * 5 + s.seed) > -0.2) {
+        ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(x, y - 12, 0, x, y - 12, 36);
+        g.addColorStop(0, 'rgba(255,90,70,0.5)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x, y - 12, 36, 0, TAU); ctx.fill();
+      }
       ctx.restore();
     }
   }

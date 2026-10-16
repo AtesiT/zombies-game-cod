@@ -138,6 +138,7 @@ console.log(`  supersampled: ${off.colours} -> ${on.colours} shades, ` +
 // blows the light layer back up over the top of it, so a lamp looks like it is
 // giving off light instead of being stencilled on the floor.
 function litFrame(dlss) {
+  reseed(777);                      // both lighting frames roll the same night
   const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
   g.begin();
   g.startRound(3);
@@ -173,6 +174,7 @@ console.log(`  lighting: mean ${plainLight.mean.toFixed(2)} -> ${bloomLight.mean
 // pushed contrast, film grain, a deeper vignette. So the corners fall darker
 // and the centre runs warmer than the ungraded picture.
 function graded(dlss) {
+  reseed(777);                      // both graded frames roll the same night
   const g = new M.Game(new M.Input(nc(M.VW, M.VH)));
   g.begin(); g.startRound(3); g.setDlss(dlss);
   for (let i = 0; i < 90; i++) g.update(H);

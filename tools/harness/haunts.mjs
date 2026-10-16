@@ -85,6 +85,8 @@ g.scorchPlayer = () => {};            // fire and gas DOT edit hp directly: stub
 g.powerOn = true;
 g.powerOnAt = g.time;
 settings.set('weather', true);
+g.radioNext = 900;                   // the haunts own this night: the radio's
+                                     // events and their dice are heli.mjs's job
 
 // ---------------------------------------------------------------------------
 console.log('--- the eight new faces exist ---');
@@ -348,7 +350,9 @@ console.log('--- the loudspeaker grows a personality ---');
   g.jumpToRound(25);
   ok(g._storySaid[25] && g.voice && /outside the wire/i.test(g.voice.text), 'round 25: survivors on the radio', g.voice?.text?.slice(0, 60));
   g.jumpToRound(30);
-  ok(g._storySaid[30] && /twenty quiet minutes/i.test(g.voice.text ?? ''), 'round 30: the helicopter wants quiet');
+  // round 30 now belongs to the board: no beacons, no bearing -- it apologises
+  ok(g.heli.sorry && /too few beacons/i.test(g.voice.text ?? ''), 'round 30: without four beacons the board apologises', g.voice?.text?.slice(0, 60));
+  ok(!g._storySaid[30], 'round 30: the old story beat kept quiet while the board spoke');
   g.jumpToRound(35);
   ok(g._storySaid[35] && /look up/i.test(g.voice.text ?? ''), 'round 35: look up');
 
