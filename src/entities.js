@@ -290,6 +290,9 @@ export class Player {
     this.walkPhase = 0;
     this.facing = 1;
     this.grenades = 0;
+    this.molotovs = 0;      // fire bottles: a pool of burning fuel where they land
+    this.gasbombs = 0;      // stink pots: a cloud that slows the horde to a crawl
+    this.ownThrow = { frag: false, molotov: false, gas: false };
     // Whether *this body* has the bench menu open. It used to be one flag on
     // the game, which works for one player and is a lie for four: a guest at
     // the workbench had no menu of its own to open. Each body keeps its own,
@@ -526,10 +529,12 @@ export class Player {
 
   hurt(amount, srcX, srcY, game) {
     if (this.invuln > 0 || this.dead) return false;
-    if (game?.debug?.god) return false;          // the debug panel's god mode
-    // already on the floor: the hits do not kill you, they hurry you up
+    if (this.evac) return false;                 // aboard the bird, out of the war
+    if (game?.debug?.god || this.god) return false;   // the debug panel's god mode
+    // already on the floor: the hits do not kill you and they do not hurry
+    // you up either -- the clock is the only thing out here that finishes
+    // somebody, so a zombie chewing on a downed body is just scenery
     if (this.downed) {
-      this.bleedT = Math.max(0, this.bleedT - 3);
       this.hurtFlash = 1;
       this.lastHurt = game.time;
       audio.playerHurt();
@@ -567,7 +572,7 @@ export class Player {
       const coop = (game.players?.length ?? 1) > 1;
       if (coop && !this.downed) {
         this.downed = true;
-        this.bleedT = 32;
+        this.bleedT = 60;      // a full minute for somebody to reach you
         this.invuln = 1.2;
         game.shake?.(9, 0.5);
         game.popups?.add?.(this.pos.x, this.pos.y - 34, 'DOWN', '#c4463a', 13);
@@ -618,6 +623,15 @@ export class Player {
     // A Shocker's bolt: for most of a second nothing works -- no legs, no
     // trigger, no reload, no knife. It is short on purpose: long enough to be
     // bitten, not long enough to be a free kill.
+    // aboard the helicopter: no legs, no trigger, no knife -- you are luggage
+    if (this.evac) {
+      this.reloading = false;
+      this.recoil = 0;
+      this.knifeAnim = Math.max(0, this.knifeAnim - dt);
+      this.vel.x *= 0.85; this.vel.y *= 0.85;
+      this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
+      return;
+    }
     if (this.stunT > 0) {
       this.stunT -= dt;
       this.reloading = false;
@@ -763,7 +777,7 @@ export class Player {
 
   fire(game) {
     const d = this.def, s = this.slot;
-    if (d.special === 'lure') { game.throwMonkey(); return; }
+    if (d.special === 'lure') { game.throwMonkey(this); return; }
 
     const lastRound = this.dmTimer <= 0 && s.mag === 1;   // this shot empties it
     if (this.dmTimer <= 0) s.mag--;
@@ -2629,9 +2643,8 @@ export class Grenade {
   }
 }
 
-export function throwGrenade(game, px, py, aim) {
-  const speed = 380;
+export function throwGrenade(game, px, py, aim, speed = 380, floor) {
   const g = new Grenade(px, py, Math.cos(aim) * speed, Math.sin(aim) * speed,
-    game.player?.floor ?? game.map.floor);
+    floor ?? game.player?.floor ?? game.map.floor);
   game.grenades.push(g);
 }

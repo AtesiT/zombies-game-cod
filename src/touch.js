@@ -35,12 +35,15 @@ const BUTTONS = [
   { id: 'grenade', key: 'KeyG', label: 'G', colour: 0x6b3a3a },
   { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f },
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
+  { id: 'molotov', key: 'KeyX', label: 'X', colour: 0x8a4a2a },
+  { id: 'gas', key: 'KeyB', label: 'B', colour: 0x4a6b3a },
 ];
 
 // the small ones, laid out in a grid to the left of FIRE: [column, row]
 const GRID = {
   interact: [0, 0], reload: [1, 0], knife: [2, 0],
-  swap: [0, 1], sprint: [1, 1], grenade: [2, 1], medkit: [0, 2],
+  swap: [0, 1], sprint: [1, 1], grenade: [2, 1],
+  medkit: [0, 2], molotov: [1, 2], gas: [2, 2],
 };
 
 export class TouchControls {
@@ -508,6 +511,8 @@ export class TouchControls {
       reload: !!p.reloading || !!(s && d && s.mag < d.mag && s.reserve > 0),
       swap: !!slots[0] && !!slots[1],
       grenade: (p.grenades ?? 0) > 0,
+      molotov: (p.molotovs ?? 0) > 0,
+      gas: (p.gasbombs ?? 0) > 0,
       medkit: (p.medkits ?? 0) > 0 && p.hp < (p.maxHp ?? 100),
     };
     for (const [id, on] of Object.entries(vis)) {

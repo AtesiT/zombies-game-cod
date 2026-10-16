@@ -732,6 +732,17 @@ export class HUD {
       });
     }
 
+    // grenades, bottles, pots -- whatever the pockets hold
+    if ((p.molotovs ?? 0) > 0) {
+      text(ctx, `\u25B2 x${p.molotovs}`, x, yOther - 30, {
+        font: 'bold 10px "Courier New", monospace', colour: '#e08a4a', align: 'right',
+      });
+    }
+    if ((p.gasbombs ?? 0) > 0) {
+      text(ctx, `\u25CF x${p.gasbombs}`, x, yOther - 42, {
+        font: 'bold 10px "Courier New", monospace', colour: '#8ab06a', align: 'right',
+      });
+    }
     // grenades
     if (p.grenades > 0) {
       text(ctx, `\u25C8 x${p.grenades}`, x, yOther - 16, {
@@ -748,7 +759,7 @@ export class HUD {
     } else if (p.reloading) {
       // dry reloads (the mag was empty) now genuinely take longer, so the bar
       // must be measured against what THIS reload started at, not the nominal
-      const k = 1 - p.reloadTimer / (p.reloadTotal || d.reload * p.perkFx.reloadMul);
+      const k = p.reloadK ?? (1 - p.reloadTimer / (p.reloadTotal || d.reload * p.perkFx.reloadMul));
       bar(ctx, x - 90, yAmmo + 6, 90, 4, k, 'rgba(0,0,0,0.55)', GOLD);
       text(ctx, 'RELOADING', x - 94, yAmmo + 10, {
         font: 'bold 9px "Courier New", monospace', colour: GOLD, align: 'right',
@@ -1180,6 +1191,8 @@ export const CONTROL_ROWS = [
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['SPRINT', 'SHIFT   DASH'],
   ['GRENADE', 'G   NADE'],
+  ['MOLOTOV', 'X   MOL'],
+  ['GAS BOMB', 'B   GAS'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
@@ -1193,12 +1206,34 @@ export const CONTROL_ROWS = [
  * The controls, as a panel over the top of things rather than another screen:
  * you open it to look something up and close it again, not to navigate.
  */
+export const TOUCH_CONTROL_ROWS = [
+  ['MOVE', 'LEFT STICK'],
+  ['AIM', 'RIGHT STICK'],
+  ['FIRE', 'FIRE'],
+  ['USE  BUY  REVIVE', 'F'],
+  ['REPAIR A WINDOW', 'HOLD F'],
+  ['WORKBENCH MENU', 'F AT THE BENCH'],
+  ['RELOAD', 'R'],
+  ['SWAP WEAPON', 'Q'],
+  ['SPRINT', '>>'],
+  ['GRENADE', 'G'],
+  ['MOLOTOV', 'X'],
+  ['GAS BOMB', 'B'],
+  ['MEDKIT', 'H'],
+  ['KNIFE', 'V'],
+  ['PAUSE  SETTINGS  MENU', 'II'],
+  ['DEBUG MENU', 'FIVE TAPS ON THE ROUND (PAUSED)'],
+];
+
 export function drawControls(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.88)';
   ctx.fillRect(0, 0, w, h);
 
-  const rows = CONTROL_ROWS;
+  // the page you get is the page for the hands you are using: a phone reads
+  // the stick layout, a keyboard reads the keys
+  const onTouch = !!game.touch?.enabled && game.touch?.panel;
+  const rows = onTouch ? TOUCH_CONTROL_ROWS : CONTROL_ROWS;
   const step = CONTROLS_STEP;
   const cw = Math.min(w - 30, 470);
   const ch = Math.min(h - 24, 62 + rows.length * step + 40);
@@ -1212,7 +1247,8 @@ export function drawControls(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, 'CONTROLS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYBOARD & MOUSE', cx + 14, cy + 20,
+    { font: 'bold 16px "Courier New", monospace', colour: GOLD });
   text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
   });
@@ -1647,14 +1683,17 @@ export function drawDebug(ctx, game, w, h) {
   rows.forEach((r, i) => {
     const sel = i === game.debugIndex;
     if (sel) {
-      const bh = p.rowH - 2, by = y - Math.round(p.rowH * 0.6);
+      // the highlight owns exactly the stripe the hit test reports, so the
+      // row you click is the row that lights up -- it used to sit half a row
+      // above the pointer
+      const bh = p.rowH - 2, by = y + 1;
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
       ctx.fillRect(cx + 6, by, cw - 12, bh);
       ctx.fillStyle = GOLD;
       ctx.fillRect(cx + 6, by, 2, bh);
     }
     const live = r.value === 'ON';
-    text(ctx, r.label, cx + 18, y + 1, {
+    text(ctx, r.label, cx + 18, y + Math.round(p.rowH * 0.72), {
       font: 'bold 12px "Courier New", monospace',
       colour: sel ? INK : INK_DIM,
     });
@@ -1716,8 +1755,10 @@ export function settingsLayout(game, w, h) {
   const maxRows = Math.max(5, Math.floor((h - 40 - HEAD - FOOT) / ROW));
   const shown = Math.min(rows, maxRows);
   const over = rows - shown;
+  // the wheel owns the window; the selection only drags it along when it
+  // walks out of sight
   const top = over > 0
-    ? Math.max(0, Math.min(over, game.settingsIndex - Math.floor(shown / 2)))
+    ? Math.max(0, Math.min(over, game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2))))
     : 0;
   const cw = 420, ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
@@ -1883,6 +1924,7 @@ export function drawCursor(ctx, game) {
 export function drawGameOver(ctx, game, w, h) {
   // The same screen wears two faces: the night got you, or you got out.
   const evac = !!game.evacuated;
+  const guestWaiting = !evac && game.net?.playing && !game.net.isHost;
   ctx.save();
   ctx.fillStyle = evac
     ? `rgba(8,13,7,${Math.min(0.85, game.overT * 0.7)})`
@@ -1937,7 +1979,9 @@ export function drawGameOver(ctx, game, w, h) {
 
   if (game.overT > 1.1) {
     const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
-    text(ctx, evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN', w / 2, h * 0.86, {
+    text(ctx, guestWaiting
+      ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
+      : (evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN'), w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
     });
   }

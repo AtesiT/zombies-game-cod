@@ -119,6 +119,17 @@ g.player.pos.x = 18.5 * 24; g.player.pos.y = 15.5 * 24 + 8;
 g.doInteraction(g.player, { type: 'heli' });
 ok(g.heli.phase === 4, `boarding gives phase ${g.heli.phase}, want 4 (leaving)`);
 ok(g.player.evac === true, 'the one who boarded is still standing on the deck');
+// boot() stubs hurt() to always land, so ask the real prototype instead
+ok(Object.getPrototypeOf(g.player).hurt.call(g.player, 99, 0, 0, g) === false,
+  'a passenger can still be hurt');
+{
+  // a passenger cannot shoot his way back into the war
+  const before = g.tracers.length + g.stats.shots;
+  g.input.mouse.down = true;
+  for (let i = 0; i < 30; i++) g.update(H);
+  g.input.mouse.down = false;
+  ok(g.tracers.length + g.stats.shots === before, 'a passenger kept firing from the cabin');
+}
 {
   // the horde cannot grab whoever is already in the cabin
   const fake = { pos: { x: 100, y: 100 }, floor: 0, dead: false, evac: false, downed: false };
@@ -315,6 +326,10 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   const hit = host.interactionFor(host.player);
   ok(hit?.type === 'heli', `the host's own body gets ${hit?.type ?? 'nothing'} at the pad`);
   host.doInteraction(host.player, hit);
+  ok(host.heli.phase === 3, `the bird left with somebody still on the deck (phase ${host.heli.phase})`);
+  // boarding is a vote: the guest's body has to press its own board
+  const gbody = host.players.find((o) => o !== host.player);
+  host.doInteraction(gbody, { type: 'heli' });
   ok(host.heli.phase === 4, 'the host did not board');
   for (let i = 0; i < 60 * 6 && host.heli.phase === 4; i++) host.update(H);
   ok(host.gameOver && host.evacuated, 'the host did not end EVACUATED');

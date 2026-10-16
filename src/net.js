@@ -23,11 +23,15 @@ import { T } from './art.js';
 const SNAP_HZ = 20;         // world updates per second, host -> guests
 const INPUT_HZ = 30;        // how often a guest reports its hands
 const TIMEOUT = 6;          // seconds of silence before a peer is dropped
-export const MAX_PLAYERS = 4;
+// The room holds as many bodies as the snapshot can carry: the cap used to
+// be four, and a fifth friend standing outside a full room is not a design,
+// it is a queue. Twelve keeps the frames small and the door open.
+export const MAX_PLAYERS = 12;
 
 /** The only keys a phone or a laptop gets to send. Short, bounded, obvious. */
 export const NET_KEYS = [
   'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'Digit1', 'Digit2',
+  'KeyB', 'KeyX',
 ];
 
 const Z_TYPES = Object.keys(ENEMY_TYPES);
@@ -210,6 +214,14 @@ export class Net {
     this.log(want === 'host' ? 'hosting...' : 'joining...');
   }
 
+  /** A code nobody else is using: four letters and digits, no lookalikes. */
+  makeRoomCode() {
+    const abc = 'ABDEFGHJKLMNPQRSTUWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 5; i++) code += abc[Math.floor(Math.random() * abc.length)];
+    return code;
+  }
+
   hostGame(room, name) {
     this.room = room || 'NACHT';
     this.name = name || this.name;
@@ -279,7 +291,16 @@ export class Net {
       this.roster = [{ id: m.you, name: m.name, host: !!m.host, you: true }, ...(m.peers ?? [])];
       this.state = 'open';
       this.log(m.host ? 'you are the host' : m.busy ? 'room already hosted' : `joined, host is ${m.peers?.[0]?.name ?? '?'}`);
-      if (m.busy) { this.error = 'SOMEBODY ELSE IS HOSTING'; this.role = 'guest'; this.isHost = false; }
+      if (m.busy) {
+        // a second host in somebody else's room is how two games became one:
+        // the room is taken, so hosting here failed -- do NOT drift in as a
+        // guest, just say so and hang up
+        this.error = 'SOMEBODY ELSE IS HOSTING';
+        this.role = 'off'; this.isHost = false; this.state = 'closed';
+        this._status();
+        try { this.transport?.close(); } catch { /* already gone */ }
+        return;
+      }
       // the local body takes the id the relay just handed us, so it never
       // collides with the id a guest arrives under
       if (this.game?.player) { this.game.player.netId = m.you; this.game.player.name = m.name; }
@@ -363,6 +384,17 @@ export class Net {
     // tryCraft looks the id up in RECIPES and refuses anything it does not
     // know, so this is not a way to reach any other code with a string.
     if (m.m === 'craft') { this.game?.tryCraft?.(String(m.id ?? '').slice(0, 24), peer.player); return; }
+    // a guest at the debug panel: the row runs on the host, where the world
+    // actually is. GOD is personal -- it arms the guest's own body.
+    if (m.m === 'dbg') {
+      const g2 = this.game;
+      const id = String(m.id ?? '').slice(0, 32);
+      if (!g2) return;
+      if (id === 'god') { peer.player.god = !peer.player.god; return; }
+      const known = g2.debugRows?.().some?.((r) => r.id === id);
+      if (known) g2._debugRun(id);
+      return;
+    }
     if (m.m === 'bye') { this._dropPeer(from); return; }
   }
 
@@ -558,24 +590,26 @@ export class Net {
     const inp = peer.input;
     if (p.dead) return;
 
-    // reviving a downed team-mate comes first: it is the one thing you cannot
-    // do for yourself
-    const downed = g.players.find((o) => o !== p && o.downed && !o.dead
-      && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
-    if (downed && inp.isDown('KeyF')) {
-      peer.reviveT += dt;
-      if (peer.reviveT >= 1.3) {
-        peer.reviveT = 0;
-        g.revive(downed, p);
-      }
-      return;
-    }
-    peer.reviveT = 0;
-
     const it = g.interactionFor?.(p) ?? null;
     if (inp.wasPressed('KeyF', 'KeyE')) g.doInteraction?.(p, it);
+    // the pockets: a guest's frag, bottle and pot fly from the guest's hands,
+    // toward the guest's aim -- the host lends the physics, not the intent
+    if (!p.downed && !p.evac) {
+      if (inp.wasPressed('KeyG')) g.throwFor?.(p, 'frag');
+      if (inp.wasPressed('KeyX')) g.throwFor?.(p, 'molotov');
+      if (inp.wasPressed('KeyB')) g.throwFor?.(p, 'gas');
+      // and a guest can kneel and pull a friend up, exactly like the host:
+      // ten seconds of holding him, five with Quick Revive
+      const fallen = g.players.find((o) => o !== p && o.downed && !o.dead
+        && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
+      if (fallen && inp.isDown('KeyF')) {
+        peer.reviveT = (peer.reviveT ?? 0) + dt;
+        g.reviveNeed = p.perks?.has('quickrevive') ? 5 : 10;
+        g.reviveTarget = fallen;
+        if (peer.reviveT >= g.reviveNeed) { peer.reviveT = 0; g.revive(fallen, p); }
+      } else peer.reviveT = 0;
+    }
     if (inp.isDown('KeyE')) g.rebuildTick?.(dt, p, it); else p._rebuildT = 0;
-    if (inp.wasPressed('KeyG')) g.throwFor?.(p);
     if (inp.wasPressed('KeyH')) g.medkitFor?.(p);
     if (inp.wasPressed('KeyQ')) p.swapActive();
     if (inp.wasPressed('Digit1')) p.setSlot(0);
@@ -652,6 +686,7 @@ export class Net {
       if (pl.sprinting) flags |= 8;
       if (pl.reloading) flags |= 16;
       if (pl.evac) flags |= 32;
+      if ((pl.knifeAnim ?? 0) > 0.1) flags |= 64;
       let perkMask = 0;
       for (let i = 0; i < PERK_IDS.length; i++) if (pl.perks?.has(PERK_IDS[i])) perkMask |= (1 << i);
       p.push([
@@ -661,6 +696,8 @@ export class Net {
         pl.grenades ?? 0, pl.medkits ?? 0, pl.salvage ?? 0, r0(pl.armor ?? 0),
         perkMask, r2(pl.bleedT ?? 0), pl.name ?? '',
         r2(pl.chillT ?? 0), r2(pl.stunT ?? 0),
+        pl.molotovs ?? 0, pl.gasbombs ?? 0,
+        r2(pl.reloading ? clamp(1 - (pl.reloadTimer / (pl.reloadTotal || 1)), 0, 1) : 0),
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -818,10 +855,12 @@ export class Net {
       t.x = e[1]; t.y = e[2]; t.aim = e[3]; t.hp = e[4]; t.maxHp = e[5]; t.floor = e[6];
       t.dead = !!(e[7] & 1); t.downed = !!(e[7] & 2); t.muzzle = !!(e[7] & 4);
       t.sprinting = !!(e[7] & 8); t.reloading = !!(e[7] & 16); t.evac = !!(e[7] & 32);
+      t.knife = !!(e[7] & 64);
       t.weapon = e[8]; t.mag = e[9]; t.reserve = e[10]; t.points = e[11];
       t.grenades = e[12]; t.medkits = e[13]; t.salvage = e[14]; t.armor = e[15];
       t.perkMask = e[16]; t.bleedT = e[17];
       t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
+      t.molotovs = e[21] ?? 0; t.gasbombs = e[22] ?? 0; t.reloadK = e[23] ?? 0;
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -975,6 +1014,13 @@ export class Net {
       pl.sprinting = t.sprinting; pl.points = t.points;
       pl.grenades = t.grenades; pl.medkits = t.medkits; pl.salvage = t.salvage;
       pl.armor = t.armor;
+      pl.molotovs = t.molotovs ?? pl.molotovs ?? 0;
+      pl.gasbombs = t.gasbombs ?? pl.gasbombs ?? 0;
+      // the reload and the knife are things you SEE: without them a guest
+      // watches his own hands do nothing while the host reloads for him
+      pl.reloading = t.reloading;
+      pl.reloadK = t.reloadK ?? 0;
+      if (t.knife) pl.knifeAnim = Math.max(pl.knifeAnim ?? 0, 0.28);
       if (t.weapon && pl.slots && pl.slots[pl.active] !== t.weapon) pl.slots[pl.active] = t.weapon;
       const slot = pl.loadout?.[pl.slots?.[pl.active]] ?? pl.slot;
       if (slot) { slot.mag = t.mag; slot.reserve = t.reserve; slot.owned = true; }
@@ -988,6 +1034,7 @@ export class Net {
         if (changed) pl.applyPerks?.();
       }
       if (t.muzzle) { pl.muzzleFlash = 0.05; pl._muzzle = 1; } else pl._muzzle = 0;
+      if (!this.isHost) pl.knifeAnim = Math.max(0, (pl.knifeAnim ?? 0) - dt);
       // our own barrel points where we are pointing *now*
       if (pl === g.player && typeof this._localAim === 'number') pl.aim = this._localAim;
     }
@@ -1016,6 +1063,13 @@ export class Net {
           packed: m.p ? 1 : (String(m.c ?? '').startsWith('hsl') ? 1 : 0),
         });
         if (m.w !== 'knife') audio.shot?.(m.w ?? 'm1911', 1);
+        else g.players?.forEach?.((o) => {
+          if (o.netId === m.by) o.knifeAnim = Math.max(o.knifeAnim ?? 0, 0.3);
+        });
+        // the flash and the spark belong to the barrel that fired, on every
+        // screen in the room -- the host used to keep them to himself
+        g.particles?.spark?.(m.x0, m.y0, m.a ?? 0, 3, '#ffd98a');
+        g.particles?.smoke?.(m.x0, m.y0, 2);
         break;
       case 'hit':
         g.particles?.blood?.(m.x, m.y, m.a ?? 0, m.head ? 8 : 5);

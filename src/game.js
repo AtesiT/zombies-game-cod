@@ -15,7 +15,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -326,6 +326,7 @@ export class Game {
     this.player.crafted = {};
     this.zombies = [];
     this.grenades = [];
+    this.pThrows = [];
     this.monkeys = [];
     this.powerups = [];
     this.webBlasts = [];
@@ -420,6 +421,7 @@ export class Game {
     this.box._now = () => this.time;
     this.workbench = new Workbench(this.map.workbench);
     this.egg = new EasterEgg(this.map.secretSwitches);
+    this._beaconTold = 0;   // the 'four beacons' explanation, said once
     // (the bench menu lives on each body now -- see the craftOpen proxy below)
     this.dogRound = false;
     this.timers = { instakill: 0, doublepoints: 0, firesale: 0, deathmachine: 0 };
@@ -659,12 +661,12 @@ export class Game {
     this.net?.emit('revive', { name: downed.name });
   }
 
-  throwFor(p) {
-    if (!p || p.dead || p.downed) return;
-    if ((p.grenades ?? 0) <= 0) return;
-    p.grenades--;
-    throwGrenade(this, p.pos.x, p.pos.y, p.aim);
-    p.vel.x -= Math.cos(p.aim) * 30;
+  throwFor(p, kind = 'frag') {
+    if (!p || p.dead || p.downed || p.evac) return;
+    const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
+    if ((p[pocket] ?? 0) <= 0) return;
+    p[pocket]--;
+    this.throwAtCursor(p, kind, p.aim);
     this.shake(2, 0.1);
   }
 
@@ -779,6 +781,13 @@ export class Game {
   startRound(n) {
     this.round = n;
     this.stats.round = n;
+    // throwables come back two at a time for whoever already owns the kind
+    for (const pl of this.players ?? []) {
+      if (!pl || !pl.ownThrow) continue;
+      if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
+      if (pl.ownThrow.molotov) pl.molotovs = Math.min(GRENADE_MAX, pl.molotovs + 2);
+      if (pl.ownThrow.gas) pl.gasbombs = Math.min(GRENADE_MAX, pl.gasbombs + 2);
+    }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
     for (const pl of this.players ?? []) {
@@ -791,6 +800,16 @@ export class Game {
       pl.evac = false;
       pl._deathTold = 0;
       pl._downTold = 0;
+      if ((this.players?.length ?? 1) > 1 && pl !== this.player) {
+        // bled out last round: you come back with your sidearm and nothing
+        // else -- the good guns stay where you dropped them
+        const d = WEAPONS.m1911;
+        pl.loadout = { m1911: { owned: true, mag: d.mag, reserve: d.maxReserve } };
+        pl.slots = ['m1911', null];
+        pl.active = 0;
+        pl.reloading = false;
+        pl.reloadTimer = 0;
+      }
       pl.hp = pl.maxHp;
       pl.bleedT = 0;
       pl.invuln = 2;
@@ -1250,7 +1269,7 @@ export class Game {
   throwZombieProjectile(z, target, kind) {
     const p = target ?? this.player;
     if (!p) return;
-    const scatter = kind === 'snow' ? 96 : kind === 'bottle' ? 44 : 50;
+    const scatter = kind === 'snow' ? 54 : kind === 'bottle' ? 44 : 50;
     const a = randRange(0, TAU), r = Math.sqrt(Math.random()) * scatter;
     const tx = p.pos.x + Math.cos(a) * r, ty = p.pos.y + Math.sin(a) * r;
     this.zThrows.push(new ZThrow(z.pos.x, z.pos.y - 10, tx, ty, kind, z.floor ?? this.map.floor));
@@ -1530,6 +1549,16 @@ export class Game {
   evacuate(p) {
     const H = this.heli;
     if (this.rangeMode || H.phase !== 3) return;
+    if (this.net?.playing && !this.net.isHost) { if (p) p.evac = true; return; }
+    if (p) p.evac = true;
+    const alive = (this.players ?? []).filter((o) => o && !o.dead);
+    const waiting = alive.filter((o) => !o.evac);
+    if (alive.length > 1 && waiting.length) {
+      this.bannerShow(`${alive.length - waiting.length}/${alive.length} ABOARD`,
+        `${waiting.map((o) => o.name).join(', ')} still on the deck`,
+        { dur: 2.4, colour: '#f0d98a' });
+      return;
+    }
     H.phase = 4; H.t = 0;
     audio.evacSting();
     audio.victory();
@@ -1555,6 +1584,16 @@ export class Game {
       points: this.stats.points, time: Math.round(this.time), evac: true, date: stamp,
     });
     this.rank = this.board.findIndex((e) => e.date === stamp);
+  }
+
+  /** Keep the settings window over the row the arrows just landed on. */
+  _viewFollow() {
+    const L = settingsLayout(this, VW, VH);
+    if (!L.over) { this.settingsView = 0; return; }
+    let v = this.settingsView ?? L.top;
+    if (this.settingsIndex < v) v = this.settingsIndex;
+    else if (this.settingsIndex >= v + L.shown) v = this.settingsIndex - L.shown + 1;
+    this.settingsView = clamp(v, 0, L.over);
   }
 
   /** The pause menu's last row: leave the run and stand at the front door. */
@@ -1615,13 +1654,24 @@ export class Game {
    * It does hold the regen timer open, which is the point -- you cannot stand
    * in a fire and heal through it.
    */
-  scorchPlayer(dmg, game) {
+  scorchPlayer(dmg, game, owner) {
     const p = this.player;
     if (p.dead || this.gameOver) return;
+    if (p.evac || p.downed) return;               // aboard, or already on the floor
+    if (this.debug?.god || p.god) return;         // god mode means ALL of it
+    // your own fire and your own gas know you, if you own the flopper
+    if (owner && owner === p && p.perks?.has('phdflopper')) return;
     p.hp -= dmg;
     p.lastHurt = this.time;
     p.hurtFlash = Math.max(p.hurtFlash ?? 0, 0.25);
-    if (p.hp <= 0) { p.hp = 0; p.dead = true; this.gameOver = true; this.overT = 0; }
+    if (p.hp <= 0) {
+      p.hp = 0;
+      const coop = (this.players?.length ?? 1) > 1;
+      if (coop) {
+        p.downed = true; p.bleedT = 60; p.invuln = 1.2;
+        this.popups?.add?.(p.pos.x, p.pos.y - 34, 'DOWN', '#c4463a', 13);
+      } else { p.dead = true; this.gameOver = true; this.overT = 0; }
+    }
   }
 
   /**
@@ -1645,8 +1695,8 @@ export class Game {
     audio.chime();
   }
 
-  collectPowerup(pu) {
-    const p = this.player;
+  collectPowerup(pu, who) {
+    const p = who || this.player;
     switch (pu.id) {
       case 'maxammo':
         p.refillAllReserve();
@@ -1911,6 +1961,9 @@ export class Game {
     this.net?.emit('shot', {
       x0: Math.round(muzzle.x), y0: Math.round(muzzle.y),
       x1: Math.round(hx), y1: Math.round(hy),
+      // the spark on a guest's screen points down the barrel: send the angle
+      // or it always faces east (m.a ?? 0)
+      a: +Math.atan2(hy - muzzle.y, hx - muzzle.x).toFixed(2),
       c: tc, w: def.id, p: def.packed ? 1 : 0, by: by?.netId ?? 0,
     });
   }
@@ -2052,8 +2105,9 @@ export class Game {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
         offer({
-          type: 'grenade', price: GRENADE_PRICE, d,
-          affordable: p.points >= GRENADE_PRICE && p.grenades < 9,
+          type: 'grenade', kind: g.kind ?? 'frag', price: GRENADE_PRICE, d,
+          affordable: p.points >= GRENADE_PRICE
+            && (p[{ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[g.kind ?? 'frag']] ?? 0) < GRENADE_MAX,
         });
       }
     }
@@ -2214,11 +2268,15 @@ export class Game {
     }
 
     if (it.type === 'grenade') {
-      if (p.points < it.price || p.grenades >= 9) { audio.deny(); return; }
+      const kind = it.kind ?? 'frag';
+      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
+      if (p.points < it.price || (p[pocket] ?? 0) >= GRENADE_MAX) { audio.deny(); return; }
       p.points -= it.price;
-      p.grenades += 2;
+      p[pocket] = (p[pocket] ?? 0) + 2;
+      p.ownThrow[kind] = true;
       audio.buy();
-      this.popups.add(p.pos.x, p.pos.y - 26, 'FRAG GRENADES', '#f0d98a', 12);
+      this.popups.add(p.pos.x, p.pos.y - 26,
+        { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind], '#f0d98a', 12);
       return;
     }
 
@@ -2348,6 +2406,15 @@ export class Game {
       audio.chime();
       this.popups.add(p.pos.x, p.pos.y - 28,
         `SIGNAL ${this.egg.found}/${this.egg.switches.length}`, '#9fd0e0', 11);
+      // four lit beacons: say plainly what happens next, so nobody stands
+      // on the roof at round 25 wondering whether the game forgot them
+      if (this.egg.found >= 4 && !this._beaconTold) {
+        this._beaconTold = 1;
+        this.bannerShow('FOUR BEACONS LIT',
+          'at round 30 the board gives a bearing -- then hold the roof three rounds',
+          { dur: 4.2, colour: '#9fd0e0' });
+        this._speak('Four beacons on the deck and still counting. Board cuts the bearing at round thirty. Until then the roof is just a roof.');
+      }
       if (this.egg.complete && this.egg.state === 'idle') {
         this.egg.start();
         this.bannerShow('THE RADIO SPEAKS', 'something is transmitting', { dur: 3.0, colour: '#9fd0e0' });
@@ -2478,9 +2545,41 @@ export class Game {
     audio.door();
   }
 
-  /** Throw a Monkey Bomb from the player's hands. */
-  throwMonkey() {
-    const p = this.player;
+  /**
+   * A throwable leaves toward the pointer: the further the cursor, the harder
+   * the throw, so what you point at is roughly what you hit. Remote bodies
+   * have no pointer on this machine, so they throw along their aim instead.
+   */
+  throwAtCursor(p, kind, aimOverride, distOverride) {
+    let aim = p.aim ?? 0;
+    let d = 200;
+    if (distOverride != null) { aim = aimOverride ?? aim; d = distOverride; }
+    else if (aimOverride == null) {
+      const mw = this.screenToWorld(this.input.mouse.x, this.input.mouse.y);
+      const dx = mw.x - p.pos.x, dy = mw.y - p.pos.y;
+      const dd = Math.hypot(dx, dy);
+      if (dd > 8) { aim = Math.atan2(dy, dx); d = dd; }
+    }
+    const speed = Math.max(150, Math.min(700, d * 1.64));
+    const floor = p.floor ?? this.map.floor;
+    p.vel.x -= Math.cos(aim) * 26;
+    p.vel.y -= Math.sin(aim) * 26;
+    if (kind === 'frag') {
+      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor);
+      audio.shot?.('throw', 0);
+      return;
+    }
+    this.pThrows.push({
+      kind, x: p.pos.x + Math.cos(aim) * 10, y: p.pos.y + Math.sin(aim) * 10,
+      vx: Math.cos(aim) * speed, vy: Math.sin(aim) * speed,
+      floor, t: 0, rot: 0, owner: p,
+    });
+    audio.shot?.('throw', 0);
+  }
+
+  /** Throw a Monkey Bomb from the player's hands -- whoever that player is. */
+  throwMonkey(by) {
+    const p = by || this.player;
     const def = WEAPONS.monkeybomb;
     p.slot.mag--;
     p.fireTimer = def.delay;
@@ -2721,7 +2820,7 @@ export class Game {
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
     return [
-      { id: 'god', label: 'GOD MODE', value: on(d.god) },
+      { id: 'god', label: 'GOD MODE', value: on(d.god || this.player?.god) },
       { id: 'ammo', label: 'INFINITE AMMO', value: on(d.ammo) },
       { id: 'paths', label: 'SHOW WALLS & PATHS', value: on(d.paths) },
       { id: 'points', label: '+5000 POINTS', value: 'GO' },
@@ -2841,6 +2940,7 @@ export class Game {
     if (oPressed) {
       const was = this.settingsOpen;
       this.settingsOpen = !this.settingsOpen;
+      if (this.settingsOpen) this.settingsView = null;
       openedByO = !was;
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
@@ -2858,17 +2958,33 @@ export class Game {
     if (this.settingsOpen) {
       const S = settings;
       // the mouse and the wheel are first-class citizens here too: hover
-      // picks a row, a click flips or drags it, the wheel walks the list
+      // picks a row, a click flips or drags it, the wheel scrolls the window
+      // (the selection keeps its place while the list moves under it)
       const m = this.input.mouse;
       const wheeled = !!this.input.wheel;
       if (wheeled) {
-        this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
+        const L = settingsLayout(this, VW, VH);
+        if (L.over > 0) {
+          // a list taller than the panel: the wheel scrolls the window and
+          // the selection keeps its place
+          const cur = this.settingsView ?? L.top;
+          this.settingsView = clamp(cur + this.input.wheel, 0, L.over);
+        } else {
+          // everything fits: the wheel walks the selection, as it always did
+          this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
+        }
         audio.dryFire();
       }
+      // hover only picks a row while the pointer is actually moving: a hand
+      // resting on the panel must not pin the keyboard's selection
+      const moved = m.x !== (this._smx ?? -999) || m.y !== (this._smy ?? -999);
+      this._smx = m.x; this._smy = m.y;
       const hover = settingsRowAt(this, VW, VH, m.x, m.y);
-      // the wheel wins over the hover in the same frame, or a scroll while
-      // the pointer rests on a row would snap straight back to that row
-      if (!wheeled && hover >= 0 && hover !== this.settingsIndex) { this.settingsIndex = hover; audio.dryFire(); }
+      if (!wheeled && moved && hover >= 0 && hover !== this.settingsIndex) {
+        this.settingsIndex = hover;
+        this._viewFollow();
+        audio.dryFire();
+      }
       if (m.pressed && hover >= 0) {
         const d = SETTING_DEFS[hover];
         if (d.type === 'range') {
@@ -2883,10 +2999,12 @@ export class Game {
       }
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
+        this._viewFollow();
         audio.dryFire();
       }
       if (this.input.wasPressed('ArrowDown', 'KeyS')) {
         this.settingsIndex = (this.settingsIndex + 1) % SETTING_DEFS.length;
+        this._viewFollow();
         audio.dryFire();
       }
       if (this.input.wasPressed('ArrowLeft', 'KeyA')) S.nudge(SETTING_DEFS[this.settingsIndex].id, -1);
@@ -2962,7 +3080,14 @@ export class Game {
       if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
         const row = rows[this.debugIndex] ?? rows[0];
-        if (row) this._debugRun(row.id);
+        if (row) {
+          if (this.net?.playing && !this.net.isHost) {
+            // the guest's panel is a remote control: the world lives on the
+            // host, so the row runs there (GOD arms your own body only)
+            this.net.send(this.net.hostId, { m: 'dbg', id: row.id });
+            audio.dryFire();
+          } else this._debugRun(row.id);
+        }
       }
       if (this.input.wasPressed('Escape', 'KeyP') || (bq && !openedByBq)) {
         this.debugOpen = false;
@@ -3076,8 +3201,18 @@ export class Game {
       // grenades
       if (this.input.wasPressed('KeyG') && this.player.grenades > 0 && !this.player.dead) {
         this.player.grenades--;
-        throwGrenade(this, this.player.pos.x, this.player.pos.y, this.player.aim);
-        this.player.vel.x -= Math.cos(this.player.aim) * 30;
+        this.throwAtCursor(this.player, 'frag');
+        this.shake(2, 0.1);
+      }
+      // molotovs and gas: their own pockets, their own keys
+      if (this.input.wasPressed('KeyX') && this.player.molotovs > 0 && !this.player.dead) {
+        this.player.molotovs--;
+        this.throwAtCursor(this.player, 'molotov');
+        this.shake(2, 0.1);
+      }
+      if (this.input.wasPressed('KeyB') && this.player.gasbombs > 0 && !this.player.dead) {
+        this.player.gasbombs--;
+        this.throwAtCursor(this.player, 'gas');
         this.shake(2, 0.1);
       }
       // medkit
@@ -3099,7 +3234,9 @@ export class Game {
     if (fallen && !this.player.downed && !this.player.dead && this.input.isDown('KeyF')) {
       this._reviveT = (this._reviveT ?? 0) + dt;
       this.player.vel.x *= 0.86; this.player.vel.y *= 0.86;
-      if (this._reviveT >= 1.3) { this._reviveT = 0; this.revive(fallen, this.player); }
+      this.reviveNeed = this.player.perks?.has('quickrevive') ? 5 : 10;
+      this.reviveTarget = fallen;
+      if (this._reviveT >= this.reviveNeed) { this._reviveT = 0; this.revive(fallen, this.player); }
     } else {
       this._reviveT = 0;
       // not "is the menu shut" but "was it shut when the frame started": the
@@ -3193,13 +3330,43 @@ export class Game {
     }
     this.monkeys = this.monkeys.filter((m) => !m.remove);
 
+    // ---- the players' own bottles and pots, in flight ----------------------
+    for (let i = this.pThrows.length - 1; i >= 0; i--) {
+      const th = this.pThrows[i];
+      th.t += dt;
+      const tmp = { x: th.x, y: th.y };
+      this.map.moveCircle(tmp, th.vx * dt, th.vy * dt, 3, th.floor);
+      th.x = tmp.x; th.y = tmp.y;
+      const f = Math.max(0, 1 - 1.7 * dt);
+      th.vx *= f; th.vy *= f;
+      th.rot += dt * 10;
+      const slow = Math.hypot(th.vx, th.vy) < 26;
+      if (slow || th.t > 2.6) {
+        this.pThrows.splice(i, 1);
+        if (th.kind === 'molotov') {
+          this.fires.push({ x: th.x, y: th.y, r: 46, life: 4.5, max: 4.5, tick: 0, puff: 0, f: th.floor, owner: th.owner });
+          audio.explode?.(0.4);
+          this.explosionLights?.push?.({ x: th.x, y: th.y, r: 90, life: 0.35, max: 0.35, colour: '#f07a2a' });
+          this.shake(3, 0.2);
+        } else {
+          this.gases.push({ x: th.x, y: th.y, r: 54, life: 7, max: 7, puff: 0, drift: randRange(0, TAU), f: th.floor, owner: th.owner });
+          audio.growl?.(0.7, 0.5);
+        }
+      }
+    }
+
     // ---- power-ups ---------------------------------------------------------
     for (const pu of this.powerups) pu.update(dt);
     for (const pu of this.powerups) {
       if ((pu.f ?? 0) !== this.map.floor) continue;
-      if (dist(pu.x, pu.y, this.player.pos.x, this.player.pos.y) < 24) {
-        pu.dead = true;
-        this.collectPowerup(pu);
+      for (const pl of this.players ?? []) {
+        if (!pl || pl.dead || pl.downed || pl.evac) continue;
+        if ((pl.floor ?? 0) !== (pu.f ?? 0)) continue;
+        if (dist(pu.x, pu.y, pl.pos.x, pl.pos.y) < 24) {
+          pu.dead = true;
+          this.collectPowerup(pu, pl);
+          break;
+        }
       }
     }
     this.powerups = this.powerups.filter((p) => !p.dead);
@@ -3284,7 +3451,7 @@ export class Game {
       }
       if (!p.dead && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
         this.inFire = 1;
-        this.scorchPlayer(20 * dt, this);
+        this.scorchPlayer(20 * dt, this, f.owner);
       }
       f.puff -= dt;
       if (f.puff <= 0) {
@@ -3299,15 +3466,23 @@ export class Game {
       g.life -= dt;
       if (g.life <= 0) { this.gases.splice(i, 1); continue; }
       g.drift += dt * 0.3;
-      // zombies choke in it; it is not what kills them
-      for (const z of this.zombies) {
-        if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
-        if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
-        z.webbed = Math.max(z.webbed ?? 0, 0.45);
+      // zombies choke in it; a thrown pot also bites a little
+      g.tick = (g.tick ?? 0) + dt;
+      while (g.tick >= 0.5) {
+        g.tick -= 0.5;
+        for (const z of this.zombies) {
+          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
+          z.webbed = Math.max(z.webbed ?? 0, 0.45);
+          if (g.owner) {
+            const res = z.hurt(7, false, this, randRange(0, TAU));
+            if (res === 2) this.onZombieKilled(z, false, null, 'gas');
+          }
+        }
       }
       if (!p.dead && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
         this.inGas = 1;
-        this.scorchPlayer(11 * dt, this);
+        this.scorchPlayer(11 * dt, this, g.owner);
       }
       g.puff -= dt;
       if (g.puff <= 0) {
@@ -3785,7 +3960,7 @@ export class Game {
   _startHost() {
     const net = this.net;
     const linked = this._ensureRelay();
-    net.hostGame('NACHT', net.name || 'PLAYER');
+    net.hostGame(net.makeRoomCode(), net.name || 'PLAYER');
     // hosting without a relay is not fatal: you just play by yourself, and
     // the HUD says so rather than pretending a room is open
     if (!linked) this.bannerShow('NO RELAY', 'run with node server.mjs to let people join',
@@ -3866,6 +4041,16 @@ export class Game {
     // The bench is the one thing a guest drives for itself: the menu is local,
     // so it opens the instant E goes down with no round trip, and only the
     // building travels (net.js, `m:'craft'`).
+    // kneeling over a friend: the host owns the revive, the guest owns the bar
+    if (pl && !pl.dead && !pl.downed && this.input?.isDown('KeyF')) {
+      const fallen = this.players.find((o) => o !== pl && o.downed && !o.dead
+        && dist(pl.pos.x, pl.pos.y, o.pos.x, o.pos.y) < 40);
+      if (fallen) {
+        this.reviveTarget = fallen;
+        this.reviveNeed = pl.perks?.has('quickrevive') ? 5 : 10;
+        this._reviveT = Math.min(this.reviveNeed, (this._reviveT ?? 0) + dt);
+      } else { this._reviveT = 0; this.reviveTarget = null; }
+    } else if (this.net?.role === 'guest') { this._reviveT = 0; this.reviveTarget = null; }
     const craftWasOpen = this.craftOpen;
     if (craftWasOpen) this._craftInput(dt, pl, true);
     if (!craftWasOpen && pl && !pl.dead && !pl.downed
@@ -4068,6 +4253,18 @@ export class Game {
     // 3. actors, sorted by feet depth
     const actors = this.zombies.filter((z) => !z.remove && (z.floor ?? 0) === this.map.floor);
     const list = actors.map((z) => ({ y: z.pos.y, d: () => z.draw(ctx, this.art, this.time) }));
+    // the revive channel: a green bar over the body somebody is kneeling by
+    if (this.reviveTarget && (this._reviveT ?? 0) > 0 && !this.reviveTarget.dead) {
+      const tgt = this.reviveTarget;
+      const k = clamp(this._reviveT / (this.reviveNeed ?? 10), 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(tgt.pos.x - 16, tgt.pos.y - 32, 32, 5);
+      ctx.fillStyle = '#7fd75a';
+      ctx.fillRect(tgt.pos.x - 16, tgt.pos.y - 32, Math.round(32 * k), 5);
+      ctx.strokeStyle = 'rgba(127,215,90,0.5)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(tgt.pos.x - 16.5, tgt.pos.y - 32.5, 33, 6);
+    }
     for (const pl of (this.players ?? [this.player])) {
       if (!pl || pl.evac || (pl.floor ?? this.map.floor) !== this.map.floor) continue;
       list.push({ y: pl.pos.y + 0.5, d: () => pl.draw(ctx, this.art) });
@@ -4162,6 +4359,27 @@ export class Game {
         ctx.fillStyle = 'rgba(255,90,60,0.9)';
         ctx.fillRect(g.pos.x - 1, g.pos.y - 5, 2, 2);
       }
+    }
+
+    // 6b. the players' own bottles and pots, tumbling to where they were aimed
+    for (const th of this.pThrows) {
+      if ((th.floor ?? this.map.floor) !== this.map.floor) continue;
+      ctx.save();
+      ctx.translate(th.x, th.y);
+      ctx.rotate(Math.sin(th.rot) * 0.6);
+      if (th.kind === 'molotov') {
+        ctx.fillStyle = '#7a3a2a';
+        ctx.fillRect(-2, -3, 4, 6);
+        ctx.fillStyle = '#d0603c';
+        ctx.fillRect(-1, -6, 2, 3);
+        if (Math.floor(th.t * 14) % 2 === 0) { ctx.fillStyle = '#f6c04a'; ctx.fillRect(-1, -8, 2, 2); }
+      } else {
+        ctx.fillStyle = '#4a5c4a';
+        ctx.fillRect(-2, -4, 4, 7);
+        ctx.fillStyle = '#8ab06a';
+        ctx.fillRect(-2, -1, 4, 2);
+      }
+      ctx.restore();
     }
 
     // 7. lightning arcs + web blasts
@@ -5092,101 +5310,135 @@ export class Game {
    * the flow field; this carries the rust.
    */
   drawWrecks(ctx) {
-    // ---- the car, tiles (30..31, 46), nose to the west ----
+    // ---- the car, tiles (30..31, 46): a burnt sedan, nose to the west -----
     {
       const x = 31 * T, y = 46.5 * T;
-      if (this._vis(x, y, 90)) {
+      if (this._vis(x, y, 110)) {
         ctx.save();
-        ctx.fillStyle = 'rgba(58,44,30,0.85)';
-        ctx.beginPath(); ctx.ellipse(x, y + 4, 44, 22, 0, 0, TAU); ctx.fill();
-        ctx.fillStyle = 'rgba(40,32,22,0.55)';
-        ctx.beginPath(); ctx.ellipse(x - 30, y + 10, 16, 7, 0.4, 0, TAU); ctx.fill();
-        ctx.beginPath(); ctx.ellipse(x + 32, y - 6, 13, 6, -0.3, 0, TAU); ctx.fill();
-        // body
-        ctx.fillStyle = '#3a2b20';
-        ctx.fillRect(x - 30, y - 10, 60, 20);
-        ctx.fillStyle = '#4a3626';
-        ctx.fillRect(x - 30, y - 10, 60, 5);
-        // the cabin, stove in
-        ctx.fillStyle = '#2c2118';
-        ctx.fillRect(x - 14, y - 16, 30, 8);
-        ctx.fillStyle = '#171310';
-        ctx.fillRect(x - 11, y - 14, 10, 5);
-        ctx.fillRect(x + 3, y - 14, 10, 5);
-        ctx.fillStyle = 'rgba(150,180,200,0.25)';
-        ctx.fillRect(x - 11, y - 14, 4, 5);
-        // wheels: two left, two burned down to axles
-        ctx.fillStyle = '#1a1712';
-        ctx.beginPath(); ctx.arc(x - 18, y + 10, 6, 0, TAU); ctx.fill();
-        ctx.beginPath(); ctx.arc(x + 18, y + 10, 6, 0, TAU); ctx.fill();
-        ctx.fillStyle = '#241d15';
-        ctx.fillRect(x - 30, y + 7, 8, 3);
-        // scorch along the flank, and a door hanging open
-        ctx.fillStyle = 'rgba(20,16,12,0.55)';
-        ctx.fillRect(x - 26, y - 6, 22, 8);
-        ctx.fillRect(x + 6, y - 4, 18, 6);
-        ctx.fillStyle = '#33261b';
+        // the ground around it: scorched earth, mud and wheel ruts, wide
+        ctx.fillStyle = 'rgba(52,40,27,0.9)';
+        ctx.beginPath(); ctx.ellipse(x, y + 2, 62, 30, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(36,28,19,0.7)';
+        ctx.beginPath(); ctx.ellipse(x - 6, y + 4, 44, 20, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(30,24,16,0.5)';
+        for (const [mx, my, mr] of [[-58, 10, 12], [52, -12, 14], [40, 16, 10], [-40, -18, 9]]) {
+          ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
+        }
+        ctx.strokeStyle = 'rgba(28,22,15,0.55)';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x - 70, y + 16); ctx.quadraticCurveTo(x - 20, y + 22, x + 30, y + 18); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x - 66, y + 24); ctx.quadraticCurveTo(x - 10, y + 30, x + 40, y + 26); ctx.stroke();
+        // body: hood, cabin, boot -- a sedan silhouette, not a brick
+        ctx.translate(x, y);
+        ctx.rotate(-0.06);
+        ctx.fillStyle = '#191512';                       // shadow under it
+        ctx.beginPath(); ctx.ellipse(0, 4, 34, 13, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#5a3524';                       // rusted paint
+        ctx.fillRect(-32, -9, 64, 18);
+        ctx.fillStyle = '#6b4029';
+        ctx.fillRect(-32, -9, 64, 4);
+        ctx.fillStyle = '#47281a';                       // hood and boot dips
+        ctx.fillRect(-32, -6, 14, 12);
+        ctx.fillRect(20, -6, 12, 12);
+        ctx.fillStyle = '#241a14';                       // the cabin
+        ctx.fillRect(-16, -12, 30, 24);
+        ctx.fillStyle = '#0e1116';                       // glass, most of it gone
+        ctx.fillRect(-14, -10, 8, 20);
+        ctx.fillRect(4, -10, 8, 20);
+        ctx.fillStyle = 'rgba(160,190,210,0.16)';        // what is left of it
+        ctx.fillRect(-14, -10, 3, 7);
+        ctx.fillRect(4, 3, 3, 6);
+        ctx.fillStyle = '#3a2317';                       // scorch over the roof
+        ctx.fillRect(-6, -12, 10, 24);
+        ctx.fillStyle = '#7a4a2e';                       // rust blooms
+        for (const [rx, ry] of [[-26, -4], [12, 4], [-8, 7], [24, -6]]) ctx.fillRect(rx, ry, 4, 3);
+        // wheels: two on, one off and lying by the door
+        ctx.fillStyle = '#101014';
+        ctx.fillRect(-26, 8, 12, 5); ctx.fillRect(14, 8, 12, 5);
+        ctx.fillRect(-26, -13, 12, 5); ctx.fillRect(14, -13, 12, 5);
+        ctx.fillStyle = '#2c2c34';
+        ctx.fillRect(-23, 9, 6, 3); ctx.fillRect(17, 9, 6, 3);
+        ctx.beginPath(); ctx.arc(30, 16, 6, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#3c3c46';
+        ctx.beginPath(); ctx.arc(30, 16, 2.5, 0, TAU); ctx.fill();
+        // the driver's door, torn open across the mud
         ctx.save();
-        ctx.translate(x - 2, y - 8);
-        ctx.rotate(-0.5);
-        ctx.fillRect(0, 0, 4, 16);
+        ctx.translate(-4, 10); ctx.rotate(0.9);
+        ctx.fillStyle = '#5a3524';
+        ctx.fillRect(0, 0, 4, 20);
+        ctx.fillStyle = '#0e1116';
+        ctx.fillRect(1, 3, 2, 8);
         ctx.restore();
         ctx.restore();
       }
     }
-    // ---- the tank, tiles (63..65, 43..44), turret traversed askew ----
+    // ---- the tank, tiles (63..65, 43..44): hull, turret, a thrown track ---
     {
       const x = 64.5 * T, y = 44 * T;
       if (this._vis(x, y, 120)) {
         ctx.save();
-        ctx.fillStyle = 'rgba(62,48,32,0.85)';
-        ctx.beginPath(); ctx.ellipse(x, y + 6, 58, 30, 0, 0, TAU); ctx.fill();
-        ctx.fillStyle = 'rgba(42,34,22,0.5)';
-        ctx.beginPath(); ctx.ellipse(x - 44, y + 16, 18, 8, 0.3, 0, TAU); ctx.fill();
-        ctx.beginPath(); ctx.ellipse(x + 46, y + 12, 15, 7, -0.25, 0, TAU); ctx.fill();
-        // one track intact, the other thrown off forward
-        ctx.fillStyle = '#22201a';
-        ctx.fillRect(x - 40, y + 10, 80, 10);
-        ctx.fillStyle = '#2e2b22';
-        for (let i = -38; i < 40; i += 8) ctx.fillRect(x + i, y + 11, 5, 8);
-        ctx.fillStyle = '#1c1a15';
-        ctx.fillRect(x - 44, y - 22, 74, 9);
-        // hull
-        ctx.fillStyle = '#3f4433';
-        ctx.fillRect(x - 34, y - 12, 68, 24);
-        ctx.fillStyle = '#4c5240';
-        ctx.fillRect(x - 34, y - 12, 68, 6);
-        ctx.fillStyle = '#333827';
-        ctx.fillRect(x - 30, y + 6, 60, 5);
-        // turret
+        ctx.fillStyle = 'rgba(52,40,27,0.9)';
+        ctx.beginPath(); ctx.ellipse(x, y, 70, 36, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(36,28,19,0.7)';
+        ctx.beginPath(); ctx.ellipse(x + 4, y + 2, 52, 26, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(30,24,16,0.5)';
+        for (const [mx, my, mr] of [[-64, 16, 14], [58, 20, 12], [-50, -22, 10], [62, -16, 9]]) {
+          ctx.beginPath(); ctx.ellipse(x + mx, y + my, mr, mr * 0.55, 0, 0, TAU); ctx.fill();
+        }
+        // the track it threw: a bent steel band in the mud beside it
+        ctx.strokeStyle = '#1c1e22';
+        ctx.lineWidth = 6;
+        ctx.beginPath(); ctx.moveTo(x - 58, y + 26); ctx.quadraticCurveTo(x - 30, y + 34, x + 2, y + 30); ctx.stroke();
+        ctx.strokeStyle = '#33363c';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 7; i++) ctx.fillRect(x - 56 + i * 8, y + 27 + Math.sin(i) * 3, 3, 2);
+        ctx.translate(x, y);
+        ctx.rotate(0.10);
+        ctx.fillStyle = '#14161a';                       // shadow
+        ctx.beginPath(); ctx.ellipse(0, 4, 40, 18, 0, 0, TAU); ctx.fill();
+        // tracks: the one still on, with its road wheels
+        ctx.fillStyle = '#17191d';
+        ctx.fillRect(-34, -18, 68, 9);
+        ctx.fillRect(-34, 9, 68, 9);
+        ctx.fillStyle = '#2b2e34';
+        for (let i = 0; i < 6; i++) {
+          ctx.beginPath(); ctx.arc(-28 + i * 11, -13.5, 3, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.arc(-28 + i * 11, 13.5, 3, 0, TAU); ctx.fill();
+        }
+        // hull: sloped front, engine deck behind
+        ctx.fillStyle = '#3f4a38';
+        ctx.fillRect(-30, -10, 60, 20);
+        ctx.fillStyle = '#4c5a44';
+        ctx.fillRect(-30, -10, 60, 5);
+        ctx.fillStyle = '#333d2e';
+        ctx.fillRect(14, -8, 16, 16);
+        ctx.fillStyle = '#2a3326';                       // front glacis
+        ctx.beginPath(); ctx.moveTo(-30, -10); ctx.lineTo(-40, -4); ctx.lineTo(-40, 4); ctx.lineTo(-30, 10); ctx.closePath(); ctx.fill();
+        // turret, turned off the axis, and the bent gun
         ctx.save();
-        ctx.translate(x + 2, y - 12);
-        ctx.rotate(-0.22);
-        ctx.fillStyle = '#454b39';
-        ctx.beginPath(); ctx.ellipse(0, 0, 17, 12, 0, 0, TAU); ctx.fill();
-        ctx.fillStyle = '#3a4030';
-        ctx.beginPath(); ctx.ellipse(0, -2, 13, 8, 0, 0, TAU); ctx.fill();
-        // the barrel, bent at the muzzle
-        ctx.strokeStyle = '#2c301f'; ctx.lineWidth = 5;
-        ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(46, -4); ctx.stroke();
+        ctx.rotate(-0.24);
+        ctx.fillStyle = '#46543e';
+        ctx.beginPath(); ctx.ellipse(-2, 0, 15, 13, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#526148';
+        ctx.beginPath(); ctx.ellipse(-4, -2, 10, 8, 0, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#2f382a';
         ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.moveTo(46, -4); ctx.lineTo(54, 2); ctx.stroke();
-        // hatch, hanging open
-        ctx.fillStyle = '#22261a';
-        ctx.beginPath(); ctx.ellipse(-4, -4, 6, 4, 0.5, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(-14, -2); ctx.lineTo(-34, -6); ctx.lineTo(-40, -3); ctx.stroke();
+        ctx.fillStyle = '#242c20';
+        ctx.fillRect(-43, -5, 4, 5);
         ctx.restore();
-        // rust and scorch
-        ctx.fillStyle = 'rgba(90,54,26,0.4)';
-        ctx.fillRect(x - 30, y - 6, 18, 10);
-        ctx.fillRect(x + 14, y - 8, 14, 8);
-        ctx.fillStyle = 'rgba(18,16,12,0.5)';
-        ctx.fillRect(x - 12, y - 10, 20, 6);
+        // the loader's hatch, open; rust and scorch over all of it
+        ctx.fillStyle = '#1d241a';
+        ctx.beginPath(); ctx.ellipse(6, -4, 5, 4, 0, 0, TAU); ctx.fill();
+        ctx.fillStyle = '#5a4a30';
+        for (const [rx, ry] of [[-22, 4], [8, 6], [-10, -6], [20, -4]]) ctx.fillRect(rx, ry, 5, 3);
+        ctx.fillStyle = 'rgba(20,16,12,0.55)';
+        ctx.fillRect(-16, -10, 12, 20);
         ctx.restore();
       }
     }
   }
 
-  /** Crates the radio drops: a canopy on the way down, a red flare once landed. */
   drawSupplies(ctx) {
     for (const s of this.supplies) {
       if (s.taken || (s.f ?? 0) !== this.map.floor) continue;
@@ -5518,6 +5770,43 @@ export class Game {
     for (const g of this.map.grenadeCrates) {
       if (!this._vis(g.x, g.y, 50)) continue;
       ctx.save();
+      if (g.kind === 'molotov') {
+        // a crate of bottles with their rags up: fire, and it looks like fire
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(g.x - 8, g.y + 4, 16, 2);
+        ctx.fillStyle = '#5a3a22';
+        ctx.fillRect(g.x - 8, g.y - 4, 16, 8);
+        ctx.fillStyle = '#6b4a2b';
+        ctx.fillRect(g.x - 8, g.y - 4, 16, 2);
+        ctx.fillStyle = '#3a2a18';
+        ctx.fillRect(g.x - 8, g.y - 1, 16, 1);
+        for (const bx of [-5, 0, 5]) {
+          ctx.fillStyle = '#7a3a2a';
+          ctx.fillRect(g.x + bx - 1, g.y - 9, 3, 5);
+          ctx.fillStyle = '#d0603c';
+          ctx.fillRect(g.x + bx - 1, g.y - 11, 3, 2);
+        }
+        this._cratePrice(ctx, g);
+        ctx.restore();
+        continue;
+      }
+      if (g.kind === 'gas') {
+        // grey-green canisters under a hazard band: slow, choke, crawl
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(g.x - 8, g.y + 4, 16, 2);
+        ctx.fillStyle = '#37473a';
+        ctx.fillRect(g.x - 8, g.y - 6, 16, 10);
+        ctx.fillStyle = '#4a5c4a';
+        ctx.fillRect(g.x - 8, g.y - 6, 16, 2);
+        ctx.fillStyle = '#8ab06a';
+        ctx.fillRect(g.x - 8, g.y - 2, 16, 2);
+        ctx.fillStyle = '#20261f';
+        ctx.fillRect(g.x - 5, g.y - 8, 3, 2);
+        ctx.fillRect(g.x + 2, g.y - 8, 3, 2);
+        this._cratePrice(ctx, g);
+        ctx.restore();
+        continue;
+      }
       // two stacked metal ammo cans with a stencilled band -- ammunition,
       // not the mystery crate: the silhouette must not invite the confusion
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -5535,11 +5824,16 @@ export class Game {
       ctx.fillRect(g.x - 8, g.y + 1, 16, 2);
       ctx.fillStyle = '#43503a';
       ctx.fillRect(g.x - 2, g.y + 1, 4, 2);             // stencil gap
-      ctx.font = 'bold 8px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = this.points >= GRENADE_PRICE ? '#f0d98a' : '#6f6a5c';
-      ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 13);
+      this._cratePrice(ctx, g);
       ctx.restore();
     }
+  }
+
+  /** The price tag under a throwable crate, in whichever state the wallet is. */
+  _cratePrice(ctx, g) {
+    ctx.font = 'bold 8px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = this.points >= GRENADE_PRICE ? '#f0d98a' : '#6f6a5c';
+    ctx.fillText(`${GRENADE_PRICE}`, g.x, g.y + 13);
   }
 }

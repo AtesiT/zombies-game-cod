@@ -192,10 +192,20 @@ ok(guest.map.floors[0].barricades[0].planks === host.map.floors[0].barricades[0]
   'the barricade does not match between host and guest');
 
 // ---- 4. the guest's hands move its body -----------------------------------
+mate.invuln = 5;   // a zombie downing him mid-stride used to fake a failure
 guest.input.stick.x = 1;
 const x0 = mate.pos.x;
 for (let i = 0; i < 60; i++) { step(host, 1); step(guest, 1); }
 guest.input.stick.x = 0;
+if (process.env.DBGMOVE) {
+  console.log('MOVE dbg', {
+    x0: x0.toFixed(1), x1: mate.pos.x.toFixed(1), y: mate.pos.y.toFixed(1), floor: mate.floor,
+    downed: mate.downed, dead: mate.dead, evac: mate.evac,
+    ahead12: host.map.blockedAt(mate.pos.x + 12, mate.pos.y, 10, mate.floor),
+    ahead30: host.map.blockedAt(mate.pos.x + 30, mate.pos.y, 10, mate.floor),
+    stickHost: host.net.peers ? [...host.net.peers.values()].map((pr) => pr.input?.stick?.x) : 'n/a',
+  });
+}
 ok(mate.pos.x - x0 > 25, `a guest pushing right moved its body ${(mate.pos.x - x0).toFixed(1)}px`);
 
 // ---- 5. and its trigger empties its magazine ------------------------------
@@ -233,7 +243,8 @@ ok(guest.players.find((p) => p.netId === 2)?.downed === true, 'the guest never h
 host.player.pos.x = mate.pos.x + 8;
 host.player.pos.y = mate.pos.y;
 host.input.keys.add('KeyF');
-for (let i = 0; i < 100; i++) { step(host, 1); step(guest, 1); }
+// revival is a channel now: ten seconds of holding, so hold for twelve
+for (let i = 0; i < 720; i++) { step(host, 1); step(guest, 1); }
 host.input.keys.delete('KeyF');
 ok(mate.downed === false, 'holding F next to a downed team-mate did nothing');
 ok(mate.hp > 0, 'a revived player came back with no health');

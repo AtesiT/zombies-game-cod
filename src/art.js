@@ -647,21 +647,54 @@ function paintFloor(ctx, px, py, rng, northIsWall) {
   }
 }
 
+// 0..1, stable per tile pair: how the ground clusters into mud and thick
+// grass without storing a single extra byte of map
+function _groundNoise(x, y) {
+  let h = (x * 73856093) ^ (y * 19349663);
+  h = (h ^ (h >> 13)) * 1274126177;
+  return ((h ^ (h >> 16)) >>> 0) % 1000 / 1000;
+}
+
 function paintExterior(ctx, px, py, rng) {
+  const tx = Math.floor(px / T), ty = Math.floor(py / T);
+  const mud = _groundNoise(Math.floor(tx / 2), Math.floor(ty / 2));
+  const lush = _groundNoise(Math.floor((tx + 11) / 3), Math.floor((ty + 5) / 3));
+  if (mud < 0.17) {
+    // a mud patch: wet, trodden, darker at the heart, shining where it pools
+    ctx.fillStyle = rng() < 0.5 ? '#3a3025' : '#443a2c';
+    ctx.fillRect(px, py, T, T);
+    ctx.fillStyle = '#2e261c';
+    for (let i = 0; i < 5; i++) {
+      ctx.fillRect(px + ((rng() * (T - 6)) | 0), py + ((rng() * (T - 4)) | 0), 4 + ((rng() * 5) | 0), 2 + ((rng() * 3) | 0));
+    }
+    ctx.fillStyle = 'rgba(120,140,150,0.10)';
+    ctx.fillRect(px + ((rng() * (T - 8)) | 0), py + ((rng() * (T - 5)) | 0), 6 + ((rng() * 6) | 0), 2);
+    // a chewed blade or two at the edges, so it blends into the field
+    for (let i = 0; i < 2; i++) {
+      ctx.fillStyle = C.grass2;
+      ctx.fillRect(px + ((rng() * T) | 0), py + ((rng() * T) | 0), 1, 2);
+    }
+    return;
+  }
   const base = rng() < 0.4 ? C.dirtA : rng() < 0.6 ? C.dirtB : C.dirtC;
   ctx.fillStyle = base;
   ctx.fillRect(px, py, T, T);
   speckle(ctx, px, py, 14, rng, 0.2, 0.04);
 
-  // dead grass tufts
-  const tufts = (rng() * 5) | 0;
+  // dead grass tufts -- and where the ground is rich, a thick stand of it
+  const tufts = lush > 0.78 ? 9 + ((rng() * 5) | 0) : (rng() * 5) | 0;
   for (let i = 0; i < tufts; i++) {
     const x = px + ((rng() * T) | 0);
     const y = py + ((rng() * T) | 0);
+    const tall = lush > 0.78;
     ctx.fillStyle = rng() < 0.5 ? C.grass : C.grass2;
-    ctx.fillRect(x, y, 1, 2);
+    ctx.fillRect(x, y, 1, tall ? 3 + ((rng() * 2) | 0) : 2);
     ctx.fillRect(x - 1, y + 1, 1, 1);
     ctx.fillRect(x + 1, y + 1, 1, 1);
+    if (tall && rng() < 0.4) {
+      ctx.fillStyle = '#6d7a44';
+      ctx.fillRect(x, y - 1, 1, 1);
+    }
   }
   if (rng() < 0.14) {
     ctx.fillStyle = C.stone;

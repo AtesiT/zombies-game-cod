@@ -43,12 +43,18 @@ node server.mjs 8080
 3. **You can join mid-round.** Latecomers are dropped in next to the host with 500
    points and whatever the round has left to throw at them.
 
-Up to four players. The host simulates the world and the rest draw snapshots of it
-20 times a second, so a phone makes a perfectly good second player. Going down is
-not going out: a downed player crawls for 32 s and any team-mate can stand over
-them and hold `F` for 1.3 s. Points are per player, rounds are shared, and the
-horde grows by 32 % for every extra body in the building. If the host quits, the
-relay hands the room to the longest-standing guest.
+Up to **twelve** players, and every hosted room draws a fresh five-letter code.
+The host simulates the world and the rest draw snapshots of it 20 times a second,
+so a phone makes a perfectly good second player. Going down is not going out: a
+downed player bleeds for **60 s** and only the clock can finish them — teeth
+cannot hurry it. Any team-mate, host or guest, stands over the body and holds
+`F`: revival is a **10 s channel** (5 s with Quick Revive), shown as a ring on
+every screen. A body that bleeds out comes back at the top of the next round
+with its sidearm only. Guests fight with the same hands as the host: `G`, `X`
+and `B` throw their own frag, molotov and gas bomb through the host's physics.
+Points are per player, rounds are shared, and the horde grows by 32 % for every
+extra body in the building. If the host quits, the relay hands the room to the
+longest-standing guest.
 
 Joining is watched from the guest's side: it asks the host in, retries once after
 2.5 s if the welcome never comes, and after 9 s says **HOST DID NOT LET YOU IN**
@@ -83,14 +89,16 @@ the barrel at the nearest walker while you are not touching the aim stick.
 | `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
 | `V` | Knife — short range, big points, never runs out |
 | `G` | Throw a frag grenade |
+| `X` | Throw a molotov — leaves a pool of fire that knows its thrower |
+| `B` | Throw a gas bomb — leaves a cloud that slows and bites |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
+| `F` | Same as `E` — and how you revive a downed team-mate in co-op (**hold**: 10 s, or 5 s with Quick Revive) |
 
 The pause screen is a menu you can click (or thumb): five rows — resume, settings,
 controls, restart the run, return to the front page — each with its old shortcut
 printed on the right, because the keyboard way still works.
-| `F` | Same as `E` — and how you revive a downed team-mate in co-op |
 
 ## The map (72 × 50 tiles)
 

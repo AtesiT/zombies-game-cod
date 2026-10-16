@@ -373,10 +373,11 @@ export class GameMap {
         const i = idx(x, y);
         if (tiles[i] !== TILE.DOOR) continue;
         // Which way does the wall this door is cut into run? Walls above and
-        // below means it runs east-west, and the boards lie east-west too.
-        // (It used to be taken from the *other* axis, which laid every board
-        // across the opening and nailed the ends into the masonry -- the
-        // "barrier inside the wall" you could see on every storey.)
+        // below mean the WALL stands north-south, so the doorway faces
+        // east-west and the leaf must hang tall; walls left and right mean
+        // the wall runs east-west and the leaf hangs wide. (Getting this
+        // axis back to front laid every door across its own opening -- the
+        // "doorway stuffed with a board" look on half the house.)
         const walledUD = hardTile(x, y - 1) && hardTile(x, y + 1);
         const walledLR = hardTile(x - 1, y) && hardTile(x + 1, y);
         if (!walledUD && !walledLR) {
@@ -386,7 +387,7 @@ export class GameMap {
         }
         const d = {
           id: F.doors.length, tx: x, ty: y, i,
-          horizontal: walledUD,
+          horizontal: walledLR,
           open: false,
           price: DOOR_PRICES[`${x},${y}`] ?? 750,
           hurt: 0,
