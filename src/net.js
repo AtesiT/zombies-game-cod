@@ -13,6 +13,7 @@
 // standing guest is handed the room by the relay.
 import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
+import { SKILLS, SKILL_IDS } from './skills.js';
 import { Powerup } from './powerups.js';
 import { applyShutters } from './crafting.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
@@ -415,6 +416,9 @@ export class Net {
     // tryCraft looks the id up in RECIPES and refuses anything it does not
     // know, so this is not a way to reach any other code with a string.
     if (m.m === 'craft') { this.game?.tryCraft?.(String(m.id ?? '').slice(0, 24), peer.player); return; }
+    // a guest picked a skill card: the body lives here, so the choice lands
+    // here. pickSkill re-checks the id against the three cards it dealt.
+    if (m.m === 'skill') { this.game?.pickSkill?.(peer.player, String(m.id ?? '').slice(0, 24)); return; }
     // a guest at the debug panel: the row runs on the host, where the world
     // actually is. GOD is personal -- it arms the guest's own body.
     if (m.m === 'dbg') {
@@ -724,6 +728,12 @@ export class Net {
       if ((pl.knifeAnim ?? 0) > 0.1) flags |= 64;
       let perkMask = 0;
       for (let i = 0; i < PERK_IDS.length; i++) if (pl.perks?.has(PERK_IDS[i])) perkMask |= (1 << i);
+      let skillMask = 0;
+      for (let i = 0; i < SKILL_IDS.length; i++) if (pl.skills?.has(SKILL_IDS[i])) skillMask |= (1 << i);
+      const d = pl.skillDraft;
+      const draft = d
+        ? [d.round | 0, ...d.ids.map((id) => SKILL_IDS.indexOf(id)), r2(d.t ?? 0), d.index | 0]
+        : null;
       p.push([
         pl.netId ?? 0, r0(pl.pos.x), r0(pl.pos.y), r2(pl.aim ?? 0), r0(pl.hp),
         r0(pl.maxHp ?? 100), pl.floor ?? g.map.floor, flags, pl.current ?? 'm1911',
@@ -733,6 +743,7 @@ export class Net {
         r2(pl.chillT ?? 0), r2(pl.stunT ?? 0),
         pl.molotovs ?? 0, pl.gasbombs ?? 0,
         r2(pl.reloading ? clamp(1 - (pl.reloadTimer / (pl.reloadTotal || 1)), 0, 1) : 0),
+        skillMask, draft,
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -791,7 +802,7 @@ export class Net {
         r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
       ]),
       sw: (g.map.floors?.[0]?.secretSwitches ?? []).map((x) => (x.found ? 1 : 0)),
-      rr: g.roundReport, rm: g.runMetrics,
+      rm: g.runMetrics,
       evc: g.evacuated ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
@@ -804,7 +815,6 @@ export class Net {
     if (!s) return;
     g.round = s.r;
     g.roundActive = !!s.ra;
-    g.roundReport = s.rr ?? null;
     if (s.rm) g.runMetrics = { ...s.rm };
     g.intermission = s.im ?? 0;
     g.zombiesKilled = s.zk ?? 0;
@@ -905,6 +915,7 @@ export class Net {
       t.perkMask = e[16]; t.bleedT = e[17];
       t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
       t.molotovs = e[21] ?? 0; t.gasbombs = e[22] ?? 0; t.reloadK = e[23] ?? 0;
+      t.skillMask = e[24] ?? 0; t.skillDraft = e[25] ?? null;
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -1024,6 +1035,34 @@ export class Net {
       for (let i = 0; i < PERK_IDS.length; i++) if (t.perkMask & (1 << i)) pl.perks.add(PERK_IDS[i]);
       pl.applyPerks?.();
     }
+    this._skillWire(pl, t);
+  }
+
+  /**
+   * Skills and the open draft travel with the player entry. The draft's card
+   * *cursor* is local to whoever is reading it, so keep ours while the same
+   * round and the same three cards are still on the table.
+   */
+  _skillWire(pl, t) {
+    if (pl.skills && t.skillMask !== undefined) {
+      let changed = false;
+      for (let i = 0; i < SKILL_IDS.length; i++) {
+        const has = pl.skills.has(SKILL_IDS[i]);
+        const want = !!(t.skillMask & (1 << i));
+        if (has !== want) { changed = true; if (want) pl.skills.add(SKILL_IDS[i]); else pl.skills.delete(SKILL_IDS[i]); }
+      }
+      if (changed) pl.applyPerks?.();
+    }
+    const d = t.skillDraft;
+    if (!d) { pl.skillDraft = null; return; }
+    const ids = [d[1], d[2], d[3]].map((i) => SKILL_IDS[i]).filter(Boolean);
+    if (!ids.length) { pl.skillDraft = null; return; }
+    const prev = pl.skillDraft;
+    const same = prev && prev.round === (d[0] | 0) && prev.ids.join() === ids.join();
+    pl.skillDraft = {
+      round: d[0] | 0, ids, t: d[4] ?? 0,
+      index: same ? (prev.index ?? 0) : (d[5] ?? 0),
+    };
   }
 
   /** Ease everything towards its target so 20 Hz looks like 60. */
@@ -1077,6 +1116,7 @@ export class Net {
         }
         if (changed) pl.applyPerks?.();
       }
+      this._skillWire(pl, t);
       if (t.muzzle) { pl.muzzleFlash = 0.05; pl._muzzle = 1; } else pl._muzzle = 0;
       if (!this.isHost) pl.knifeAnim = Math.max(0, (pl.knifeAnim ?? 0) - dt);
       // our own barrel points where we are pointing *now*
@@ -1141,6 +1181,13 @@ export class Net {
         break;
       case 'door': audio.door?.(); break;
       case 'perk': audio.perk?.(); break;
+      case 'skill': {
+        const def = SKILLS[m.id];
+        if (def) g.bannerShow?.(`${m.name ?? 'SOMEONE'} TOOK ${def.name.toUpperCase()}`, def.desc,
+          { dur: 2.6, colour: def.colour });
+        audio.perk?.();
+        break;
+      }
       case 'craft':
         // somebody's hammer, everybody's news: the name goes over the body
         // that built it, and the guest that asked hears the answer

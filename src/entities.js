@@ -2,6 +2,7 @@
 import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art.js';
 import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer, GRENADE_MAX } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
+import { SKILLS, skillEffects, NO_SKILLS } from './skills.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
 
@@ -267,6 +268,11 @@ export class Player {
     this.friction = 12;
 
     this.perks = new Set();
+    // Run skills: a separate set from the bought perks. They last one night
+    // and are picked between waves (see src/skills.js), never bought.
+    this.skills = new Set();
+    this.skillDraft = null;   // { round, ids, index, t } while the pick is open
+    this.skillFx = NO_SKILLS;
     this.applyPerks();
 
     this.loadout = {};
@@ -327,15 +333,40 @@ export class Player {
   }
 
   applyPerks() {
-    this.perkFx = perkEffects(this.perks);
+    // Perks and skills are two different purses, but they spend from the same
+    // stat block: fold them into one object here so every caller downstream
+    // (reload, trigger, legs, regen) keeps reading `perkFx` and cannot forget
+    // that skills exist.
+    const fx = perkEffects(this.perks);
+    const sk = skillEffects(this.skills);
+    fx.maxHp += sk.bonusHp;
+    fx.reloadMul *= sk.reloadMul;
+    fx.fireDelayMul *= sk.fireDelayMul;
+    fx.speedMul *= sk.speedMul;
+    fx.sprintMul *= sk.sprintMul;
+    fx.regenDelay *= sk.regenDelayMul;
+    fx.regenRate *= sk.regenRateMul;
+    this.perkFx = fx;
+    this.skillFx = sk;
     const prevMax = this.maxHp ?? 100;
-    this.maxHp = this.perkFx.maxHp;
+    this.maxHp = fx.maxHp;
     if (this.maxHp > prevMax) this.hp += (this.maxHp - prevMax);
     this.hp = Math.min(this.hp, this.maxHp);
-    this.regenDelay = this.perkFx.regenDelay;
-    this.regenRate = this.perkFx.regenRate;
-    this.baseSpeed = 132 * this.perkFx.speedMul;
+    this.regenDelay = fx.regenDelay;
+    this.regenRate = fx.regenRate;
+    this.baseSpeed = 132 * fx.speedMul;
   }
+
+  /** Add a run skill. Unknown or duplicate ids are refused, never thrown. */
+  addSkill(id) {
+    if (!id || this.skills.has(id)) return false;
+    if (!(id in SKILLS)) return false;
+    this.skills.add(id);
+    this.applyPerks();
+    return true;
+  }
+
+  hasSkill(id) { return this.skills.has(id); }
 
   hasPerk(id) { return this.perks.has(id); }
 
@@ -491,7 +522,7 @@ export class Player {
   useMedkit() {
     if ((this.medkits ?? 0) <= 0 || this.hp >= this.maxHp) return false;
     this.medkits--;
-    this.heal(55);
+    this.heal(Math.round(55 * (this.skillFx?.medkitMul ?? 1)));
     return true;
   }
 
@@ -595,6 +626,8 @@ export class Player {
     if (this.invuln > 0 || this.dead) return false;
     if (this.evac) return false;                 // aboard the bird, out of the war
     if (game?.debug?.god || this.god) return false;   // the debug panel's god mode
+    // a run skill can take the edge off everything that arrives
+    amount = amount * (this.skillFx?.takenMul ?? 1);
     // already on the floor: the hits do not kill you and they do not hurry
     // you up either -- the clock is the only thing out here that finishes
     // somebody, so a zombie chewing on a downed body is just scenery
@@ -717,7 +750,24 @@ export class Player {
     const moving = mv.x !== 0 || mv.y !== 0;
     this.sprinting = moving && !game.paused && !this.downed
       && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
+    // Second Wind: one burst of legs per round, the moment the health bar
+    // falls into the red. It buys distance, never immunity.
+    if (this.skillFx?.secondwind) {
+      if (!this._windUsed && this.hp > 0 && this.hp < this.maxHp * 0.30) {
+        this._windUsed = true;
+        this.windT = 2;
+        game.popups?.add?.(this.pos.x, this.pos.y - 30, 'SECOND WIND', '#7fbf5f', 11);
+        audio.perk?.();
+      }
+      this.windT = Math.max(0, (this.windT ?? 0) - dt);
+    }
+    // Cold Blood: staying put for half a second (and not while being shoved
+    // around) loads exactly one shot with extra punch.
+    const still = Math.hypot(this.vel.x, this.vel.y) < 8 && !this.sprinting;
+    this._stillT = still ? (this._stillT ?? 0) + dt : 0;
+    if (this.skillFx?.coolhead && this._stillT >= 0.6) this._coolReady = true;
     this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
+      * (this.windT > 0 ? (this.skillFx?.secondwindSpeed ?? 1) : 1)
       * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1);
     const targetVx = mv.x * this.speed;
     const targetVy = mv.y * this.speed;
@@ -818,7 +868,7 @@ export class Player {
     }
     hits.sort((a, b) => a.d - b.d);
 
-    const dmg = 260 + game.round * 22;
+    const dmg = (260 + game.round * 22) * (this.skillFx?.dmgMul ?? 1);
     let any = false;
     for (const h of hits.slice(0, 2)) {
       const z = h.z;
@@ -2654,10 +2704,11 @@ export class MonkeyBomb {
 //  Grenade
 // ---------------------------------------------------------------------------
 export class Grenade {
-  constructor(x, y, vx, vy, floor = 0) {
+  constructor(x, y, vx, vy, floor = 0, owner = null) {
     this.pos = { x, y };
     this.vel = { x: vx, y: vy };
     this.floor = floor;     // it rolls on, and blows up on, the storey it was thrown from
+    this.owner = owner;     // who gets the credit (and whose Demo skill widens it)
     this.fuse = 2.4;
     this.r = 3;
     this.rot = 0;
@@ -2677,7 +2728,9 @@ export class Grenade {
   explode(game) {
     this.remove = true;
     const { x, y } = this.pos;
-    const R = 96;
+    const fx = this.owner?.skillFx ?? NO_SKILLS;
+    // Demolitionist: the same frag, a wider ring and a little more bite
+    const R = 96 * (fx.blastR ?? 1);
     game.explosion(x, y, R);
     game.hurtHaunts?.(x, y, R, 300, this.floor ?? 0);
     let killed = 0;
@@ -2688,7 +2741,7 @@ export class Grenade {
       if (game.tryCrawl(z, 0.30)) continue;         // blast takes the legs
       const k = 1 - d / R;
       const ang = Math.atan2(z.pos.y - y, z.pos.x - x);
-      const boom = (420 + game.round * 55) * (k * k * 0.75 + k * 0.25);
+      const boom = (420 + game.round * 55) * (fx.blastDmgMul ?? 1) * (k * k * 0.75 + k * 0.25);
       if (z.hurt(boom, false, game, ang) === 2) { game.onZombieKilled(z, false, null, 'grenade'); killed++; }
       z.vel.x += Math.cos(ang) * 180 * k;
       z.vel.y += Math.sin(ang) * 180 * k;
@@ -2710,8 +2763,8 @@ export class Grenade {
   }
 }
 
-export function throwGrenade(game, px, py, aim, speed = 380, floor) {
+export function throwGrenade(game, px, py, aim, speed = 380, floor, owner = null) {
   const g = new Grenade(px, py, Math.cos(aim) * speed, Math.sin(aim) * speed,
-    floor ?? game.player?.floor ?? game.map.floor);
+    floor ?? game.player?.floor ?? game.map.floor, owner ?? game.player ?? null);
   game.grenades.push(g);
 }

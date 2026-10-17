@@ -4,6 +4,7 @@ import { audio } from './audio.js';
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
+import { SKILLS, skillLine } from './skills.js';
 import { recipe, recipeIds, craftRowNote } from './crafting.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { drawAchievementIcon } from './achievementIcons.js';
@@ -203,6 +204,10 @@ export class HUD {
   }
 
   draw(ctx, game, w, h) {
+    // The end-of-run screen is a full page: the whole ledger, the best runs
+    // and the way out. Ammo counters and the round pill underneath it were
+    // readable through the panel and made it look like a torn newspaper.
+    if (game.gameOver) return;
     const p = game.player;
 
     this._lowHealth(ctx, game, w, h);
@@ -224,6 +229,7 @@ export class HUD {
     this._weapon(ctx, game, w, h);
     this._health(ctx, game, w, h);
     this._perks(ctx, game, w, h);
+    this._skills(ctx, game, w, h);
     this._timers(ctx, game, w, h);
     this._heliEta(ctx, game, w, h);
     this._scrap(ctx, game, w, h);
@@ -237,12 +243,14 @@ export class HUD {
     this._net(ctx, game, w, h);
     this._squad(ctx, game, w, h);
     this._revive(ctx, game, w, h);
-    this._roundReport(ctx, game, w, h);
-    if (game.roundActive || !game.roundReport || game.banner?.title !== `ROUND ${game.round} CLEARED`) this._banners(ctx, game, w, h);
+    // the death/evac screen has its own words, and its own ledger
+    if (!game.gameOver) this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
     this._sound(ctx, game, w, h);
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
+    // the draft sits over everything: while it is open the hand belongs to it
+    this._skillDraft(ctx, game, w, h);
     this._toast(ctx, game, w, h);
   }
 
@@ -640,27 +648,125 @@ export class HUD {
     ctx.restore();
   }
 
-  _roundReport(ctx, game, w, h) {
-    const r = game.roundReport;
-    if (!r || game.roundActive || game.intermission <= 0 || game.gameOver || game.rangeMode || game._reportHidden === r.round) return;
-    const { cw, ch, x, y } = roundReportPanel(w, h);
+  // ---------------------------------------------------------- run skills --
+  /**
+   * The run's small permanent-for-this-night upgrades, as a row of chips
+   * above the perk icons. The chosen ones are the only ones that exist; the
+   * row is empty until the first draft is answered.
+   */
+  _skills(ctx, game, w, h) {
+    const p = game.player;
+    if (!p?.skills?.size) return;
+    const list = [...p.skills];
+    const size = 18, gap = 3;
+    const totalW = list.length * size + (list.length - 1) * gap;
+    let x = w / 2 - totalW / 2;
+    const y = h - 114;
+    for (const id of list) {
+      const def = SKILLS[id];
+      if (!def) continue;
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,11,15,0.85)';
+      ctx.fillRect(x, y, size, size);
+      ctx.fillStyle = def.colour;
+      ctx.globalAlpha = 0.9;
+      ctx.fillRect(x + 2, y + 2, size - 4, size - 4);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(8,10,14,0.9)';
+      ctx.font = 'bold 8px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(def.short, x + size / 2, y + size / 2 + 3);
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+      ctx.restore();
+      x += size + gap;
+    }
+  }
+
+  /** One card's worth of word wrap, measured in the card's own font. */
+  _wrap(ctx, str, maxW) {
+    const lines = [''];
+    for (const word of String(str).split(' ')) {
+      const i = lines.length - 1;
+      const next = lines[i] ? `${lines[i]} ${word}` : word;
+      if (ctx.measureText(next).width > maxW && lines[i]) lines.push(word);
+      else lines[i] = next;
+    }
+    return lines;
+  }
+
+  /**
+   * Between-wave draft: three cards, one hand. Deliberately a modal panel --
+   * the wave is already over, the next one is held until an answer or the
+   * clock, and the player should be reading cards, not shooting.
+   */
+  _skillDraft(ctx, game, w, h) {
+    const d = game.player?.skillDraft;
+    if (!d || !game.started || game.gameOver || game.paused) return;
+    const L = skillDraftLayout(w, h);
+    const { x, y, pw, ph } = L;
     ctx.save();
-    ctx.fillStyle = 'rgba(10,14,19,0.95)'; ctx.fillRect(x, y, cw, ch);
-    ctx.strokeStyle = '#70603e'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
-    ctx.fillStyle = '#e3c878'; ctx.fillRect(x, y, cw, 3);
-    text(ctx, `ROUND ${r.round} CLEARED`, x + 18, y + 25, { font: 'bold 18px "Courier New", monospace', colour: GOLD });
-    text(ctx, r.players > 1 ? 'TEAM / THIS WAVE ONLY' : 'THIS WAVE ONLY', x + cw - 45, y + 24,
-      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right' });
-    text(ctx, '[x]', x + cw - 17, y + 24, { font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center' });
-    const rows = roundReportRows(r);
-    rows.forEach(([label, value], i) => {
-      const col = i >= 10 ? 1 : 0, row = i % 10;
-      const left = x + 18 + col * (cw / 2);
-      text(ctx, label, left, y + 51 + row * 18, { font: '10px "Courier New", monospace', colour: INK_DIM });
-      text(ctx, value, left + 270, y + 51 + row * 18, { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
+    ctx.fillStyle = 'rgba(4,6,9,0.55)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(10,14,19,0.97)';
+    ctx.fillRect(x, y, pw, ph);
+    ctx.strokeStyle = '#70603e';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, pw - 1, ph - 1);
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(x, y, pw, 3);
+    text(ctx, `ROUND ${d.round} CLEARED — PICK ONE`, x + 18, y + 27,
+      { font: 'bold 17px "Courier New", monospace', colour: GOLD });
+    text(ctx, 'a skill lasts the rest of this night', x + 18, y + 44,
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM });
+
+    const cards = skillCardRects(w, h, d.ids.length);
+    d.ids.forEach((id, i) => {
+      const def = SKILLS[id];
+      if (!def) return;
+      const c = cards[i];
+      const hot = i === (d.index ?? 0);
+      ctx.fillStyle = hot ? 'rgba(240,217,138,0.16)' : 'rgba(18,22,28,0.8)';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.strokeStyle = hot ? def.colour : 'rgba(120,126,140,0.4)';
+      ctx.lineWidth = hot ? 2 : 1;
+      ctx.strokeRect(c.x + (hot ? 1 : 0.5), c.y + (hot ? 1 : 0.5), c.w - (hot ? 2 : 1), c.h - (hot ? 2 : 1));
+      ctx.fillStyle = def.colour;
+      ctx.fillRect(c.x, c.y, c.w, 3);
+      // the key that takes it
+      text(ctx, `${i + 1}`, c.x + 12, c.y + 22,
+        { font: 'bold 13px "Courier New", monospace', colour: hot ? def.colour : INK_DIM });
+      // the selected card wears a solid bar down its left edge: the arrow read
+      // as part of the three-letter badge
+      if (hot) {
+        ctx.fillStyle = def.colour;
+        ctx.fillRect(c.x, c.y + 3, 3, c.h - 3);
+      }
+      text(ctx, def.short, c.x + c.w - 12, c.y + 22,
+        { font: 'bold 13px "Courier New", monospace', colour: def.colour, align: 'right' });
+      text(ctx, def.name.toUpperCase(), c.x + 10, c.y + 43,
+        { font: 'bold 12px "Courier New", monospace', colour: INK });
+      ctx.font = '10px "Courier New", monospace';
+      const lines = this._wrap(ctx, def.desc, c.w - 20);
+      lines.slice(0, 5).forEach((line, k) => {
+        text(ctx, line, c.x + 10, c.y + 62 + k * 14,
+          { font: '10px "Courier New", monospace', colour: INK_DIM });
+      });
+      text(ctx, def.tag, c.x + 10, c.y + c.h - 9,
+        { font: 'bold 8px "Courier New", monospace', colour: 'rgba(154,145,124,0.8)' });
     });
-    text(ctx, `NEXT WAVE IN ${Math.ceil(game.intermission)}s     TAB: HIDE / SHOW`, x + cw / 2, y + ch - 13,
-      { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
+
+    text(ctx, '[1] [2] [3]   ·   ARROWS + ENTER   ·   OR CLICK A CARD',
+      x + pw / 2, y + ph - 46,
+      { font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+    const picked = skillLine(game.player.skills);
+    text(ctx, picked ? `YOUR SKILLS  ${picked}` : 'NO SKILLS YET — THIS IS THE FIRST CARD',
+      x + 18, y + ph - 22,
+      { font: 'bold 10px "Courier New", monospace', colour: picked ? GOLD : INK_DIM });
+    const left = Math.max(0, Math.ceil(d.t ?? 0));
+    text(ctx, `AUTO-PICK IN ${left}s`, x + pw - 18, y + ph - 22,
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right' });
     ctx.restore();
   }
 
@@ -1294,6 +1400,7 @@ export const CONTROL_ROWS = [
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['SPRINT', 'SHIFT   DASH'],
   ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS'],
+  ['PICK A SKILL', '1  2  3   ARROWS + ENTER   CLICK A CARD'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
@@ -1318,6 +1425,7 @@ export const TOUCH_CONTROL_ROWS = [
   ['SWAP WEAPON', 'Q'],
   ['SPRINT', '>>'],
   ['THROW FRAG / MOLOTOV / GAS', 'G'],
+  ['PICK A SKILL', 'TAP A CARD'],
   ['MEDKIT', 'H'],
   ['KNIFE', 'V'],
   ['PAUSE  SETTINGS  MENU', 'II'],
@@ -1333,9 +1441,12 @@ export function drawControls(ctx, game, w, h) {
   // the stick layout, a keyboard reads the keys
   const onTouch = !!game.touch?.enabled && game.touch?.panel;
   const rows = onTouch ? TOUCH_CONTROL_ROWS : CONTROL_ROWS;
-  const step = CONTROLS_STEP;
   const cw = Math.min(w - 30, 470);
-  const ch = Math.min(h - 24, 62 + rows.length * step + 40);
+  // the list grows every time a feature lands, so the row height is whatever
+  // still fits inside the panel instead of a constant that quietly runs the
+  // last row under the footer
+  const ch = Math.min(h - 24, 62 + rows.length * CONTROLS_STEP + 40);
+  const step = Math.min(CONTROLS_STEP, Math.max(13, (ch - 62 - 40) / rows.length));
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
 
   ctx.fillStyle = '#14171d';
@@ -1346,7 +1457,7 @@ export function drawControls(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYBOARD & MOUSE', cx + 14, cy + 20,
+  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYS', cx + 14, cy + 20,
     { font: 'bold 16px "Courier New", monospace', colour: GOLD });
   text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
@@ -2031,9 +2142,34 @@ export function drawCursor(ctx, game) {
   ctx.restore();
 }
 
-export function roundReportPanel(w, h) {
-  const cw = Math.min(620, w - 24), ch = 266;
-  return { cw, ch, x: (w - cw) / 2, y: Math.round(h * 0.25) };
+// The between-wave skill draft. Geometry lives here so the renderer and the
+// click handler (game.js) can never disagree about where a card is.
+export function skillDraftLayout(w, h) {
+  const pw = Math.min(600, w - 24);
+  const ph = 246;
+  return { pw, ph, x: Math.round((w - pw) / 2), y: Math.round(h * 0.13) };
+}
+
+export function skillCardRects(w, h, count = 3) {
+  const { x, y, pw } = skillDraftLayout(w, h);
+  const n = Math.max(1, count);
+  const gap = 10, pad = 18;
+  const cw = (pw - pad * 2 - gap * (n - 1)) / n;
+  const ch = 132;
+  const top = y + 56;
+  return Array.from({ length: n }, (_, i) => ({
+    x: x + pad + i * (cw + gap), y: top, w: cw, h: ch,
+  }));
+}
+
+/** Which card, if any, is under a point. -1 means "none of them". */
+export function skillCardAt(w, h, px, py, count = 3) {
+  const cards = skillCardRects(w, h, count);
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    if (px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h) return i;
+  }
+  return -1;
 }
 
 export function roundReportRows(r) {
@@ -2056,9 +2192,12 @@ export function drawGameOver(ctx, game, w, h) {
   const evac = !!game.evacuated;
   const guestWaiting = !evac && game.net?.playing && !game.net.isHost;
   ctx.save();
+  // Nearly opaque on purpose: this screen now carries the whole run's ledger,
+  // and a round banner or a points counter ghosting through it turns a
+  // readable table into a puzzle.
   ctx.fillStyle = evac
-    ? `rgba(8,13,7,${Math.min(0.85, game.overT * 0.7)})`
-    : `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
+    ? `rgba(8,13,7,${Math.min(0.94, game.overT * 0.7)})`
+    : `rgba(34,4,4,${Math.min(0.93, game.overT * 0.7)})`;
   ctx.fillRect(0, 0, w, h);
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
@@ -2078,7 +2217,11 @@ export function drawGameOver(ctx, game, w, h) {
     ...roundReportRows({ ...m, accuracy: m.rays ? Math.round(100 * m.hitRays / m.rays) : 0,
       headshotRate: m.kills ? Math.round(100 * m.headshots / m.kills) : 0 }),
   ] : [];
-  text(ctx, (game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN', w / 2, h * 0.20 + 24,
+  // The end of the night is where the whole ledger gets read: the run's
+  // totals and the skills that shaped them, on one quiet line.
+  const picked = game.player?.skills?.size ? skillLine(game.player.skills) : '';
+  text(ctx, `${(game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN'}${picked ? `  ·  SKILLS ${picked}` : ''}`,
+    w / 2, h * 0.20 + 24,
     { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
   rows.forEach(([label, value], i) => {
     const col = i >= 11 ? 1 : 0, row = i % 11;

@@ -11,10 +11,3 @@ export function recordRound(game, key, value = 1) {
   if (game.runMetrics) game.runMetrics[key] += value;
   if (game.roundActive && game.roundMetrics) game.roundMetrics[key] += value;
 }
-export function finishRoundReport(game) {
-  const m = { ...newRoundMetrics(), ...game.roundMetrics };
-  return Object.freeze({ ...m, round: game.round, players: game.players?.length ?? 1,
-    accuracy: m.rays ? Math.round(100 * Math.min(m.hitRays, m.rays) / m.rays) : 0,
-    headshotRate: m.kills ? Math.round(100 * m.headshots / m.kills) : 0,
-  });
-}

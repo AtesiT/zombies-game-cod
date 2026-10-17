@@ -321,16 +321,25 @@ stale fillStyle getter; tests verify tolerance and actual restored paint instead
 - Look-ahead AudioContext scheduling avoids long buffers, skips stale backlog,
   disconnects ended voices and cancels old timers/sources on switches. Short
   output fades avoid hard track cuts. Music/master/mute controls are respected.
-- Independent team telemetry: 20 wave metrics and cumulative run totals. Frozen
-  completed-wave report, 12-second intermission, Tab/click dismissal, no paused
-  combat time, no range farming. Accuracy counts rays that hit at least one target,
+- Independent team telemetry: 20 wave metrics and cumulative run totals. The
+  per-wave report panel has been removed on request — a cleared wave says
+  `ROUND N CLEARED` and nothing else. The whole ledger is on the end-of-run
+  screen, with a 12-second intermission and no paused combat time; nothing is
+  farmable in the range. Accuracy counts rays that hit at least one target,
   not contacts per piercing bullet. Health loss excludes armour and overkill.
-  Both reports and run totals are transmitted by the host; guests use team labels.
+  Run totals are transmitted by the host; guests use team labels.
+- Run skills: 16 cards, one draft every fifth cleared wave (three cards, one
+  pick, `1`/`2`/`3`, arrows + Enter, click, or a 20-second auto-pick). Stats are
+  folded into the same block perks use (`perkFx`), multiplicatively; guests get
+  the skill mask and the open draft in the snapshot and send their pick back to
+  the host, which validates it against the cards it dealt. Tested for damage,
+  medkits, points, plank speed, throw refills, blast radius, panel geometry, the
+  next-wave freeze and the wire round trip (`tools/harness/skills.test.mjs`).
 - Major-key ~18-second evacuation melody, bells and warm final chord replace the
   sad score. Guest and late-snapshot playback is guarded once per run; repeated
   snapshots do not replay the cue. Auditioning it does not alter evacuation state.
 
-Validation: `npm test` **42/42**, including nine new soundtracks/report tests;
+Validation: `npm test` **63/63**, including the new skills suite;
 full historical regression **48/48** before the final small cleanup (counting monkey
 throws, report-hide reset and removing redundant per-frame once-mode restoration).
 After those edits, reran the main suite. New coverage: all 20 complete arrangements,

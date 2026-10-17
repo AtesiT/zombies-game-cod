@@ -11,7 +11,8 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 > радиособытия с ящиками снабжения, радиостанция на крыше (починил за скрап — ящики каждые
 > два раунда), финал с вертолётом (раунд 25 + 4 маяка, зелёный фальшфейер, 2 минуты до посадки,
 > в кооперативе — голосование большинства, экран EVACUATED с особой отметкой в рекордах),
-> достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
+> навыки забега (после каждого пятого раунда — одна из трёх карт), достижения и таблица
+> рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
 
@@ -85,7 +86,7 @@ the barrel at the nearest walker while you are not touching the aim stick.
 | Mouse | Aim |
 | Left click | Fire (hold for automatic weapons) |
 | `R` | Reload |
-| `1` / `2` | Pick a carried weapon slot |
+| `1` / `2` | Pick a carried weapon slot (while skill cards are up, digits take a card) |
 | `Q` | Flip between your two carried guns (0.35 s) |
 | wheel / `[` `]` | Dig through the whole armoury (0.9 s swap) |
 | `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
@@ -93,12 +94,50 @@ the barrel at the nearest walker while you are not touching the aim stick.
 | `G` | Throw what is in your one throwing hand — a frag grenade, a molotov (fire that knows its thrower) or a gas bomb (a cloud that slows and bites). Buying another kind replaces it; `X` and `B` still work as aliases |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
+| `ArrowLeft` / `Right` + `Enter` | Browse and take a skill card (a click or tap works too) |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
 | `F` | Same as `E` — and how you revive a downed team-mate in co-op (**hold**: 10 s, or 5 s with Quick Revive) |
 
 The pause screen is a menu you can click (or thumb): five rows — resume, settings,
 controls, restart the run, return to the front page — each with its old shortcut
 printed on the right, because the keyboard way still works.
+
+## Run skills: one card every five rounds
+
+Rounds 5, 10, 15 and so on end with three cards and one choice. Sixteen cards are
+in the pool; a run collects six or seven of them, so no two nights turn you into
+the same character:
+
+| Card | Effect |
+| --- | --- |
+| **Deadeye** | +15% damage, +25% more on headshots |
+| **Fast Hands** | reload 20% faster |
+| **Hair Trigger** | automatic fire 10% faster |
+| **Cold Blood** | stand still 0.6 s: the next shot does +30% |
+| **Last Stand** | +25% damage below 35% health |
+| **Long Stride** | walk 8%, sprint 6% faster |
+| **Second Wind** | below 30% health: +20% speed for 2 s, once a round |
+| **Iron Hide** | +30 maximum health |
+| **Survivor** | regeneration starts sooner and runs faster |
+| **Hardened** | take 12% less damage |
+| **Field Medic** | medkits heal 45% more |
+| **Engineer** | planks go back on 35% faster |
+| **Scavenger** | every point you earn counts 15% higher |
+| **Demolitionist** | frags blast 20% wider and 15% harder |
+| **Strong Arm** | throwables fly 25% faster, so they land farther |
+| **Pack Mule** | one extra throwable in every between-round refill |
+
+Pick with `1` `2` `3`, `←` `→` + `Enter`, or a click/tap on the card. The next wave
+waits while the cards are on the table, and a twenty-second clock picks for you if
+you walk away. A skill is not a perk: nothing is bought, it multiplies with the
+machines rather than replacing them, and it lasts exactly one run. In co-op every
+player is dealt their own three cards; the host applies the effects and the choice
+rides the snapshot back to the guest.
+
+**The per-wave statistics panel is gone.** A cleared round is just `ROUND N CLEARED`.
+The full ledger — round reached, kills, headshot rate, accuracy, points, scrap,
+damage, planks, crafts, revives, skills taken and the best-runs table — is on the
+game-over / EVACUATED screen, where there is time to read it.
 
 ## The map (72 × 50 tiles)
 
@@ -377,8 +416,11 @@ scores, 5–9 minutes each** (~2 h 22 min total), repeat/playlist/once modes, vo
 minute-seeking and an evacuation-fanfare preview. Closing debug keeps the chosen
 score playing; STOP returns to the adaptive score. Selection is local in co-op.
 
-Each completed wave now has a 20-metric report and a 12-second intermission;
-Tab toggles the report and [x] dismisses it. The final screen shows run totals.
-Successful evacuation gets a major-key celebration on both host and guest.
+A completed wave is announced as `ROUND N CLEARED` and nothing else: the
+twenty-metric panel that used to open on every intermission is gone. All of it —
+round reached, kills, headshot rate, accuracy, points, scrap, damage, planks,
+crafts, revives, the skills taken — is on the end-of-run screen, together with
+the best-runs table. Successful evacuation gets a major-key celebration on both
+host and guest.
 See [the listening guide and catalogue](docs/MUSIC.md) for controls, track moods,
 stat definitions and technical/testing limitations.

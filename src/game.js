@@ -1,5 +1,5 @@
 import { SOUNDTRACKS, musicTime } from './soundtracks.js';
-import { newRoundMetrics, recordRound, finishRoundReport } from './roundReport.js';
+import { newRoundMetrics, recordRound } from './roundReport.js';
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
 import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
@@ -9,6 +9,7 @@ import {
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
+import { SKILLS, DRAFT_TIME, DRAFT_EVERY, makeDraft, NO_SKILLS } from './skills.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
@@ -18,7 +19,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, roundReportPanel, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, skillCardAt, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -321,8 +322,6 @@ export class Game {
     this._evacAudioPlayed = false;
     this.roundMetrics = newRoundMetrics();
     this.runMetrics = newRoundMetrics();
-    this._reportHidden = null;
-    this.roundReport = null;
     this.map = new GameMap();
     this._clearDecals();
     this.decals = this._decalFor(this.map.floor);
@@ -624,8 +623,12 @@ export class Game {
   recordRound(key, n = 1) { recordRound(this, key, n); }
 
   addPoints(n, x, y, colour, who) {
-    if (n > 0) this.recordRound('points', n);
     const t = who ?? this.player;
+    // Scavenger counts every point earned a little higher -- on the body that
+    // earned it, not on the host's purse.
+    const mul = n > 0 ? (t?.skillFx?.pointsMul ?? 1) : 1;
+    if (n > 0) n = Math.round(n * mul);
+    if (n > 0) this.recordRound('points', n);
     if (t) t.points = (t.points ?? 0) + n;
     if (t === this.player) {
       this.stats.points += Math.max(0, n);
@@ -832,9 +835,15 @@ export class Game {
     // stops at the same cap the crates use. Owning two kinds no longer means
     // two pockets -- buying the second one replaced the first.
     for (const pl of this.players ?? []) {
-      if (!pl || !pl.ownThrow) continue;
-      if (pl.refillThrowable) pl.refillThrowable(2);
-      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
+      if (!pl) continue;
+      // a new wave is a clean slate for anything that happens once per wave
+      pl._windUsed = false;
+      pl.windT = 0;
+      pl.skillDraft = null;   // a draft never survives into the wave it delays
+      if (!pl.ownThrow) continue;
+      const n = 2 + (pl.skillFx?.refillBonus ?? 0);
+      if (pl.refillThrowable) pl.refillThrowable(n);
+      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + n);
     }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
@@ -912,16 +921,114 @@ export class Game {
 
   endRound() {
     if (!this.roundActive) return;
-    this._reportHidden = null;
-    this.roundReport = finishRoundReport(this);
     this.roundActive = false;
     this.intermission = 12;
     this.respawnQueue = 0;
     this.setWeatherKind(null);   // the sky clears while you catch your breath
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
-    this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
+    // just the number, and a breath: the ledger this used to open is on the
+    // end-of-run screen now, where a reader has time for it
+    this.bannerShow(`ROUND ${this.round} CLEARED`, null, { dur: 2.2, colour: '#f0d98a' });
     audio.roundSting(false);
+    // every fifth wave: a personal upgrade, offered to every body in the room
+    if (this.round % DRAFT_EVERY === 0 && !this.rangeMode) this._offerSkillDrafts();
   }
+
+  // ------------------------------------------------------------ run skills --
+  /** Deal three cards to everyone who is still standing in this night. */
+  _offerSkillDrafts() {
+    if (this.rangeMode || this.gameOver) return;
+    for (const p of this.players ?? [this.player]) {
+      if (!p || p.skillDraft) continue;
+      const ids = makeDraft(p.skills, 3);
+      if (!ids.length) continue;
+      p.skillDraft = { round: this.round, ids, index: 0, t: DRAFT_TIME };
+      // the panel itself is the announcement; the ROUND N CLEARED banner from
+      // endRound gets to finish its line first
+      if (p === this.player) audio.ready && audio.roundSting?.(true);
+    }
+  }
+
+  /** Is anybody still holding an open draft? The next wave waits for them. */
+  _draftOpen() { return (this.players ?? [this.player]).some((p) => !!p?.skillDraft); }
+
+  /** Keep every open draft's clock running; pick for a body that went idle. */
+  _skillDraftTick(dt) {
+    if (!this.started || this.gameOver) return;
+    // a guest's draft lives on the host; only the host runs the clock
+    if (this.net?.playing && !this.net.isHost) return;
+    for (const p of this.players ?? []) {
+      const d = p?.skillDraft;
+      if (!d) continue;
+      d.t = (d.t ?? DRAFT_TIME) - dt;
+      if (d.t <= 0) {
+        const id = d.ids[Math.min(d.ids.length - 1, Math.floor(Math.random() * d.ids.length))];
+        this.pickSkill(p, id);
+      }
+    }
+  }
+
+  /** Arrows / 1-2-3 / the mouse: one card, one press, one skill. */
+  _skillDraftUpdate() {
+    const d = this.player?.skillDraft;
+    if (!d) return;
+    const inp = this.input;
+    const n = d.ids.length;
+    const idx = Math.min(Math.max(0, d.index ?? 0), n - 1);
+    if (inp.wasPressed('ArrowRight', 'KeyD')) { d.index = (idx + 1) % n; audio.dryFire?.(); }
+    else if (inp.wasPressed('ArrowLeft', 'KeyA')) { d.index = (idx - 1 + n) % n; audio.dryFire?.(); }
+    const m = inp.mouse;
+    const hit = skillCardAt(VW, VH, m.x, m.y, n);
+    if (hit >= 0) d.index = hit;
+    // The digits are also weapon-slot keys on the wire. Take the press out of
+    // the frame's set once the card has used it, or a guest would both pick a
+    // skill and swap guns with the same keystroke.
+    const digit = (code, id) => {
+      if (!inp.wasPressed(code)) return false;
+      inp.pressed?.delete?.(code);
+      this.chooseSkill(id);
+      return true;
+    };
+    if (digit('Digit1', d.ids[0]) || digit('Digit2', d.ids[1]) || digit('Digit3', d.ids[2])) return;
+    else if (inp.wasPressed('Enter', 'Space', 'KeyE') || (m.pressed && hit >= 0)) {
+      // E is the interact key on the wire, like the digits above
+      if (inp.wasPressed('KeyE')) inp.pressed?.delete?.('KeyE');
+      this.chooseSkill(d.ids[Math.min(d.index ?? 0, n - 1)]);
+    }
+  }
+
+  /** The player's answer. A guest's answer travels to the body that owns it. */
+  chooseSkill(id) {
+    const d = this.player?.skillDraft;
+    if (!d || !d.ids?.includes(id)) return false;
+    if (this.net?.playing && !this.net.isHost) {
+      this.net.send(this.net.hostId, { m: 'skill', id });
+      audio.perk?.();
+      return true;
+    }
+    return this.pickSkill(this.player, id);
+  }
+
+  /** Host: validate the card, put it in the hand, close the draft. */
+  pickSkill(p, id) {
+    const d = p?.skillDraft;
+    if (!p || !d || !d.ids?.includes(id)) return false;
+    if (!p.addSkill?.(id)) return false;
+    p.skillDraft = null;
+    const def = SKILLS[id];
+    if (!def) return false;
+    if (p === this.player) {
+      this.bannerShow(`SKILL: ${def.name.toUpperCase()}`, def.desc,
+        { dur: 3.4, colour: def.colour, local: true });
+      audio.perk?.();
+    }
+    this.popups.add?.(p.pos.x, p.pos.y - 32, def.short, def.colour, 12);
+    // guests hear about it either way; this is not a local secret like a
+    // blocked speaker, it is a new number in the world
+    this.net?.emit?.('skill', { name: p.name || 'PLAYER', id });
+    return true;
+  }
+
 
   get zombiesLeft() {
     return Math.max(0, this.zombiesTotal - this.zombiesKilled);
@@ -2012,6 +2119,13 @@ export class Game {
     hits.sort((a, b) => a.t - b.t);
 
     const insta = this.timers.instakill > 0 ? 9999 : 1;
+    // Run skills that live on the shot itself. Cold Blood is loaded by
+    // standing still and spent by the next trigger pull, hit or miss.
+    const sfx = shooter.skillFx ?? NO_SKILLS;
+    const cool = sfx.coolhead && shooter._coolReady ? sfx.coolheadMul : 1;
+    const last = shooter.hp <= shooter.maxHp * sfx.laststandHp ? sfx.lastStandMul : 1;
+    const skillMul = (sfx.dmgMul ?? 1) * cool * last;
+    shooter._coolReady = false;
     let pierce = def.pierce;
     let endT = wallT;
     let anyHit = false;
@@ -2026,7 +2140,7 @@ export class Game {
           x: Math.round(h.x), y: Math.round(h.y), a: Math.round(angle * 100) / 100,
           head: false, by: by?.netId ?? 0,
         });
-        const broke = h.st.hurt(def.dmg * insta, this);
+        const broke = h.st.hurt(def.dmg * insta * skillMul, this);
         if (broke) {
           this.addPoints(h.st.kind === 'totem' ? 250 : 200, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
         }
@@ -2036,7 +2150,8 @@ export class Game {
         break;
       }
       const wasAlive = !h.z.dead;
-      const mul = (h.head ? def.headMul : 1) * insta;
+      const mul = (h.head ? def.headMul : 1) * insta * skillMul
+        * (h.head ? (sfx.headMul ?? 1) : 1);
       const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
       if (!wasAlive) continue;
       anyHit = true;
@@ -2596,7 +2711,7 @@ export class Game {
     const b = it.barricade;
     if (b.planks >= b.maxPlanks) { this._rebuildT = 0; return; }
     this._rebuildT = (this._rebuildT || 0) + dt;
-    if (this._rebuildT >= 0.3) {
+    if (this._rebuildT >= 0.3 * (p.skillFx?.buildTimeMul ?? 1)) {
       this._rebuildT = 0;
       b.planks++;
       this.stats.planks++;
@@ -2732,12 +2847,15 @@ export class Game {
       if (dd > 8) { aim = Math.atan2(dy, dx); d = dd; }
     }
     this.recordRound('throws');
-    const speed = Math.max(150, Math.min(MAX_THROW_SPEED, Number.isFinite(d) ? d * 1.64 : MAX_THROW_SPEED));
+    const reach = Math.max(150, Math.min(MAX_THROW_SPEED, Number.isFinite(d) ? d * 1.64 : MAX_THROW_SPEED));
+    // Strong Arm: the same aim, a harder throw -- the arc (and the grenade)
+    // still land where the cursor is, they just get there with more pace
+    const speed = Math.min(MAX_THROW_SPEED, reach * (p.skillFx?.throwSpeedMul ?? 1));
     const floor = p.floor ?? this.map.floor;
     p.vel.x -= Math.cos(aim) * 26;
     p.vel.y -= Math.sin(aim) * 26;
     if (kind === 'frag') {
-      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor);
+      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor, p);
       audio.shot?.('throw', 0);
       return;
     }
@@ -3316,20 +3434,11 @@ export class Game {
       return;
     }
 
-    if (this.roundReport && !this.roundActive && !this.gameOver && !this.paused) {
-      const r = roundReportPanel(VW, VH), m = this.input.mouse;
-      const close = this._reportHidden !== this.roundReport.round && m.pressed
-        && m.x >= r.x + r.cw - 32 && m.x <= r.x + r.cw - 3 && m.y >= r.y + 4 && m.y <= r.y + 32;
-      if (this.input.wasPressed('Tab') || close) {
-        this._reportHidden = this._reportHidden === this.roundReport.round ? null : this.roundReport.round;
-        if (close) { m.pressed = false; m.down = false; }
-      }
-    }
-
-    // ---- a guest runs no simulation at all: it draws what the host says ---
-    if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
-
     if (!this.started) { this._menuUpdate(dt); return; }
+
+    // The skill cards are dealt between waves. Their clocks run first, then
+    // the hand that is holding the cards gets the whole input for itself.
+    this._skillDraftTick(dt);
 
     if (this.input.wasPressed('KeyM')) {
       audio.setMuted(!audio.muted);
@@ -3352,6 +3461,19 @@ export class Game {
       }
       return;
     }
+
+    if (this.player?.skillDraft && !this.paused) {
+      this._skillDraftUpdate();
+      this.input.menuLock = true;
+      // a guest's answer comes back as a snapshot; keep the wire turning even
+      // while the cards cover the middle of the screen
+      if (this.net?.active) this.net.step(dt);
+      this.hud.update(dt, this);
+      return;
+    }
+
+    // ---- a guest runs no simulation at all: it draws what the host says ---
+    if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
 
     // Escape belongs to whatever full-screen list is up: at the bench it steps
     // away from the bench, and only then -- on the next press -- does it pause.
@@ -3495,10 +3617,12 @@ export class Game {
         }
       }
       if (this.zombiesKilled >= this.zombiesTotal && aliveCount === 0) this.endRound();
-    } else {
+    } else if (!this._draftOpen()) {
       this.intermission -= dt;
       if (this.intermission <= 0) this.startRound(this.round + 1);
     }
+    // else: somebody is still looking at three cards. The next wave can wait;
+    // the 20-second clock in _skillDraftTick will answer for them.
 
     // ---- item B: three of them get tired of queueing ----------------------
     this._updateFusion(dt);
