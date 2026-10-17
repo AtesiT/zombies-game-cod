@@ -354,3 +354,18 @@ second floor and the roof, settings, the last-zombie sound, the haunt roster and
 and now the rooftop evacuation finale with the radio's night) and carries a large fresh backlog:
 wearable gizmos, a second crafting bench, teleporters, a story told through a keeper's diary,
 weapon mods, daily challenges, gamepad support and proper smoke tests.
+
+## QA regression tests
+
+Use Node 22+ for the live WebSocket harness, then run:
+
+```sh
+npm ci --prefix tools/harness
+npm test                       # adversarial relay/input and gameplay regressions
+npm run test:regression         # 48 existing assertion suites (~2 minutes)
+```
+
+See [the QA/security report](docs/QA_REPORT.md) for reproductions, fixes,
+measurements and untested areas. The relay is intended for trusted LAN play,
+not unauthenticated public hosting. Its HTTP server intentionally serves only
+runtime assets; repository metadata and developer tools are not public files.

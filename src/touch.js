@@ -68,6 +68,8 @@ export class TouchControls {
     this.root = opts.mount ?? (typeof document !== 'undefined' ? document.body : null);
     if (!this.root) return;
     this._build();
+    this._onBlur = () => { const on = this.enabled; this.show(false); this.show(on); };
+    window.addEventListener('blur', this._onBlur);
   }
 
   // ------------------------------------------------------------------ build --
@@ -336,6 +338,7 @@ export class TouchControls {
         if (!rec) continue;
         this._touches.delete(t.identifier);
         if (rec.kind === 'move') {
+          this.input.stick.x = this.input.stick.y = 0;
           this.move.x = 0; this.move.y = 0;
           this._resetKnob(this.left);
         } else if (rec.kind === 'aim') {
@@ -532,6 +535,9 @@ export class TouchControls {
     this.enabled = !!on;
     if (this.panel) this.panel.style.display = on ? 'block' : 'none';
     if (!on) {
+      this.input.stick.x = this.input.stick.y = 0;
+      this.input.mouse.down = false;
+      this.input.mouse.pressed = false;
       this.move.x = 0; this.move.y = 0;
       this.aim.x = 0; this.aim.y = 0;
       for (const id of [...this.held]) this._press(id, false);
@@ -542,6 +548,7 @@ export class TouchControls {
   }
 
   dispose() {
+    if (this._onBlur) window.removeEventListener('blur', this._onBlur);
     this.show(false);
     if (this.panel && this.panel.parentNode) this.panel.parentNode.removeChild(this.panel);
     this._built = false;
@@ -553,7 +560,7 @@ const DEAD = 0.14;   // ignore a thumb just resting on the stick
 /** Phones and tablets, and laptops that think they are both. */
 export function isTouchDevice() {
   if (typeof window === 'undefined') return false;
-  const has = ('ontouchstart' in window) || (navigator?.maxTouchPoints ?? 0) > 0;
+  const has = ('ontouchstart' in window) || (globalThis.navigator?.maxTouchPoints ?? 0) > 0;
   const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   return has || coarse;
 }

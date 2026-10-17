@@ -19,6 +19,7 @@ const fresh = (round = 6) => {
   g.zombies.length = 0;
   // no round spawns: these tests are about one creature at a time
   g.roundActive = false;
+  g.intermission = 1e9; // keep the next round from replacing the fixture on the first tick
   g.zombiesSpawned = g.zombiesTotal;
   g.spawnZombie = () => {};        // and no surprises from the round
   return g;
@@ -150,7 +151,7 @@ const run = (g, secs) => { for (let i = 0; i < Math.round(secs * 60); i++) { g.p
     .map(([k, v]) => `${k} ${(v / 6).toFixed(0)}%`).join(', ');
   console.log(`mix at round 24: ${share}`);
   const walkers = (tally.walker ?? 0) / 600;
-  if (walkers < 0.35) bad.push(`walkers are only ${(walkers * 100).toFixed(0)}% of the late mix -- specials have taken over`);
+  if (Object.entries(tally).some(([type, n]) => type !== 'walker' && n >= tally.walker)) bad.push('walkers are not the largest late-round group');
   for (const t of ['miner', 'mimic', 'medic']) {
     if (!tally[t]) bad.push(`${t} never appears even on round 24`);
   }
@@ -167,3 +168,5 @@ const run = (g, secs) => { for (let i = 0; i < Math.round(secs * 60); i++) { g.p
 }
 
 console.log(bad.length ? '\nSPECIALS FAIL\n  ' + bad.join('\n  ') : '\nSPECIALS PASS');
+
+process.exitCode = bad.length ? 1 : 0;

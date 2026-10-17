@@ -30,7 +30,7 @@ export const MAX_PLAYERS = 12;
 
 /** The only keys a phone or a laptop gets to send. Short, bounded, obvious. */
 export const NET_KEYS = [
-  'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'Digit1', 'Digit2',
+  'KeyR', 'KeyQ', 'KeyV', 'KeyG', 'KeyH', 'KeyE', 'KeyF', 'ShiftLeft', 'ShiftRight', 'Digit1', 'Digit2',
   'KeyB', 'KeyX',
 ];
 
@@ -65,22 +65,24 @@ export class RemoteInput {
   }
 
   apply(msg) {
-    if (!msg) return;
-    this.stick.x = clamp(msg.mx ?? 0, -1, 1);
-    this.stick.y = clamp(msg.my ?? 0, -1, 1);
-    if (typeof msg.a === 'number') this.aim = msg.a;
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
+    const finite = (v, fallback = 0) => Number.isFinite(v) ? v : fallback;
+    this.stick.x = clamp(finite(msg.mx), -1, 1);
+    this.stick.y = clamp(finite(msg.my), -1, 1);
+    this.aim = finite(msg.a, this.aim) % (Math.PI * 2);
+    const keys = (v) => Array.isArray(v) ? v.slice(0, NET_KEYS.length).filter((k) => NET_KEYS.includes(k)) : [];
     const fire = !!msg.f;
     if (fire && !this.mouse.down) this.mouse.pressed = true;
     if (!fire && this.mouse.down) this.mouse.released = true;
     this.mouse.down = fire;
     if (msg.fp) this.mouse.pressed = true;      // a tap too short to catch as held
 
-    const held = new Set(msg.k ?? []);
+    const held = new Set(keys(msg.k));
     for (const c of held) if (!this.keys.has(c)) this.pressed.add(c);
     for (const c of [...this.keys]) if (!held.has(c)) { this.keys.delete(c); this.released.add(c); }
     for (const c of held) this.keys.add(c);
-    for (const c of (msg.kp ?? [])) this.pressed.add(c);
-    this.wheel = msg.w ?? 0;
+    for (const c of keys(msg.kp)) this.pressed.add(c);
+    this.wheel = Math.sign(finite(msg.w));
     if (this.wheel) this.anyInput = true;
   }
 
@@ -163,6 +165,10 @@ export class Net {
   // ------------------------------------------------------------- transport --
   /** Real play: a WebSocket to the relay. Tests: anything with send/close. */
   open(url) {
+    // Retire the old attempt before replacing it; late events cannot own us.
+    const pending = this._pending;
+    this.close();
+    this._pending = pending;
     this.url = url;
     this.state = 'connecting';
     this.error = null;
@@ -171,11 +177,15 @@ export class Net {
     if (!WS) { this.state = 'error'; this.error = 'NO WEBSOCKET'; this._status(); return false; }
     let ws;
     try { ws = new WS(url); } catch (e) { this.state = 'error'; this.error = 'BAD ADDRESS'; this._status(); return false; }
+    this._ws = ws;
+    const current = () => this._ws === ws;
     const t = {
       send: (o) => { try { ws.send(JSON.stringify(o)); } catch { /* closed */ } },
       close: () => { try { ws.close(); } catch { /* closed */ } },
     };
     ws.onopen = () => {
+      if (!current()) return;
+      clearTimeout(this._openT);
       this._attach(t);
       // nothing is said until the player picks HOST or JOIN: connecting only
       // to read the room list must never make you the host of a room
@@ -183,15 +193,17 @@ export class Net {
       this.log('linked');
     };
     ws.onmessage = (e) => {
+      if (!current()) return;
       let m = null;
       try { m = JSON.parse(typeof e.data === 'string' ? e.data : ''); } catch { return; }
       if (m) this._onMessage(m);
     };
-    ws.onclose = () => this._closed(this.state === 'open' ? 'DISCONNECTED' : 'CANNOT REACH');
-    ws.onerror = () => { this.state = 'error'; this.error = 'CANNOT REACH'; this._status(); };
+    const fail = (why) => { if (current()) { this.close(); this.error = why; this.state = 'error'; this._status(); } };
+    ws.onclose = () => fail(this.state === 'open' ? 'DISCONNECTED' : 'CANNOT REACH');
+    ws.onerror = () => fail('CANNOT REACH');
     clearTimeout(this._openT);
     this._openT = setTimeout(() => {
-      if (this.state === 'connecting') { this.state = 'error'; this.error = 'CANNOT REACH'; this._status(); }
+      if (current() && this.state === 'connecting') fail('CANNOT REACH');
     }, 4000);
     // keep the tab's own timeout from dropping an idle lobby
     this._ping = setInterval(() => { if (this.active) t.send({ t: 'ping' }); }, 15000);
@@ -255,12 +267,27 @@ export class Net {
   }
 
   close() {
+    const ws = this._ws;
+    this._ws = null;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(); } catch { /* still connecting */ }
+    }
     if (this.transport) { try { this.transport.send({ t: 'b', m: 'bye' }); } catch { /* gone */ } this.transport.close(); }
     this.transport = null;
     clearInterval(this._ping);
     clearTimeout(this._openT);
     clearTimeout(this._hiT);
     clearTimeout(this._joinT);
+    this._pending = null;
+    this._buffer = null;
+    this._evq.length = 0;
+    this._targets.clear();
+    this._edge.clear();
+    this._fireEdge = false;
+    this.events.length = 0;
+    this.isHost = false;
+    this.hostId = 0;
     this._closed('CLOSED');
   }
 
@@ -284,6 +311,9 @@ export class Net {
 
   // -------------------------------------------------------------- messages --
   _onMessage(m) {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+    // Relay control messages never have a peer sender.
+    if (m.from != null && m.t != null) return;
     if (m.t === 'joined') {
       this.you = m.you;
       this.isHost = !!m.host;
@@ -324,8 +354,9 @@ export class Net {
         this._joinT = setTimeout(() => {
           if (!this._welcomed && !this.isHost && this.state === 'open') {
             this.log('the host never answered');
-            this.error = 'HOST DID NOT LET YOU IN';
             this.close();
+            this.error = 'HOST DID NOT LET YOU IN';
+            this._status();
           }
         }, 9000);
         this.send(this.hostId, { m: 'hi', name: this.name });
@@ -500,7 +531,7 @@ export class Net {
   // ------------------------------------------------------------ guest side --
   _guestMsg(m) {
     const g = this.game;
-    if (!g) return;
+    if (!g || !this.hostId || m.from !== this.hostId) return;
     if (m.m === 'welcome') {
       this.you = m.you;
       this.hostId = m.host ?? this.hostId;
@@ -517,7 +548,7 @@ export class Net {
       this._status();
       return;
     }
-    if (m.m === 'full') { this.error = 'ROOM FULL'; this.close(); return; }
+    if (m.m === 'full') { this.close(); this.error = 'ROOM FULL'; this._status(); return; }
     if (m.m === 'hostis') { this.hostId = m.host; return; }
     if (m.m === 'peerlist') { this._names = m.list ?? []; this._status(); return; }
     if (m.m === 'bye') { this.close(); return; }
@@ -554,6 +585,7 @@ export class Net {
         peer.input.endFrame();
         continue;
       }
+      g._fxOn?.(p);
       peer.input.placeAim(g, p);
       p.update(dt, g, peer.input);
       // the stair cooldown must actually cool, or a guest gets exactly one
@@ -603,8 +635,9 @@ export class Net {
       if (inp.wasPressed('KeyB')) g.throwFor?.(p, 'gas');
       // and a guest can kneel and pull a friend up, exactly like the host:
       // ten seconds of holding him, five with Quick Revive
-      const fallen = g.players.find((o) => o !== p && o.downed && !o.dead
-        && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
+      const fallen = g.fallenNear(p);
+      if (peer.reviveTarget !== fallen) peer.reviveT = 0;
+      peer.reviveTarget = fallen;
       if (fallen && inp.isDown('KeyF')) {
         peer.reviveT = (peer.reviveT ?? 0) + dt;
         g.reviveNeed = p.perks?.has('quickrevive') ? 5 : 10;

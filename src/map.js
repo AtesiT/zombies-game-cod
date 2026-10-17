@@ -546,11 +546,10 @@ export class GameMap {
     }
   }
 
-  blocksBullets(tx, ty) {
+  blocksBullets(tx, ty, floor = this.floor) {
     if (!this.inside(tx, ty)) return true;
-    const i = ty * this.w + tx;
-    if (this.tiles[i] === TILE.FENCE) return false;
-    return this.solidAt(tx, ty);
+    if (this.tileOn(floor, tx, ty) === TILE.FENCE) return false;
+    return this.solidTileOn(floor, tx, ty);
   }
 
   /** Move a circle by (dx,dy), sliding along walls. Mutates pos {x,y}. */
@@ -670,10 +669,10 @@ export class GameMap {
     }
   }
 
-  lineBlocked(x0, y0, x1, y1) { return !!this.rayWall(x0, y0, x1, y1); }
+  lineBlocked(x0, y0, x1, y1, floor = this.floor) { return !!this.rayWall(x0, y0, x1, y1, Infinity, floor); }
 
   /** DDA raycast against bullet-blocking tiles. */
-  rayWall(x0, y0, x1, y1, maxLen = Infinity) {
+  rayWall(x0, y0, x1, y1, maxLen = Infinity, floor = this.floor) {
     let dx = x1 - x0, dy = y1 - y0;
     const len = Math.hypot(dx, dy);
     if (len < 1e-6) return null;
@@ -688,12 +687,12 @@ export class GameMap {
     let tMaxY = Math.abs(dy) < 1e-9 ? Infinity : ((dy > 0 ? (ty + 1) * T - y0 : y0 - ty * T) / Math.abs(dy));
 
     let t = 0, nx = 0, ny = 0, guard = 0;
-    if (this.blocksBullets(tx, ty)) return { t: 0, x: x0, y: y0, nx: -dx, ny: -dy };
+    if (this.blocksBullets(tx, ty, floor)) return { t: 0, x: x0, y: y0, nx: -dx, ny: -dy };
     while (t <= lim && guard++ < 4096) {
       if (tMaxX < tMaxY) { tx += stepX; t = tMaxX; tMaxX += tDeltaX; nx = -stepX; ny = 0; }
       else { ty += stepY; t = tMaxY; tMaxY += tDeltaY; nx = 0; ny = -stepY; }
       if (t > lim) break;
-      if (this.blocksBullets(tx, ty)) return { t, x: x0 + dx * t, y: y0 + dy * t, nx, ny };
+      if (this.blocksBullets(tx, ty, floor)) return { t, x: x0 + dx * t, y: y0 + dy * t, nx, ny };
     }
     return null;
   }

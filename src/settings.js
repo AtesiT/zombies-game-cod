@@ -117,12 +117,19 @@ export class Settings {
     const d = this.def(id);
     if (!d) return;
     if (d.type === 'action') return;
-    if (d.type === 'range') v = Math.max(d.min, Math.min(d.max, v));
-    else v = !!v;
+    v = this.validate(d, v);
+    if (v === undefined) return;
     if (this.values[id] === v) return;
     this.values[id] = v;
     for (const fn of this.listeners) fn(id, v, this);
     this.save();
+  }
+
+  validate(d, v) {
+    if (d.type === 'toggle') return typeof v === 'boolean' ? v : undefined;
+    if (d.type !== 'range' || typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+    // Some UI controls use continuous percentages, but indexed enums must be integers.
+    return Math.max(d.min, Math.min(d.max, Math.round(v)));
   }
 
   /** Ranges wrap around; toggles just flip. */
@@ -162,12 +169,11 @@ export class Settings {
       const raw = localStorage.getItem(KEY);
       if (!raw) return;
       const got = JSON.parse(raw);
+      if (!got || typeof got !== 'object' || Array.isArray(got)) return;
       for (const d of SETTING_DEFS) {
         if (d.type === 'action' || !(d.id in got)) continue;
-        const v = got[d.id];
-        this.values[d.id] = d.type === 'range'
-          ? Math.max(d.min, Math.min(d.max, Number(v) || 0))
-          : !!v;
+        const v = this.validate(d, got[d.id]);
+        if (v !== undefined) this.values[d.id] = v;
       }
     } catch { /* corrupt or unavailable storage: keep the defaults */ }
   }

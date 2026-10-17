@@ -303,6 +303,7 @@ console.log('--- the Knight: armour plate, weak head ---');
 // ---------------------------------------------------------------------------
 console.log('--- weather: the storm, the fog, and the drying glass ---');
 {
+  g.setWeatherKind(null); // isolate from whichever weather the earlier combat rolled
   g.setWeatherKind('storm');
   ok(g.wx.kind === 'storm' && g.wx.drops.length === 110, 'storm: 110 rain drops ready');
   let flashed = 0;

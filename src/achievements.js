@@ -112,7 +112,13 @@ export const MAX_SCORES = 10;
 
 export function loadBoard() {
   const b = safeGet(BOARD_KEY, []);
-  return Array.isArray(b) ? b : [];
+  if (!Array.isArray(b)) return [];
+  const fields = ['round', 'kills', 'headshots', 'points', 'time', 'date'];
+  return b.filter((e) => e && typeof e === 'object'
+    && fields.every((k) => Number.isFinite(e[k]) && e[k] >= 0))
+    .map((e) => ({ ...Object.fromEntries(fields.map((k) => [k, e[k]])), evac: !!e.evac }))
+    .sort((a, b) => b.round - a.round || b.points - a.points || b.kills - a.kills)
+    .slice(0, MAX_SCORES);
 }
 
 export function submitScore(entry) {

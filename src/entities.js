@@ -740,7 +740,7 @@ export class Player {
     const REACH = 38, ARC = 0.8;
     const hits = [];
     for (const z of game.zombies) {
-      if (z.dead) continue;
+      if (z.dead || (z.floor ?? 0) !== (this.floor ?? game.map.floor)) continue;
       const d = dist(this.pos.x, this.pos.y, z.pos.x, z.pos.y);
       if (d > REACH) continue;
       let da = Math.atan2(z.pos.y - this.pos.y, z.pos.x - this.pos.x) - this.aim;
@@ -768,7 +768,7 @@ export class Player {
     // Widow's Wine: the swipe leaves a slowing web on everything nearby
     if (this.perkFx.webs) {
       for (const z of game.zombies) {
-        if (z.dead) continue;
+        if (z.dead || (z.floor ?? 0) !== (this.floor ?? game.map.floor)) continue;
         if (dist(this.pos.x, this.pos.y, z.pos.x, z.pos.y) < 70) z.webbed = Math.max(z.webbed, 3.5);
       }
       game.webBlasts.push({ x: this.pos.x + Math.cos(this.aim) * 24, y: this.pos.y + Math.sin(this.aim) * 24, r: 46, life: 0.5, max: 0.5, f: this.floor ?? game.map.floor });
@@ -1450,7 +1450,7 @@ export class Zombie {
       // follow the horde's own route when there is not: a straight line
       // through a partition wall only pins it in a corner forever.
       const pt = this.reviveTarget;
-      const clear = pt && !this.map.rayWall(this.pos.x, this.pos.y, pt.pos.x, pt.pos.y);
+      const clear = pt && !this.map.rayWall(this.pos.x, this.pos.y, pt.pos.x, pt.pos.y, Infinity, this.floor);
       this._goto = clear ? { x: pt.pos.x, y: pt.pos.y } : null;
       // it walks at the patient in a straight line, which is fine across a
       // room and useless through a wall -- if it is plainly not getting
@@ -1508,7 +1508,7 @@ export class Zombie {
         this._vantage = null;
         if (sameFloor && pd < 640) {
           const away = Math.atan2(this.pos.y - p.pos.y, this.pos.x - p.pos.x);
-          const clear = (x, y) => !this.map.rayWall(this.pos.x, this.pos.y, x, y);
+          const clear = (x, y) => !this.map.rayWall(this.pos.x, this.pos.y, x, y, Infinity, this.floor);
           if (pd < this.standoff - 40) {
             for (const r of [140, 90, 60]) {
               const c = { x: this.pos.x + Math.cos(away) * r, y: this.pos.y + Math.sin(away) * r };
@@ -2541,9 +2541,9 @@ export class MonkeyBomb {
     this.vel.x *= Math.max(0, 1 - 2.4 * dt);
     this.vel.y *= Math.max(0, 1 - 2.4 * dt);
     const nx = this.pos.x + this.vel.x * dt, ny = this.pos.y + this.vel.y * dt;
-    if (game.map.solidAt(Math.floor(nx / T), Math.floor(this.pos.y / T))) this.vel.x *= -0.45;
+    if (game.map.solidTileOn(this.floor, Math.floor(nx / T), Math.floor(this.pos.y / T))) this.vel.x *= -0.45;
     else this.pos.x = nx;
-    if (game.map.solidAt(Math.floor(this.pos.x / T), Math.floor(ny / T))) this.vel.y *= -0.45;
+    if (game.map.solidTileOn(this.floor, Math.floor(this.pos.x / T), Math.floor(ny / T))) this.vel.y *= -0.45;
     else this.pos.y = ny;
   }
 
@@ -2552,7 +2552,7 @@ export class MonkeyBomb {
     this.remove = true;
     const d = this.def;
     game.explodeAt(this.pos.x, this.pos.y, d.boomR ?? 150, d.boomDmg ?? 3000,
-      { colour: '#ffd45c', fromPlayer: true, blast: true });
+      { colour: '#ffd45c', fromPlayer: true, blast: true, floor: this.floor, owner: this.owner });
     game.shake(7, 0.4);
     audio.explosion();
   }

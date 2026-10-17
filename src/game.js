@@ -655,9 +655,16 @@ export class Game {
     this.onPlayerTeleport(from, to);
   }
 
+  fallenNear(p) {
+    return this.players.find((o) => o !== p && o.downed && !o.dead && !o.evac
+      && (o.floor ?? this.map.floor) === (p.floor ?? this.map.floor)
+      && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
+  }
+
   /** Stand some poor soul back up. Co-op only exists for this. */
   revive(downed, by) {
-    if (!downed?.downed) return;
+    if (!downed?.downed || downed.dead || !by || by.dead || by.downed || by.evac
+      || this.fallenNear(by) !== downed) return;
     downed.downed = false;
     downed._downTold = 0;
     downed.hp = Math.round(downed.maxHp * 0.5);
@@ -1288,9 +1295,9 @@ export class Game {
 
   /** The Shocker's bolt. Walls eat it; you do not. */
   zapPlayer(z, p) {
-    if (!p) return;
+    if (!p || (p.floor ?? 0) !== (z.floor ?? 0)) return;
     const tx = p.pos.x, ty = p.pos.y - 6;
-    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty);
+    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty, Infinity, z.floor ?? this.map.floor);
     const ex = wall ? wall.x : tx, ey = wall ? wall.y : ty;
     const floor = z.floor ?? this.map.floor;
     this.bolts.push({
@@ -1715,8 +1722,7 @@ export class Game {
    * It does hold the regen timer open, which is the point -- you cannot stand
    * in a fire and heal through it.
    */
-  scorchPlayer(dmg, game, owner) {
-    const p = this.player;
+  scorchPlayer(dmg, game, owner, p = this.player) {
     if (p.dead || this.gameOver) return;
     if (p.evac || p.downed) return;               // aboard, or already on the floor
     if (this.debug?.god || p.god) return;         // god mode means ALL of it
@@ -1775,7 +1781,7 @@ export class Game {
         let n = 0;
         for (const z of this.zombies) {
           if (z.dead) continue;
-          z.hurt(1e9, false, this, Math.atan2(z.pos.y - p.pos.y, z.pos.x - p.pos.x));
+          if (z.hurt(1e9, false, this, Math.atan2(z.pos.y - p.pos.y, z.pos.x - p.pos.x)) !== 2) continue;
           this.onZombieKilled(z, false, 0);
           n++;
         }
@@ -1841,7 +1847,8 @@ export class Game {
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
     if (!settings.get('blood')) return;
-    const f = this.map.floor;
+    const f = this.fxFloor;
+    this._decalFor(f);
     const box = this._decalBox[f]
       ?? (this._decalBox[f] = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
     // remember where the mess is, so a clean stretch of floor costs nothing
@@ -1851,7 +1858,7 @@ export class Game {
     if (y + r * 2 > box.y1) box.y1 = y + r * 2;
     this._decalCount[f] = (this._decalCount[f] ?? 0) + 1;
     if (this._decalCount[f] > DECAL_MAX) this._washDecals(f);
-    const c = this.decalCtx;
+    const c = this._decalCtx[f];
     c.save();
     c.globalAlpha = alpha;
     c.fillStyle = colour;
@@ -1907,14 +1914,16 @@ export class Game {
     this.stats.shots++;
     const dx = Math.cos(angle), dy = Math.sin(angle);
     const ex = ox + dx * def.range, ey = oy + dy * def.range;
-    const wall = this.map.rayWall(ox, oy, ex, ey);
+    const shooter = by ?? this.player;
+    const floor = shooter.floor ?? this.map.floor;
+    const wall = this.map.rayWall(ox, oy, ex, ey, Infinity, floor);
     const wallT = wall ? wall.t : def.range;
 
     const hits = [];
-    const magnet = this.player.perkFx.headMagnet;
+    const magnet = shooter.perkFx.headMagnet;
     for (const z of this.zombies) {
       if (z.dead) continue;
-      if ((z.floor ?? 0) !== this.map.floor) continue;   // different storey
+      if ((z.floor ?? 0) !== floor) continue;   // different storey
       // Deadshot Daiquiri nudges the ray toward the head box
       let hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       if (magnet > 0) {
@@ -1940,7 +1949,7 @@ export class Game {
     // headstone is the whole point of them
     for (const arr of [this.totems, this.graves]) {
       for (const st of arr) {
-        if (st.dead || (st.f ?? 0) !== this.map.floor) continue;
+        if (st.dead || (st.f ?? 0) !== floor) continue;
         const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
         if (res.d2 > 13 * 13) continue;
         const t = Math.hypot(res.cx - ox, res.cy - oy);
@@ -2004,7 +2013,7 @@ export class Game {
     if (doSpecial && def.special && def.special !== 'shock' && def.special !== 'lure') {
       const ix = firstHit ? firstHit.x : ox + dx * endT;
       const iy = firstHit ? firstHit.y : oy + dy * endT;
-      this.applySpecial(def, ix, iy, firstHit ? firstHit.z : null, insta);
+      this.applySpecial(def, ix, iy, firstHit ? firstHit.z : null, insta, floor, shooter);
       endT = Math.min(endT, Math.hypot(ix - ox, iy - oy));
     }
 
@@ -2035,10 +2044,10 @@ export class Game {
   }
 
   /** Ray Gun splash / DG-2 chain / Winter's Howl frost. */
-  applySpecial(def, x, y, source, insta = 1) {
+  applySpecial(def, x, y, source, insta = 1, floor = null, by = null) {
     // a wonder weapon belongs to the storey the shot came from: a guest
     // firing upstairs does not blow the floor below apart
-    const sf = source?.floor ?? this.map.floor;
+    const sf = floor ?? source?.floor ?? this.fxFloor;
     if (def.special === 'splash') {
       this.explosionLights.push({ x, y, r: def.splashR * 3.2, life: 0.28, max: 0.28, colour: def.splashColor, f: sf });
       for (const z of this.zombies) {
@@ -2085,7 +2094,7 @@ export class Game {
 
     if (def.special === 'lob') {
       // the launcher's round ends the way a grenade does, just ruder
-      this.explodeAt(x, y, def.lobR, def.lobDmg, { blast: true, colour: '#f0a050' });
+      this.explodeAt(x, y, def.lobR, def.lobDmg, { blast: true, colour: '#f0a050', floor: sf, owner: by });
       return;
     }
 
@@ -2106,10 +2115,10 @@ export class Game {
       // not already alight, or a held trigger would carpet the whole hallway
       let near = false;
       for (const f of this.fires) {
-        if (dist(f.x, f.y, x, y) < 24) { near = true; break; }
+        if ((f.f ?? 0) === sf && dist(f.x, f.y, x, y) < 24) { near = true; break; }
       }
       if (!near) {
-        this.fires.push({ x, y, r: def.flameR, life: 1.1, max: 1.1, tick: 0, puff: 0, f: this.fxFloor });
+        this.fires.push({ x, y, r: def.flameR, life: 1.1, max: 1.1, tick: 0, puff: 0, f: sf, owner: by });
         this.particles.smoke(x, y, 3);
       }
       return;
@@ -2130,7 +2139,7 @@ export class Game {
     if (def.special === 'freeze') {
       let frozen = 0;
       for (const z of this.zombies) {
-        if (z.dead) continue;
+        if (z.dead || (z.floor ?? 0) !== sf) continue;
         const d = dist(x, y, z.pos.x, z.pos.y);
         if (d > def.freezeR) continue;
         z.frozen = def.freezeTime;
@@ -2684,15 +2693,17 @@ export class Game {
       Math.cos(p.aim) * speed + p.vel.x * 0.4, Math.sin(p.aim) * speed + p.vel.y * 0.4,
       def, p.floor ?? this.map.floor,
     ));
+    this.monkeys[this.monkeys.length - 1].owner = p;
     this._monkeyKills = 0;
     audio.shot('throw', 0);
   }
 
   /** Thunder Gun: a cone of concussive force, no hitscan. */
   fireShockwave(ox, oy, angle, def, by = null) {
+    const floor = by?.floor ?? this.map.floor;
     let hit = 0;
     for (const z of this.zombies) {
-      if (z.dead) continue;
+      if (z.dead || (z.floor ?? 0) !== floor) continue;
       const dx = z.pos.x - ox, dy = z.pos.y - oy;
       const d = Math.hypot(dx, dy);
       if (d > def.shockRange) continue;
@@ -2700,7 +2711,7 @@ export class Game {
       while (da > Math.PI) da -= TAU;
       while (da < -Math.PI) da += TAU;
       if (Math.abs(da) > def.shockAngle) continue;
-      if (this.map.lineBlocked(ox, oy, z.pos.x, z.pos.y)) continue;
+      if (this.map.lineBlocked(ox, oy, z.pos.x, z.pos.y, floor)) continue;
       const falloff = 1 - (d / def.shockRange) * 0.45;
       const res = z.hurt(def.shockDmg * falloff, false, this, Math.atan2(dy, dx), by);
       z.vel.x += Math.cos(Math.atan2(dy, dx)) * def.shockPush * falloff;
@@ -2716,7 +2727,8 @@ export class Game {
 
   /** Shared explosion: grenades, Monkey Bombs, Ray Gun splashes. */
   explodeAt(x, y, r, dmg, opts = {}) {
-    const p = this.player;
+    const p = opts.owner ?? this.player;
+    const floor = opts.floor ?? this.fxFloor;
     audio.explosion();
     this.shake(opts.shake ?? 10, 0.4);
     this.explosionLights.push({ x, y, r: r * 2.6, life: 0.42, max: 0.42, colour: opts.colour, f: this.fxFloor });
@@ -2729,20 +2741,20 @@ export class Game {
       if (z.dead) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
       if (d > r) continue;
+      if ((z.floor ?? 0) !== floor) continue;
       if (opts.blast && this.tryCrawl(z)) continue;
       const falloff = 1 - d / r;
-      if ((z.floor ?? 0) !== this.map.floor) continue;
       const res = z.hurt(dmg * falloff, false, this, Math.atan2(z.pos.y - y, z.pos.x - x));
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
     }
 
     // the furniture takes its share: a totem or a headstone near a blast
     // does not get to sit it out
-    this.hurtHaunts(x, y, r, Math.min(dmg, 320), this.map.floor);
+    this.hurtHaunts(x, y, r, Math.min(dmg, 320), floor);
 
     // self-damage: normal grenades hurt you, PhD Flopper says otherwise
     const pd = dist(x, y, p.pos.x, p.pos.y);
-    if (pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
+    if ((p.floor ?? 0) === floor && pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
       p.hurt(Math.round(75 * (1 - pd / r)), x, y, this);
     } else if (pd < r && p.perkFx.diveBlast) {
       p.heal(0);
@@ -3297,6 +3309,7 @@ export class Game {
     // ---- co-op: the host also drives every body that joined ---------------
     this._fxOn(this.player);
     if (this.net?.active) this.net.step(dt);
+    this._fxOn(this.player);
 
     // ---- workbench craft menu ---------------------------------------------
     // While it is up it swallows the digits, the arrows and the pointer, so
@@ -3346,8 +3359,8 @@ export class Game {
     this.updateAimTarget();
     this.updateInteraction();
     // ---- co-op: pick somebody up, or get on with buying things ------------
-    const fallen = this.players.find((o) => o !== this.player && o.downed && !o.dead
-      && dist(this.player.pos.x, this.player.pos.y, o.pos.x, o.pos.y) < 40);
+    const fallen = this.fallenNear(this.player);
+    if (this.reviveTarget !== fallen) this._reviveT = 0;
     this.reviveTarget = fallen ?? null;
     if (fallen && !this.player.downed && !this.player.dead && this.input.isDown('KeyF')) {
       this._reviveT = (this._reviveT ?? 0) + dt;
@@ -3476,12 +3489,13 @@ export class Game {
     // ---- power-ups ---------------------------------------------------------
     for (const pu of this.powerups) pu.update(dt);
     for (const pu of this.powerups) {
-      if ((pu.f ?? 0) !== this.map.floor) continue;
+      if (pu.dead) continue;
       for (const pl of this.players ?? []) {
         if (!pl || pl.dead || pl.downed || pl.evac) continue;
         if ((pl.floor ?? 0) !== (pu.f ?? 0)) continue;
         if (dist(pu.x, pu.y, pl.pos.x, pl.pos.y) < 24) {
           pu.dead = true;
+          this._fxOn(pl);
           this.collectPowerup(pu, pl);
           break;
         }
@@ -3533,11 +3547,12 @@ export class Game {
       const r = this.rifts[i];
       r.life -= dt;
       if (r.life <= 0) { this.rifts.splice(i, 1); continue; }
+      this._fxOn({ floor: r.f ?? 0 });
       r.tick += dt;
       if (r.tick >= 0.4) {
         r.tick -= 0.4;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (r.f ?? 0)) continue;
           if (dist(r.x, r.y, z.pos.x, z.pos.y) > r.r + z.r) continue;
           const res = z.hurt(r.dmg, false, this, randRange(0, TAU));
           if (res === 2) this.onZombieKilled(z, false);
@@ -3548,18 +3563,18 @@ export class Game {
     // ---- fire and gas -----------------------------------------------------
     this.inFire = 0;
     this.inGas = 0;
-    const p = this.player;
     for (let i = this.fires.length - 1; i >= 0; i--) {
       const f = this.fires[i];
       f.life -= dt;
       if (f.life <= 0) { this.fires.splice(i, 1); continue; }
+      this._fxOn({ floor: f.f ?? 0 });
       // cooks zombies properly, and you if you stand in it
       f.tick += dt;
       const stepT = 0.25;
       while (f.tick >= stepT) {
         f.tick -= stepT;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (f.f ?? 0)) continue;
           if (dist(f.x, f.y, z.pos.x, z.pos.y) > f.r + z.r) continue;
           const res = z.hurt(90 * stepT, false, this, randRange(0, TAU));
           z.burning = Math.max(z.burning ?? 0, 2.2);
@@ -3567,9 +3582,11 @@ export class Game {
           if (res === 2) this.onZombieKilled(z, false, null, 'fire');
         }
       }
-      if (!p.dead && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
-        this.inFire = 1;
-        this.scorchPlayer(20 * dt, this, f.owner);
+      for (const p of this.players) {
+        if (!p.dead && (p.floor ?? 0) === (f.f ?? 0) && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
+          if (p === this.player) this.inFire = 1;
+          this.scorchPlayer(20 * dt, this, f.owner, p);
+        }
       }
       f.puff -= dt;
       if (f.puff <= 0) {
@@ -3583,13 +3600,14 @@ export class Game {
       const g = this.gases[i];
       g.life -= dt;
       if (g.life <= 0) { this.gases.splice(i, 1); continue; }
+      this._fxOn({ floor: g.f ?? 0 });
       g.drift += dt * 0.3;
       // zombies choke in it; a thrown pot also bites a little
       g.tick = (g.tick ?? 0) + dt;
       while (g.tick >= 0.5) {
         g.tick -= 0.5;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (g.f ?? 0)) continue;
           if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
           z.webbed = Math.max(z.webbed ?? 0, 0.45);
           if (g.owner) {
@@ -3598,9 +3616,11 @@ export class Game {
           }
         }
       }
-      if (!p.dead && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
-        this.inGas = 1;
-        this.scorchPlayer(11 * dt, this, g.owner);
+      for (const p of this.players) {
+        if (!p.dead && (p.floor ?? 0) === (g.f ?? 0) && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
+          if (p === this.player) this.inGas = 1;
+          this.scorchPlayer(11 * dt, this, g.owner, p);
+        }
       }
       g.puff -= dt;
       if (g.puff <= 0) {
@@ -3610,6 +3630,7 @@ export class Game {
       }
     }
 
+    this._fxOn(this.player);
     this._stepHaunts(dt);
     this._heliStep(dt);
 
@@ -4147,6 +4168,7 @@ export class Game {
     net.step(dt);
     // bells, hums, snowballs and the rain on the glass: the timers and the
     // kinematics are the guest's to run, the consequences are not (isAuth)
+    this._fxOn(this.player);
     this._stepHaunts(dt);
     this._heliStep(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
@@ -4162,8 +4184,8 @@ export class Game {
     // building travels (net.js, `m:'craft'`).
     // kneeling over a friend: the host owns the revive, the guest owns the bar
     if (pl && !pl.dead && !pl.downed && this.input?.isDown('KeyF')) {
-      const fallen = this.players.find((o) => o !== pl && o.downed && !o.dead
-        && dist(pl.pos.x, pl.pos.y, o.pos.x, o.pos.y) < 40);
+      const fallen = this.fallenNear(pl);
+      if (this.reviveTarget !== fallen) this._reviveT = 0;
       if (fallen) {
         this.reviveTarget = fallen;
         this.reviveNeed = pl.perks?.has('quickrevive') ? 5 : 10;
@@ -5797,7 +5819,7 @@ export class Game {
 
   drawPowerups(ctx) {
     for (const pu of this.powerups) {
-      if ((pu.f ?? 0) !== this.map.floor) continue;
+      if (pu.dead) continue;
       if (this._vis(pu.x, pu.y, 40)) pu.draw(ctx);
     }
   }
