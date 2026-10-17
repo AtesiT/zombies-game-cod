@@ -4031,13 +4031,15 @@ export class Game {
     this.applySettings();
     audio.init();
     audio.resume();
-    // If the browser still has not let the audio clock run, say so on the
-    // screen instead of letting the player believe the game lost its voice.
+    this.startRound(1);
+    // After the round banner, not before it: startRound announces ROUND 1 and
+    // would overwrite a warning shown a line earlier. If the browser still has
+    // not let the audio clock run, the player is told why the game is mute
+    // instead of believing it lost its voice for good.
     if (!audio.running) {
       this.bannerShow('SOUND IS BLOCKED', 'tap or click anywhere to let the game speak',
         { dur: 4.5, colour: '#e0a040', local: true });
     }
-    this.startRound(1);
   }
 
   // ------------------------------------------------------------------ menus
