@@ -1055,8 +1055,13 @@ export const ENEMY_TYPES = {
     chew: 3.4, points: 1.7, set: 'brute', headOff: 1.25, smash: true,
   },
   dog: {
-    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 6.0, scale: 1,
-    chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45, sprinty: true, four: true,
+    // A hound is a big animal, not a lap dog. The sprite is a side-on 18x12
+    // drawing, so on a 20x22 human it read as a puppy at scale 1: it now sits
+    // at 1.7 and its collision radius grew with it. `hitScale` keeps the
+    // bullets honest -- a bigger body is a bigger target, or the picture lies.
+    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 8.6, scale: 1.7,
+    hitScale: 1.6, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
+    sprinty: true, four: true,
   },
   crawler: {
     id: 'crawler', name: 'Crawler', hp: 0.28, speed: 0.46, dmg: 0.85, r: 5.5, scale: 1,
@@ -2303,9 +2308,15 @@ export class Zombie {
     if (sc !== 1) { ctx.translate(px, py); ctx.scale(sc, sc); ctx.translate(-px, -py); }
 
     const attacking = this.state === ZSTATE.BARRICADE || this.state === ZSTATE.DOOR || this.state === ZSTATE.ATTACK;
-    const { img } = this._set(art, attacking, flip);
+    const { img, framed } = this._set(art, attacking, flip);
     const gx = px - SPRITE_OX;
-    const gy = py - SPRITE_OY - (attacking ? 1 : 0);
+    // The dog is drawn in its own little 18x12 frame, not in the 20x22 human
+    // one: hanging it from the human shoulder line left it floating a hand's
+    // width above its own shadow. A body in its own frame is centred on the
+    // entity instead, which puts the paws back on the ground.
+    const gy = framed
+      ? py - SPRITE_OY - (attacking ? 1 : 0)
+      : py - img.height / 2;
 
     // frozen / webbed overlay
     if (this.frozen > 0.05) {

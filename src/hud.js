@@ -10,6 +10,7 @@ import { ACHIEVEMENTS } from './achievements.js';
 import { drawAchievementIcon } from './achievementIcons.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
+import { lifetimeRows, lifetimeMenuLines } from './lifetime.js';
 import { T } from './art.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { MAX_PLAYERS } from './net.js';
@@ -1561,9 +1562,96 @@ export function drawAchievements(ctx, game, w, h) {
     y += ACH_ROW;
   }
 
-  text(ctx, 'UP / DOWN OR WHEEL TO SCROLL      ESC TO CLOSE', cx + cw / 2, cy + ch - 9, {
+  text(ctx, 'UP / DOWN OR DRAG TO SCROLL      ESC OR TAP TO CLOSE', cx + cw / 2, cy + ch - 9, {
     font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
+  ctx.restore();
+}
+
+/**
+ * The all-time page. Two columns, no scrolling: eight numbers about the nights
+ * themselves on the left, sixteen about what happened in them on the right.
+ * Every figure is a sum or a maximum over every run this browser has finished,
+ * kept in localStorage by src/lifetime.js.
+ */
+export function statsPanel(w, h) {
+  const cw = Math.min(w - 20, 600);
+  const ch = Math.min(h - 20, 440);
+  return {
+    cw, ch,
+    x: Math.round((w - cw) / 2),
+    y: Math.round((h - ch) / 2),
+    head: 46, foot: 26,
+  };
+}
+
+export function drawStats(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.9)';
+  ctx.fillRect(0, 0, w, h);
+
+  const { x: cx, y: cy, cw, ch, head } = statsPanel(w, h);
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  text(ctx, 'ALL-TIME STATISTICS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, 'THIS MACHINE', cx + cw - 14, cy + 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  });
+
+  const rows = lifetimeRows(game?.lifetime);
+  const nights = rows.filter((r) => r[2] === 0);
+  const deeds = rows.filter((r) => r[2] === 1);
+  const gap = 26;
+  const colW = Math.floor((cw - 32 - gap) / 2);
+  const ax = cx + 16;
+  const bx = cx + 16 + colW + gap;
+
+  const heading = (x, label) => {
+    text(ctx, label, x, cy + head + 2, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
+    ctx.fillStyle = 'rgba(200,190,160,0.18)';
+    ctx.fillRect(x, cy + head + 8, colW, 1);
+  };
+  heading(ax, 'THE NIGHTS');
+  heading(bx, 'EVERYTHING ELSE');
+
+  const line = (x, y, label, value, colour = INK) => {
+    text(ctx, label, x, y, { font: '10px "Courier New", monospace', colour: INK_DIM });
+    text(ctx, value, x + colW, y, { font: 'bold 11px "Courier New", monospace', colour, align: 'right' });
+  };
+
+  let y = cy + head + 26;
+  for (const [label, value] of nights) { line(ax, y, label, value); y += 26; }
+  y = cy + head + 26;
+  for (const [label, value] of deeds) { line(bx, y, label, value); y += 21; }
+
+  // the record book, under the short column: the numbers above say how much,
+  // these say how good the best of it was
+  const board = loadBoard();
+  if (board.length) {
+    let by = cy + head + 26 + nights.length * 26 + 26;
+    text(ctx, 'BEST NIGHTS', ax, by, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
+    ctx.fillStyle = 'rgba(200,190,160,0.18)';
+    ctx.fillRect(ax, by + 6, colW, 1);
+    by += 22;
+    board.slice(0, 3).forEach((e, i) => {
+      text(ctx, `${i + 1}.  ROUND ${e.round}${e.evac ? ' EVAC' : ''}  \u00b7  ${e.kills} KILLS`, ax, by, {
+        font: '10px "Courier New", monospace', colour: i === 0 ? GOLD : INK_DIM,
+      });
+      by += 15;
+    });
+  }
+
+  const empty = !(game?.lifetime?.runs);
+  text(ctx, empty ? 'NO NIGHTS YET  \u00b7  ESC OR TAP TO CLOSE' : 'ESC OR TAP TO CLOSE',
+    cx + cw / 2, cy + ch - 9, {
+      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
   ctx.restore();
 }
 
@@ -1599,6 +1687,8 @@ export function menuRows(scene, game) {
     { id: 'range', label: 'TEST RANGE', hint: 'every gun on the walls, a button per creature' },
     { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
     { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
+    // everything every night on this machine has added up to
+    { id: 'stats', label: 'STATISTICS', hint: 'the entire diary, all runs, on one page' },
     { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
     { id: 'settings', label: 'SETTINGS', hint: 'volume, lighting, on-screen controls' },
   ];
@@ -1701,21 +1791,31 @@ export function drawMenu(ctx, game, w, h) {
     });
   }
 
+  // The diary, right under the title where it cannot be missed: the whole
+  // point of an all-time number is that the player runs into it on the way in.
+  if (game.scene === 'menu') {
+    const [line1, line2] = lifetimeMenuLines(game.lifetime);
+    text(ctx, line1, w / 2, h * 0.24 + 50, {
+      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+    if (line2) {
+      // brighter than the usual dim ink: this line sits over the live map,
+      // which the title backdrop only dims, not hides
+      text(ctx, line2, w / 2, h * 0.24 + 68, {
+        font: 'bold 10px "Courier New", monospace', colour: 'rgba(230,220,194,0.82)', align: 'center',
+      });
+    }
+  }
+
   // controls, but only on the front page where there is room for them
   if (game.scene === 'menu') {
-    const lines = [
-      'WASD / ARROWS move   \u00b7   MOUSE aim   \u00b7   LEFT CLICK fire',
-      'R reload  \u00b7  Q / WHEEL swap  \u00b7  SHIFT sprint  \u00b7  V knife  \u00b7  G frag  \u00b7  H medkit',
-      'E or F buy, open, spin, rebuild   \u00b7   O settings   \u00b7   P / ESC pause',
-    ];
-    let y = h - 74;
-    for (const l of lines) {
-      text(ctx, l, w / 2, y, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
-      y += 15;
-    }
+    // one line, not three: CONTROLS is a row now and the panel has one more
+    // row than it used to, so the old three-line block would sit over the hint
+    text(ctx, 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS',
+      w / 2, h - 20, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     const board = loadBoard();
     if (board.length) {
-      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, y + 4, {
+      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, h - 39, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
       });
     }

@@ -79,6 +79,17 @@ export const SKILLS = {
 
 export const SKILL_IDS = Object.keys(SKILLS);
 
+/**
+ * The whole run-skill system in one switch.
+ *
+ * It is OFF by request while the card pool is being rebalanced. Everything
+ * stays where it is -- the pool, the draft, the effects, the snapshot fields
+ * and the tests -- so turning it back on is this one line, not a rebuild.
+ * While it is off no draft is dealt, the HUD draws no skill chips and a body
+ * carries no skills; nothing else in the game changes.
+ */
+export const SKILLS_ENABLED = false;
+
 /** How long a draft waits before it picks for you. */
 export const DRAFT_TIME = 20;
 

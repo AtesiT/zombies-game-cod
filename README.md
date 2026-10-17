@@ -77,6 +77,15 @@ of notches and rounded edges, and big enough for a thumb. A tap anywhere else
 reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
 the barrel at the nearest walker while you are not touching the aim stick.
 
+The panel belongs to the round, not to the screen: the moment a menu, the
+pause, the crafting bench, the controls page, the debug panel, the card draft
+or the death screen is up, every stick and button goes away, any held key is
+let go and a tap becomes a plain click. That is what makes the front page and
+the full-page lists usable under a thumb — and it stops a tap on the death
+screen pulling the trigger. `ACHIEVEMENTS` scrolls by dragging and closes with
+a tap that did not drag (there is no `Esc` on a phone); `STATISTICS` fits on one
+page and closes on any tap.
+
 ## Controls
 
 | Input | Action |
@@ -102,7 +111,13 @@ The pause screen is a menu you can click (or thumb): five rows — resume, setti
 controls, restart the run, return to the front page — each with its old shortcut
 printed on the right, because the keyboard way still works.
 
-## Run skills: one card every five rounds
+## Run skills: one card every five rounds (switched off for now)
+
+> **Off at the moment.** The pool, the draft, the effects, the co-op wire and
+> the tests all stay in the tree, behind one switch: `SKILLS_ENABLED` in
+> `src/skills.js`. While it is `false` no cards are dealt, the HUD draws no
+> skill chips and a run carries no skills. Everything below describes what
+> happens the moment it is switched back on.
 
 Rounds 5, 10, 15 and so on end with three cards and one choice. Sixteen cards are
 in the pool; a run collects six or seven of them, so no two nights turn you into
@@ -138,6 +153,21 @@ rides the snapshot back to the guest.
 The full ledger — round reached, kills, headshot rate, accuracy, points, scrap,
 damage, planks, crafts, revives, skills taken and the best-runs table — is on the
 game-over / EVACUATED screen, where there is time to read it.
+
+## All-time statistics
+
+Every finished night — a death, an evacuation, or quitting to the front page
+mid-run — is added to a diary kept in `localStorage` (`ndu.lifetime.v1`). The
+front page carries the headline under the title: **runs, best round, total
+kills**, plus evacuations, rounds cleared and time played. The **STATISTICS**
+row opens the whole page: eight numbers about the nights themselves on the
+left (runs, evacuations, deaths, rounds cleared, best round, best run kills,
+points and time) and sixteen about what happened in them on the right (kills,
+headshots, special/knife/trap kills, points, scrap, health lost, planks, doors,
+crafts, throwables, medkits, revives, downs, time played). The best three
+single runs sit under the left column. The page fits without scrolling, so a
+phone can read all of it and a tap closes it; a range run is practice and is
+never banked. One run is banked exactly once, whichever way it ends.
 
 ## The map (72 × 50 tiles)
 

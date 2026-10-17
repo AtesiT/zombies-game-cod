@@ -823,10 +823,14 @@ export class Net {
     g.powerOn = !!s.pw;
     if (g.powerOn && !wasOn) g.powerOnAt = g.time;   // lamps warm up over here as well
     g.dogRound = !!s.dg;
+    const wasOver = g.gameOver;
     g.gameOver = !!s.go;
     // the roof ending, painted from the host's numbers: phase timers run on
     // both sides (see game._heliStep), the phase itself only advances there
     if (s.evc) g.evacuated = true;
+    // a guest's night is the host's night: when the last body goes down there,
+    // the machine keeps a copy of the run it just watched
+    if (g.gameOver && !wasOver) g._bankRun?.();
     if (s.evc || (s.he?.[0] ?? 0) >= 4) g.playEvacuationAudio?.();
     if (s.he && g.heli) {
       g.heli.phase = s.he[0] ?? 0;

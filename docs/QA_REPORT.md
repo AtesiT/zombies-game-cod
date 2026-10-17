@@ -356,3 +356,53 @@ background-tab timer behavior across browsers, or a live two-browser audio sessi
 The WebAudio stand-in validates scheduling/routing/state, not musical taste or
 real-world loudness. The listening room is deliberately provided for user audition.
 Guide/catalogue: `docs/MUSIC.md`.
+
+## Follow-up: skills off, bigger hounds, all-time diary, phone pass — 2026-10-17
+
+- **Run skills are switched off, not removed.** `SKILLS_ENABLED = false` in
+  `src/skills.js` is read once per reset into `game.skillsEnabled`; `endRound`
+  skips the draft and `_offerSkillDrafts` refuses early. Nothing is dealt, no
+  chips are drawn, no run carries skills; the pool, effects, co-op mask/draft
+  wire, HUD panel and 12 tests stay in the tree. Turning it back on is one line.
+  A new test pins the default-off contract; the existing machinery tests enable
+  it explicitly on the game they build.
+- **Hellhounds are big animals now.** `scale` 1 → 1.7 and the collision radius
+  6.0 → 8.6; `hitScale: 1.6` scales both the aim-assist head/body circles and
+  the hitscan boxes, so a bigger body is a bigger target. The dog is the only
+  sprite drawn in its own 18×12 frame (`framed: false`, never read before); it
+  was hanging from the human 20×22 shoulder line and floating ~9 px above its
+  own shadow. Unframed bodies are now centred on the entity, which puts the
+  paws on the ground line. Verified against a 4× native render beside the
+  walker (20×22 @1) and brute (20×22 @1.32).
+- **All-time statistics.** New `src/lifetime.js` (`ndu.lifetime.v1`, 24
+  counters, sums for totals and maxima for bests, tolerant of a corrupt or
+  older file). One bank per run, guarded by `_banked`, on death (solo and the
+  last co-op body), evacuation and *quit to menu*; range runs are never banked.
+  The front page shows runs / best round / total kills plus evacs, rounds
+  cleared and time played under the title. The new `STATISTICS` row (index 4)
+  opens a two-column page that fits without scrolling: 8 run-level figures,
+  16 cumulative ones, best three runs, `ESC` or tap to close. Backed by a new
+  `tools/harness/lifetime.test.mjs` (5 tests) and reachable from the menu in
+  the touch tests.
+- **Phone pass.** `touch._menuOpen()` knew only about the front door, settings,
+  pause and the bench: the death screen, controls page, debug panel, card
+  draft, achievements and statistics were all "playing". Consequences fixed:
+  - the whole panel (sticks, 8 buttons, pause) is hidden whenever a menu, pause,
+    death screen, controls/debug/craft page or draft is up, and every held key
+    is released on the way in; it returns on the first frame of a round;
+  - the aim stick and aim assist no longer move the cursor while a menu is
+    open -- it used to be dragged onto the nearest zombie, so a tap on a row
+    clicked wherever that zombie was on screen;
+  - a tap is a click in any menu now, not a trigger pull (the death screen no
+    longer fires the gun);
+  - `ACHIEVEMENTS` scrolls by drag and closes on a tap that did not drag
+    (`ESC` still works); `STATISTICS` closes on any tap. Previously the
+    achievements page was a trap on a phone: no wheel, no keyboard, no way out.
+
+Validation: `npm test` **73/73** (63 before; +5 lifetime, +4 touch, +1
+skills-off default) and full historical regression **48/48**, including the
+touch harness with its new hide/show, menu-cursor and drag-scroll assertions.
+Native renders inspected: front page with the diary headline and seven rows,
+the statistics page with best nights, and a 4× crop of walker/hound/brute.
+Not claimed: a real phone or browser run (none in this sandbox); iOS safe-area
+and momentum scrolling remain covered only by geometry and stubs.

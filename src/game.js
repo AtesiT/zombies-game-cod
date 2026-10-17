@@ -9,17 +9,18 @@ import {
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
-import { SKILLS, DRAFT_TIME, DRAFT_EVERY, makeDraft, NO_SKILLS } from './skills.js';
+import { SKILLS, SKILLS_ENABLED, DRAFT_TIME, DRAFT_EVERY, makeDraft, NO_SKILLS } from './skills.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
 import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
 import { Achievements, EasterEgg, submitScore } from './achievements.js';
+import { loadLifetime, bankRun } from './lifetime.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, skillCardAt, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, skillCardAt, drawAchievements, drawStats, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -322,6 +323,11 @@ export class Game {
     this._evacAudioPlayed = false;
     this.roundMetrics = newRoundMetrics();
     this.runMetrics = newRoundMetrics();
+    // the run-skill switch (see src/skills.js). It survives a reset, so a
+    // test or a future settings row can turn it on for one session.
+    if (this.skillsEnabled === undefined) this.skillsEnabled = SKILLS_ENABLED;
+    this._banked = false;
+    this.lifetime = loadLifetime();
     this.map = new GameMap();
     this._clearDecals();
     this.decals = this._decalFor(this.map.floor);
@@ -930,14 +936,30 @@ export class Game {
     // end-of-run screen now, where a reader has time for it
     this.bannerShow(`ROUND ${this.round} CLEARED`, null, { dur: 2.2, colour: '#f0d98a' });
     audio.roundSting(false);
-    // every fifth wave: a personal upgrade, offered to every body in the room
-    if (this.round % DRAFT_EVERY === 0 && !this.rangeMode) this._offerSkillDrafts();
+    // every fifth wave: a personal upgrade, offered to every body in the
+    // room. The whole system is behind one switch (src/skills.js) and is off
+    // while the pool is being rebalanced.
+    if (this.skillsEnabled && this.round % DRAFT_EVERY === 0 && !this.rangeMode) this._offerSkillDrafts();
+  }
+
+  // ------------------------------------------------------- all-time diary --
+  /**
+   * Write this night into the machine's lifetime totals. Once per run: a death
+   * and a restart must not bank the same night twice, and quitting to the menu
+   * banks exactly what was earned.
+   */
+  _bankRun() {
+    if (this._banked || !this.started || this.rangeMode) return;
+    this._banked = true;
+    this.lifetime = bankRun(this.lifetime, {
+      round: this.round, evac: !!this.evacuated, metrics: this.runMetrics,
+    });
   }
 
   // ------------------------------------------------------------ run skills --
   /** Deal three cards to everyone who is still standing in this night. */
   _offerSkillDrafts() {
-    if (this.rangeMode || this.gameOver) return;
+    if (!this.skillsEnabled || this.rangeMode || this.gameOver) return;
     for (const p of this.players ?? [this.player]) {
       if (!p || p.skillDraft) continue;
       const ids = makeDraft(p.skills, 3);
@@ -1799,6 +1821,7 @@ export class Game {
     this.gameOver = true;
     this.evacuated = true;
     this.overT = 0;
+    this._bankRun();
     audio.heliOff();
     if (this.net?.playing && !this.net.isHost) return;   // a guest gets its screen off the snapshot
     const stamp = Date.now();
@@ -1821,6 +1844,8 @@ export class Game {
 
   /** The pause menu's last row: leave the run and stand at the front door. */
   _quitToMenu() {
+    // quitting mid-night still counts: the diary takes what was earned
+    this._bankRun();
     if (this.net?.playing || this.net?.active) this.net.close();
     audio.heliOff();
     this.paused = false;
@@ -1893,7 +1918,7 @@ export class Game {
       if (coop) {
         p.downed = true; p.bleedT = 60; p.invuln = 1.2;
         this.popups?.add?.(p.pos.x, p.pos.y - 34, 'DOWN', '#c4463a', 13);
-      } else { p.dead = true; this.gameOver = true; this.overT = 0; }
+      } else { p.dead = true; this.gameOver = true; this.overT = 0; this._bankRun(); }
     }
   }
 
@@ -2050,13 +2075,15 @@ export class Game {
       if ((z.floor ?? 0) !== (p.floor ?? this.map.floor)) continue;
       const hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       const low = z.def.low ? 0.72 : 1;
+      // a hound is drawn bigger than a human crouch, so its boxes are too
+      const hs = z.def.hitScale ?? 1;
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
-      const headR = 5.2 * low;
+      const headR = 5.2 * low * hs;
       let isHead = false;
       // no head on a skeleton: there is nothing to aim at but the ribs
       if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
-        const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1);
+        const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1) * hs;
         if (res.d2 > bodyR * bodyR) continue;
       } else isHead = true;
       if (Math.hypot(res.cx - ox, res.cy - oy) > wallT) continue;
@@ -2094,8 +2121,9 @@ export class Game {
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
       let head = false;
       const low = z.def.low ? 0.72 : 1;
-      const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low;
-      const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1);
+      const hs = z.def.hitScale ?? 1;   // the big ones are easier to hit
+      const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low * hs;
+      const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1) * hs;
       if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         if (res.d2 > bodyR * bodyR) continue;
@@ -3931,6 +3959,7 @@ export class Game {
     if (!anyAlive && !this.gameOver) {
       this.gameOver = true;
       this.overT = 0;
+      this._bankRun();       // the last body is down: the diary takes the night
       audio.roundSting(false);
       const stamp = Date.now();
       this.board = submitScore({
@@ -4178,6 +4207,8 @@ export class Game {
     if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
     // the achievements list is its own little screen: it scrolls, and ESC leaves
     if (this.scene === 'achievements') { this._achUpdate(dt); return; }
+    // the all-time page fits without scrolling; a tap or ESC leaves it
+    if (this.scene === 'stats') { this._lifeUpdate(dt); return; }
     // keep the room list alive while it is on screen, and re-ask whenever the
     // link comes up -- the first request is usually sent before the socket is
     this._roomT = (this._roomT ?? 0) - dt;
@@ -4229,6 +4260,7 @@ export class Game {
       case 'controls': this.controlsOpen = true; this._wasPaused = false; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'achievements': this.scene = 'achievements'; this.achScroll = 0; break;
+      case 'stats': this.scene = 'stats'; break;
       case 'host': this._startHost(); break;
       case 'join':
         this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0;
@@ -4263,7 +4295,48 @@ export class Game {
     if (inp.wasPressed('PageDown')) step(visible);
     const wheel = inp.wheel ?? 0;
     if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + Math.sign(wheel) * 2)); }
-    if (inp.wasPressed('Escape', 'Backspace', 'Enter')) { this.scene = 'menu'; this.menuIndex = 2; audio.dryFire(); }
+
+    // A phone has no wheel and no ESC: a drag scrolls the list, and a tap that
+    // did not drag closes it. Without this the page was a trap on the one
+    // device that cannot press Escape.
+    const m = inp.mouse;
+    if (m?.down) {
+      if (this._achDragY === undefined) { this._achDragY = m.y; this._achDragged = false; }
+      const dy = m.y - this._achDragY;
+      if (Math.abs(dy) >= 14) {
+        this.achScroll = Math.max(0, Math.min(maxScroll,
+          this.achScroll + Math.sign(-dy) * Math.max(1, Math.round(Math.abs(dy) / 24))));
+        this._achDragY = m.y;
+        this._achDragged = true;
+      }
+    } else {
+      this._achDragY = undefined;
+    }
+    if (m?.pressed) {
+      if (this._achDragged) this._achDragged = false;
+      else { this.scene = 'menu'; this.menuIndex = 3; audio.dryFire(); return; }
+    }
+    if (inp.wasPressed('Escape', 'Backspace', 'Enter')) {
+      this._achDragY = undefined; this._achDragged = false;
+      this.scene = 'menu'; this.menuIndex = 3; audio.dryFire();
+    }
+  }
+
+  /**
+   * The all-time screen. It fits on one page -- two columns, no scrolling --
+   * so leaving is the only thing it has to listen for: ESC on a keyboard, a
+   * tap on a phone.
+   */
+  _lifeUpdate(dt) {
+    const inp = this.input;
+    // `update()` already advanced the clock, so no `this.time += dt` here: the
+    // page would blink at double speed for no reason
+    if (inp.wasPressed('Escape', 'Backspace', 'Enter', 'Space')
+      || inp.mouse.pressed) {
+      this.scene = 'menu';
+      this.menuIndex = 4;      // the STATISTICS row, where the player left
+      audio.dryFire();
+    }
   }
 
   /**
@@ -4940,6 +5013,7 @@ export class Game {
     else if (this.debugOpen) drawDebug(ctx, this, vw, vh);
     else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'achievements') drawAchievements(ctx, this, vw, vh);
+    else if (!this.started && this.scene === 'stats') drawStats(ctx, this, vw, vh);
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);

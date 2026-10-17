@@ -6,11 +6,19 @@ import assert from 'node:assert/strict';
 import { nc, load } from './stub.mjs';
 
 const M = await load();
-const { SKILLS, SKILL_IDS, DRAFT_TIME, DRAFT_EVERY, makeDraft, skillEffects, skillLine } = await import('../../src/skills.js');
+const { SKILLS, SKILL_IDS, SKILLS_ENABLED, DRAFT_TIME, DRAFT_EVERY, makeDraft, skillEffects, skillLine } = await import('../../src/skills.js');
 const { Player, Grenade, HEAD_OFF_Y } = await import('../../src/entities.js');
 const { skillCardRects, skillCardAt } = await import('../../src/hud.js');
 const H = 1 / 60;
-const fresh = () => { const g = new M.Game(new M.Input(nc(800, 500))); g.begin(); return g; };
+// The feature ships switched off (SKILLS_ENABLED in src/skills.js) while the
+// pool is being rebalanced. These tests are about the machinery, so they turn
+// it on for the game they build; the default-off contract has its own test.
+const fresh = () => {
+  const g = new M.Game(new M.Input(nc(800, 500)));
+  g.begin();
+  g.skillsEnabled = true;
+  return g;
+};
 const endWave = (g, round) => { g.round = round; g.roundActive = true; g.endRound(); };
 
 test('the pool is a real pool: sixteen distinct cards, all with a bounded effect', () => {
@@ -246,4 +254,15 @@ test('the choice reaches a guest: the mask, the stats and the open cards', () =>
   assert.equal(host.pickSkill(guest.player, d.ids[2]), true);
   assert.ok(guest.player.skills.has(d.ids[2]));
   assert.equal(host.pickSkill(guest.player, d.ids[2]), false, 'one card, one pick');
+});
+
+
+test('the switch is off by default: no draft, no cards, nothing to pick', () => {
+  assert.equal(SKILLS_ENABLED, false, 'the shipped default is off');
+  const g = new M.Game(new M.Input(nc(800, 500)));
+  g.begin();
+  assert.equal(g.skillsEnabled, false, 'a fresh game comes with the feature off');
+  g.round = 5; g.roundActive = true; g.endRound();
+  assert.equal(g.player.skillDraft, null, 'no cards are dealt');
+  assert.equal(g.player.skills.size, 0);
 });

@@ -393,9 +393,25 @@ export class TouchControls {
    * feel a thumb-beat late.
    */
   _menuOpen() {
-    const g = this.game;
+    return this._menuMode(this.game);
+  }
+
+  /**
+   * Is something other than the game in charge of the screen? Then the sticks
+   * and buttons are not just useless, they are in the way: a thumb on the walk
+   * stick cannot tap a menu row underneath it, and a tap on the death screen
+   * must not pull a trigger. Everything the panel draws goes away, and the tap
+   * becomes a plain click for whatever list is up.
+   *
+   * This used to know only about the front door, settings and the pause; the
+   * death screen, the controls page, the debug panel and the two full-screen
+   * lists were all "playing" as far as a thumb was concerned.
+   */
+  _menuMode(g = this.game) {
     if (!g) return false;
-    return !g.started || g.settingsOpen || g.craftOpen || g.paused;
+    if (!g.started) return true;
+    return !!(g.gameOver || g.paused || g.settingsOpen || g.craftOpen
+      || g.controlsOpen || g.debugOpen || g.player?.skillDraft);
   }
 
   _tap(t, mode = 'move') {
@@ -455,12 +471,28 @@ export class TouchControls {
   update(game) {
     this.game = game;          // the panel has to know when a list is open
     if (!this.enabled) return;
+    // a list, a pause or a death screen: the panel gets out of the way. Done
+    // the moment the mode changes, not on the nine-frame visibility tick --
+    // a thumb is faster than that.
+    const menu = this._menuMode(game);
+    if (menu !== this._menu) {
+      this._menu = menu;
+      this._applyMode(menu);
+      if (!menu) this._syncVisibility(game);
+    }
     // buttons appear when they mean something: a phone screen is too small
     // for a permanent row of maybe-useful circles. Knife, fire and sprint are
     // always live; the rest surface exactly when there is a job for them.
     this._visT = (this._visT ?? 0) - 1;
     if (this._visT <= 0) { this._visT = 9; this._syncVisibility(game); }
     const inp = this.input;
+    // in a menu the cursor belongs to the finger, not to the aim assist: it
+    // used to be dragged onto the nearest zombie while the player was trying
+    // to tap a menu row, which put the click on whatever row sat there
+    if (menu) {
+      if (inp.stick) { inp.stick.x = 0; inp.stick.y = 0; }
+      return;
+    }
     // walking: the stick is a vector, the keyboard still works alongside it
     inp.stick = this.move;
     // aiming: put the virtual cursor 300 px out along the right stick, from
@@ -505,7 +537,7 @@ export class TouchControls {
    * carry two guns.
    */
   _syncVisibility(game) {
-    if (!this._built) return;
+    if (!this._built || this._menu) return;
     const p = game?.player;
     if (!p) return;
     let offer = null;
@@ -529,9 +561,38 @@ export class TouchControls {
     }
   }
 
+  /**
+   * Hide or restore the whole panel. Entering a menu also lets go of every
+   * key and stick first: a sprint held when the night ends would otherwise
+   * still be held on the front page, and the next run would start running.
+   */
+  _applyMode(menu) {
+    if (!this._built) return;
+    const els = [this.left?.base, this.right?.base, ...Object.values(this.buttons ?? {})];
+    for (const el of els) if (el) el.style.display = menu ? 'none' : '';
+    // leaving the menu must not wipe a thumb that is already on a stick --
+    // it has to be usable on the very first frame of the round. Entering one
+    // must, or the walk and the sprint stay held on the front page.
+    if (!menu) return;
+    this.move.x = 0; this.move.y = 0;
+    this.aim.x = 0; this.aim.y = 0;
+    if (this.input?.stick) { this.input.stick.x = 0; this.input.stick.y = 0; }
+    if (this.input?.mouse) this.input.mouse.down = false;
+    for (const id of [...this.held]) this._press(id, false);
+    this._resetKnob(this.left);
+    this._resetKnob(this.right);
+  }
+
   show(on) {
     this.enabled = !!on;
     if (this.panel) this.panel.style.display = on ? 'block' : 'none';
+    // Switching the panel on while a menu is up must not paste a stick over
+    // it: re-apply the mode straight away instead of waiting for a change.
+    if (on && this.game) {
+      this._menu = this._menuMode(this.game);
+      this._applyMode(this._menu);
+      if (!this._menu) this._syncVisibility(this.game);
+    }
     if (!on) {
       this.input.stick.x = this.input.stick.y = 0;
       this.input.mouse.down = false;
