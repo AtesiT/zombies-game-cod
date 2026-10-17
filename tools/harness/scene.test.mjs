@@ -39,23 +39,46 @@ test('every real door remains a collision gate and clears when bought', () => {
   assert.ok(count >= 8);
 });
 
-test('throwable shops retain types on every floor, fill the correct pocket and respect cap', () => {
+test('throwable shops keep one hand: the same kind stacks, another kind replaces it', () => {
   const g = fresh(), seen = new Set();
-  g.player.points = 100000;
+  const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' };
+  const p = g.player;
+  p.points = 100000;
   for (let f = 0; f < g.map.floors.length; f++) {
     for (const crate of g.map.floors[f].grenadeCrates) {
       const kind = crate.kind; seen.add(kind);
-      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-      assert.ok(pocket);
-      const p = g.player; p.floor = f; p.pos = { x: crate.x, y: crate.y };
-      p[pocket] = GRENADE_MAX - 1;
+      // start the hand empty, on the floor of this crate
+      p.grenades = p.molotovs = p.gasbombs = 0; p.throwKind = 'frag';
+      p.floor = f; p.pos = { x: crate.x, y: crate.y };
       const it = g.interactionFor(p);
       assert.equal(it.type, 'grenade'); assert.equal(it.kind, kind);
       const points = p.points;
       g.doInteraction(p, it);
-      assert.equal(p[pocket], GRENADE_MAX); assert.ok(p.points < points);
-      const paid = p.points; g.doInteraction(p, g.interactionFor(p));
-      assert.equal(p.points, paid); assert.equal(p[pocket], GRENADE_MAX);
+      assert.equal(p.throwableKind(), kind);
+      assert.equal(p.throwableCount(), 2);
+      assert.ok(p.points < points);
+
+      // the same kind keeps stacking to the cap
+      p.points = 100000;
+      for (let i = 0; i < 4; i++) g.doInteraction(p, g.interactionFor(p));
+      assert.equal(p.throwableCount(), GRENADE_MAX);
+      const paid = p.points;
+      g.doInteraction(p, g.interactionFor(p));
+      assert.equal(p.points, paid, 'a full hand of this kind is not a sale');
+      assert.equal(p.throwableCount(), GRENADE_MAX);
+
+      // a different kind REPLACES the hand instead of opening a second pocket
+      const other = ['frag', 'molotov', 'gas'].find((k) => k !== kind);
+      const oc = g.map.floors[f].grenadeCrates.find((c) => (c.kind ?? 'frag') === other);
+      if (oc) {
+        const before = p.points;
+        p.pos = { x: oc.x, y: oc.y };
+        g.doInteraction(p, g.interactionFor(p));
+        assert.equal(p.throwableKind(), other);
+        assert.equal(p.throwableCount(), 2);
+        assert.ok(p.points < before);
+        assert.equal(p[pocket[kind]], 0, 'the kind it replaced is gone');
+      }
     }
   }
   assert.deepEqual([...seen].sort(), ['frag', 'gas', 'molotov']);

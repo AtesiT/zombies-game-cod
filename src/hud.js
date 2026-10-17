@@ -171,6 +171,37 @@ export class HUD {
     ctx.restore();
   }
 
+  /**
+   * A small, honest chip when the game cannot be heard: muted with M, the
+   * browser holding the audio context suspended, or a fader at zero. Silence
+   * with no explanation is indistinguishable from a bug -- and the last time
+   * the engine failed to start, nothing on screen said so.
+   */
+  _sound(ctx, game, w, h) {
+    let label = null, colour = '#e0a040';
+    if (audio.muted) { label = 'MUTED — M'; colour = '#c4463a'; }
+    else if (!audio.ready) { label = 'SOUND IS OFF — CLICK'; colour = '#c4463a'; }
+    else if (audio.ctx && audio.ctx.state !== 'running') { label = 'SOUND PAUSED — CLICK'; }
+    else if (settings.get('master') === 0) { label = 'MASTER VOLUME 0 — O'; }
+    else if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
+      label = 'ALL FADERS AT 0 — O';
+    }
+    if (!label) return;
+    const tw = Math.ceil(label.length * 6.6) + 16;
+    const x = w - tw - 8;
+    const y = settings.get('fps') ? 28 : 6;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.72)';
+    ctx.fillRect(x, y, tw, 18);
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = colour;
+    ctx.strokeRect(x + 0.5, y + 0.5, tw - 1, 17);
+    ctx.restore();
+    text(ctx, label, x + tw / 2, y + 13, {
+      font: 'bold 10px "Courier New", monospace', colour, align: 'center',
+    });
+  }
+
   draw(ctx, game, w, h) {
     const p = game.player;
 
@@ -209,6 +240,7 @@ export class HUD {
     this._roundReport(ctx, game, w, h);
     if (game.roundActive || !game.roundReport || game.banner?.title !== `ROUND ${game.round} CLEARED`) this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
+    this._sound(ctx, game, w, h);
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
     this._toast(ctx, game, w, h);
@@ -791,21 +823,22 @@ export class HUD {
       });
     }
 
-    // grenades, bottles, pots -- whatever the pockets hold
-    if ((p.molotovs ?? 0) > 0) {
-      text(ctx, `\u25B2 x${p.molotovs}`, x, yOther - 30, {
-        font: 'bold 10px "Courier New", monospace', colour: '#e08a4a', align: 'right',
-      });
-    }
-    if ((p.gasbombs ?? 0) > 0) {
-      text(ctx, `\u25CF x${p.gasbombs}`, x, yOther - 42, {
-        font: 'bold 10px "Courier New", monospace', colour: '#8ab06a', align: 'right',
-      });
-    }
-    // grenades
-    if (p.grenades > 0) {
-      text(ctx, `\u25C8 x${p.grenades}`, x, yOther - 16, {
-        font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+    // One throwing hand: frag, molotov or gas -- whichever was bought last.
+    // The three counters still exist on the wire, but only one is ever full.
+    const throwKind = p.throwableKind
+      ? p.throwableKind()
+      : ((p.molotovs ?? 0) > 0 ? 'molotov' : (p.gasbombs ?? 0) > 0 ? 'gas' : 'frag');
+    const throwCount = p.throwableCount
+      ? p.throwableCount()
+      : (p[throwKind === 'molotov' ? 'molotovs' : throwKind === 'gas' ? 'gasbombs' : 'grenades'] ?? 0);
+    if (throwCount > 0) {
+      const look = {
+        frag: ['\u25C8', GOLD, 'FRAG'],
+        molotov: ['\u25B2', '#e08a4a', 'MOLOTOV'],
+        gas: ['\u25CF', '#8ab06a', 'GAS'],
+      }[throwKind] ?? ['\u25C8', GOLD, 'FRAG'];
+      text(ctx, `${look[0]} ${look[2]} x${throwCount} [G]`, x, yOther - 16, {
+        font: 'bold 10px "Courier New", monospace', colour: look[1], align: 'right',
       });
     }
 
@@ -1260,9 +1293,7 @@ export const CONTROL_ROWS = [
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['SPRINT', 'SHIFT   DASH'],
-  ['GRENADE', 'G   NADE'],
-  ['MOLOTOV', 'X   MOL'],
-  ['GAS BOMB', 'B   GAS'],
+  ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
@@ -1286,9 +1317,7 @@ export const TOUCH_CONTROL_ROWS = [
   ['RELOAD', 'R'],
   ['SWAP WEAPON', 'Q'],
   ['SPRINT', '>>'],
-  ['GRENADE', 'G'],
-  ['MOLOTOV', 'X'],
-  ['GAS BOMB', 'B'],
+  ['THROW FRAG / MOLOTOV / GAS', 'G'],
   ['MEDKIT', 'H'],
   ['KNIFE', 'V'],
   ['PAUSE  SETTINGS  MENU', 'II'],

@@ -5,6 +5,7 @@ import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
+  throwPocket,
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
@@ -579,8 +580,9 @@ export class Game {
 
   bannerShow(title, sub, opts = {}) {
     this.banner = { title, sub, t: opts.dur ?? 2.2, max: opts.dur ?? 2.2, big: !!opts.big, colour: opts.colour };
-    // guests see the same banner: rounds, perks, the power coming on
-    this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
+    // guests see the same banner: rounds, perks, the power coming on. A note
+    // about *this machine's* speakers is local -- it is not news downstairs.
+    if (!opts.local) this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
   }
 
   /**
@@ -690,12 +692,26 @@ export class Game {
     this.net?.emit('revive', { name: downed.name });
   }
 
-  throwFor(p, kind = 'frag') {
+  /**
+   * Throw whatever is in the one throwing hand. `kind` is accepted for old
+   * guest messages and harnesses: if that pocket still has something in it,
+   * that is what leaves the hand; otherwise the hand decides.
+   */
+  throwFor(p, kind) {
     if (!p || p.dead || p.downed || p.evac) return;
-    const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-    if ((p[pocket] ?? 0) <= 0) return;
-    p[pocket]--;
-    this.throwAtCursor(p, kind, p.aim);
+    if (kind) {
+      const pocket = throwPocket(kind);
+      if ((p[pocket] ?? 0) > 0) {
+        p[pocket]--;
+        p.throwKind = kind;
+        this.throwAtCursor(p, kind, p.aim);
+        this.shake(2, 0.1);
+        return;
+      }
+    }
+    const k = p.takeThrowable?.() ?? null;
+    if (!k) return;
+    this.throwAtCursor(p, k, p.aim);
     this.shake(2, 0.1);
   }
 
@@ -812,12 +828,13 @@ export class Game {
     this.roundMetrics = newRoundMetrics();
     this.round = n;
     this.stats.round = n;
-    // throwables come back two at a time for whoever already owns the kind
+    // One throwing hand: the kind you carry comes back two at a time, and it
+    // stops at the same cap the crates use. Owning two kinds no longer means
+    // two pockets -- buying the second one replaced the first.
     for (const pl of this.players ?? []) {
       if (!pl || !pl.ownThrow) continue;
-      if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
-      if (pl.ownThrow.molotov) pl.molotovs = Math.min(GRENADE_MAX, pl.molotovs + 2);
-      if (pl.ownThrow.gas) pl.gasbombs = Math.min(GRENADE_MAX, pl.gasbombs + 2);
+      if (pl.refillThrowable) pl.refillThrowable(2);
+      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
     }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
@@ -2218,10 +2235,14 @@ export class Game {
     for (const g of F.grenadeCrates) {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
+        const kind = g.kind ?? 'frag';
+        // a crate of a different kind can replace what is in the hand: the
+        // one slot is the point, so only "already full of this" is a refusal
+        const same = (p.throwableKind?.() ?? 'frag') === kind;
+        const have = p.throwableCount?.() ?? 0;
         offer({
-          type: 'grenade', kind: g.kind ?? 'frag', price: GRENADE_PRICE, d,
-          affordable: p.points >= GRENADE_PRICE
-            && (p[{ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[g.kind ?? 'frag']] ?? 0) < GRENADE_MAX,
+          type: 'grenade', kind, price: GRENADE_PRICE, d,
+          affordable: p.points >= GRENADE_PRICE && !(same && have >= GRENADE_MAX),
         });
       }
     }
@@ -2394,14 +2415,19 @@ export class Game {
 
     if (it.type === 'grenade') {
       const kind = it.kind ?? 'frag';
-      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-      if (p.points < it.price || (p[pocket] ?? 0) >= GRENADE_MAX) { audio.deny(); return; }
+      const same = (p.throwableKind?.() ?? 'frag') === kind;
+      const have = p.throwableCount?.() ?? 0;
+      // A different kind is a replacement, so a full hand does not block it.
+      // Only a full hand of the SAME kind has nothing left to sell.
+      if (p.points < it.price || (same && have >= GRENADE_MAX)) { audio.deny(); return; }
       p.points -= it.price;
-      p[pocket] = Math.min(GRENADE_MAX, (p[pocket] ?? 0) + 2);
-      p.ownThrow[kind] = true;
+      if (p.giveThrowable) p.giveThrowable(kind, 2);
+      else p[throwPocket(kind)] = Math.min(GRENADE_MAX, (p[throwPocket(kind)] ?? 0) + 2);
+      if (p.ownThrow) p.ownThrow[kind] = true;
       audio.buy();
+      const name = { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind];
       this.popups.add(p.pos.x, p.pos.y - 26,
-        { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind], '#f0d98a', 12);
+        have > 0 && !same ? `${name} — REPLACED` : name, '#f0d98a', 12);
       return;
     }
 
@@ -3305,7 +3331,11 @@ export class Game {
 
     if (!this.started) { this._menuUpdate(dt); return; }
 
-    if (this.input.wasPressed('KeyM')) audio.setMuted(!audio.muted);
+    if (this.input.wasPressed('KeyM')) {
+      audio.setMuted(!audio.muted);
+      this.bannerShow(audio.muted ? 'SOUND OFF' : 'SOUND ON', audio.muted ? 'M again to unmute' : null,
+        { dur: 1.6, colour: audio.muted ? '#c4463a' : '#7fbf5f', local: true });
+    }
 
     if (this.gameOver) {
       this.overT += dt;
@@ -3384,7 +3414,8 @@ export class Game {
         if (!sl.owned || !w) continue;
         sl.mag = w.mag; sl.reserve = w.maxReserve;
       }
-      pl.grenades = Math.max(pl.grenades ?? 0, 4);
+      if (pl.giveThrowable) pl.giveThrowable(pl.throwableKind?.() ?? 'frag', 4);
+      else pl.grenades = Math.max(pl.grenades ?? 0, 4);
     }
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
 
@@ -3411,22 +3442,11 @@ export class Game {
       if (this.input.wasPressed('BracketRight')) this.player.cycle(1);
       if (this.input.wheel) this.player.cycle(this.input.wheel > 0 ? 1 : -1);
 
-      // grenades
-      if (this.input.wasPressed('KeyG') && this.player.grenades > 0 && !this.player.dead) {
-        this.player.grenades--;
-        this.throwAtCursor(this.player, 'frag');
-        this.shake(2, 0.1);
-      }
-      // molotovs and gas: their own pockets, their own keys
-      if (this.input.wasPressed('KeyX') && this.player.molotovs > 0 && !this.player.dead) {
-        this.player.molotovs--;
-        this.throwAtCursor(this.player, 'molotov');
-        this.shake(2, 0.1);
-      }
-      if (this.input.wasPressed('KeyB') && this.player.gasbombs > 0 && !this.player.dead) {
-        this.player.gasbombs--;
-        this.throwAtCursor(this.player, 'gas');
-        this.shake(2, 0.1);
+      // ONE throwing hand: G throws whatever was bought last -- frag, molotov
+      // or gas. X and B stay as quiet aliases for the same slot, so a player
+      // with the old muscle memory does not throw nothing.
+      if (this.input.wasPressed('KeyG', 'KeyX', 'KeyB') && !this.player.dead) {
+        this.throwFor(this.player);
       }
       // medkit
       if (this.input.wasPressed('KeyH')) {
@@ -4011,6 +4031,12 @@ export class Game {
     this.applySettings();
     audio.init();
     audio.resume();
+    // If the browser still has not let the audio clock run, say so on the
+    // screen instead of letting the player believe the game lost its voice.
+    if (!audio.running) {
+      this.bannerShow('SOUND IS BLOCKED', 'tap or click anywhere to let the game speak',
+        { dur: 4.5, colour: '#e0a040', local: true });
+    }
     this.startRound(1);
   }
 

@@ -51,8 +51,9 @@ downed player bleeds for **60 s** and only the clock can finish them — teeth
 cannot hurry it. Any team-mate, host or guest, stands over the body and holds
 `F`: revival is a **10 s channel** (5 s with Quick Revive), shown as a ring on
 every screen. A body that bleeds out comes back at the top of the next round
-with its sidearm only. Guests fight with the same hands as the host: `G`, `X`
-and `B` throw their own frag, molotov and gas bomb through the host's physics.
+with its sidearm only. Guests fight with the same hands as the host: `G` throws
+whatever is in their one throwing hand -- frag, molotov or gas -- through the
+host's physics. Buying a different kind replaces what is in it.
 Points are per player, rounds are shared, and the horde grows by 32 % for every
 extra body in the building. If the host quits, the relay hands the room to the
 longest-standing guest.
@@ -69,7 +70,7 @@ the wire is not a cosmetic bug, it is a frozen picture.
 
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
-FIRE / F / R / Q / sprint / frag / medkit / knife buttons on the right, plus a
+FIRE / F / R / Q / sprint / throw / medkit / knife buttons on the right, plus a
 pause button in the corner — parked off the physical corner of the glass, clear
 of notches and rounded edges, and big enough for a thumb. A tap anywhere else
 reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
@@ -89,9 +90,7 @@ the barrel at the nearest walker while you are not touching the aim stick.
 | wheel / `[` `]` | Dig through the whole armoury (0.9 s swap) |
 | `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
 | `V` | Knife — short range, big points, never runs out |
-| `G` | Throw a frag grenade |
-| `X` | Throw a molotov — leaves a pool of fire that knows its thrower |
-| `B` | Throw a gas bomb — leaves a cloud that slows and bites |
+| `G` | Throw what is in your one throwing hand — a frag grenade, a molotov (fire that knows its thrower) or a gas bomb (a cloud that slows and bites). Buying another kind replaces it; `X` and `B` still work as aliases |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |

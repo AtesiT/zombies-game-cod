@@ -37,15 +37,15 @@ const BUTTONS = [
   // because it is the one you press with your eyes on the horde
   { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f, scale: 1.25 },
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
-  { id: 'molotov', key: 'KeyX', label: 'X', colour: 0x8a4a2a },
-  { id: 'gas', key: 'KeyB', label: 'B', colour: 0x4a6b3a },
 ];
 
 // the small ones, laid out in a grid to the left of FIRE: [column, row]
+// G is the one throwing hand now: frag, molotov or gas, whichever was bought
+// last. There is no second or third throw button to reach for.
 const GRID = {
   interact: [0, 0], reload: [1, 0], knife: [2, 0],
   swap: [0, 1], sprint: [1, 1], grenade: [2, 1],
-  medkit: [0, 2], molotov: [1, 2], gas: [2, 2],
+  medkit: [0, 2],
 };
 
 export class TouchControls {
@@ -518,9 +518,7 @@ export class TouchControls {
       interact: !!offer,
       reload: !!p.reloading || !!(s && d && s.mag < d.mag && s.reserve > 0),
       swap: !!slots[0] && !!slots[1],
-      grenade: (p.grenades ?? 0) > 0,
-      molotov: (p.molotovs ?? 0) > 0,
-      gas: (p.gasbombs ?? 0) > 0,
+      grenade: (p.throwableCount ? p.throwableCount() : (p.grenades ?? 0)) > 0,
       medkit: (p.medkits ?? 0) > 0 && p.hp < (p.maxHp ?? 100),
     };
     for (const [id, on] of Object.entries(vis)) {

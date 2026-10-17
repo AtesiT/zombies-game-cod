@@ -627,12 +627,11 @@ export class Net {
 
     const it = g.interactionFor?.(p) ?? null;
     if (inp.wasPressed('KeyF', 'KeyE')) g.doInteraction?.(p, it);
-    // the pockets: a guest's frag, bottle and pot fly from the guest's hands,
-    // toward the guest's aim -- the host lends the physics, not the intent
+    // the one throwing hand: whatever the guest bought last flies from the
+    // guest's hands toward the guest's aim -- the host lends the physics, not
+    // the intent. G is the key; X and B remain aliases for the same slot.
     if (!p.downed && !p.evac) {
-      if (inp.wasPressed('KeyG')) g.throwFor?.(p, 'frag');
-      if (inp.wasPressed('KeyX')) g.throwFor?.(p, 'molotov');
-      if (inp.wasPressed('KeyB')) g.throwFor?.(p, 'gas');
+      if (inp.wasPressed('KeyG', 'KeyX', 'KeyB')) g.throwFor?.(p);
       // and a guest can kneel and pull a friend up, exactly like the host:
       // ten seconds of holding him, five with Quick Revive
       const fallen = g.fallenNear(p);

@@ -127,10 +127,18 @@ settings.onChange((id) => {
 });
 syncTouch();
 
-// first gesture unlocks WebAudio
-const unlock = () => { audio.init(); audio.resume(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
-window.addEventListener('pointerdown', unlock);
-window.addEventListener('keydown', unlock);
+// WebAudio starts inside a user gesture, and whether that first gesture was
+// enough is entirely up to the browser: an autoplay policy, a preview frame
+// without the autoplay permission or a tab that was in the background can all
+// leave the context suspended. So the unlock is permanent and runs on every
+// gesture -- and a failed build is retried instead of swallowing the context.
+const unlock = () => { audio.init(); audio.resume(); };
+for (const ev of ['pointerdown', 'touchstart', 'mousedown', 'keydown']) {
+  window.addEventListener(ev, unlock, { capture: true, passive: true });
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) unlock(); });
+window.addEventListener('focus', () => { audio.resume(); });
+window.addEventListener('pageshow', () => { audio.resume(); });
 
 // ---------------------------------------------------------------------------
 //  Loop

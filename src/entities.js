@@ -1,9 +1,16 @@
 // Player, zombies, projectiles and the particle system.
 import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art.js';
-import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer, GRENADE_MAX } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
+
+// One hand for everything thrown. The three counters are still the wire and
+// save format, but the game only ever fills one of them at a time: whatever
+// you bought last is what G throws, and buying another kind replaces it.
+export const THROW_KINDS = ['frag', 'molotov', 'gas'];
+export const THROW_POCKET = Object.freeze({ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' });
+export const throwPocket = (kind) => THROW_POCKET[kind] ?? 'grenades';
 
 const SPRITE_OX = SPRITE_W / 2;
 const SPRITE_OY = BODY_ROW;             // sprite pixel drawn at the entity origin
@@ -292,6 +299,7 @@ export class Player {
     this.grenades = 0;
     this.molotovs = 0;      // fire bottles: a pool of burning fuel where they land
     this.gasbombs = 0;      // stink pots: a cloud that slows the horde to a crawl
+    this.throwKind = 'frag'; // the one kind in the throwing hand
     this.ownThrow = { frag: false, molotov: false, gas: false };
     // Whether *this body* has the bench menu open. It used to be one flag on
     // the game, which works for one player and is a lie for four: a guest at
@@ -485,6 +493,62 @@ export class Player {
     this.medkits--;
     this.heal(55);
     return true;
+  }
+
+  // ------------------------------------------------------ the throwing hand --
+  // Grenades, molotovs and gas bombs share one slot. `throwKind` remembers
+  // what is in it (or what came out of it last), so a round refill gives the
+  // same kind back and the HUD knows which icon to draw even at zero.
+
+  /** Which throwable is in the hand right now. */
+  throwableKind() {
+    if ((this.molotovs ?? 0) > 0) return 'molotov';
+    if ((this.gasbombs ?? 0) > 0) return 'gas';
+    if ((this.grenades ?? 0) > 0) return 'frag';
+    return this.throwKind || 'frag';
+  }
+
+  /** How many are in it. */
+  throwableCount() { return this[throwPocket(this.throwableKind())] ?? 0; }
+
+  /**
+   * Put something in the throwing hand. The same kind stacks to the ordinary
+   * cap; a different kind *replaces* what was there, because that is the one
+   * slot the player has. Returns how many were actually added.
+   */
+  giveThrowable(kind, n = 2) {
+    if (!THROW_KINDS.includes(kind)) return 0;
+    const key = throwPocket(kind);
+    const had = this.throwableKind();
+    const before = (this[key] ?? 0);
+    if (had !== kind) {
+      // buying a molotov when the hand is full of frags is a replacement, not
+      // a second pocket -- the old contents go with the decision
+      for (const k of THROW_KINDS) if (k !== kind) this[throwPocket(k)] = 0;
+    }
+    const cur = had === kind ? before : 0;
+    const next = Math.min(GRENADE_MAX, cur + Math.max(0, Math.floor(n) || 0));
+    this[key] = next;
+    this.throwKind = kind;
+    if (this.ownThrow) this.ownThrow[kind] = true;
+    return next - cur;
+  }
+
+  /** Take one out of the hand; returns the kind, or null when it is empty. */
+  takeThrowable() {
+    const kind = this.throwableKind();
+    const key = throwPocket(kind);
+    if ((this[key] ?? 0) <= 0) return null;
+    this[key]--;
+    this.throwKind = kind;
+    return kind;
+  }
+
+  /** Between rounds: the kind you carry comes back, two at a time. */
+  refillThrowable(n = 2) {
+    const kind = this.throwKind || this.throwableKind();
+    if (!this.ownThrow?.[kind]) return 0;
+    return this.giveThrowable(kind, n);
   }
 
   /**
