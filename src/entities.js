@@ -545,6 +545,7 @@ export class Player {
     if (this.armor > 0) {
       const absorbed = Math.min(this.armor, amount);
       this.armor -= absorbed;
+      game.recordRound?.('armor', absorbed);
       amount -= absorbed;
       game.popups.add(this.pos.x, this.pos.y - 30, `ARMOUR -${Math.round(absorbed)}`, '#7aa8d0', 9);
       if (amount <= 0) {
@@ -555,6 +556,7 @@ export class Player {
       }
     }
     game.roundDamageTaken = (game.roundDamageTaken ?? 0) + amount;
+    game.recordRound?.('damage', Math.min(this.hp, amount));
     this.hp -= amount;
     this.lastHurt = game.time;
     this.invuln = 0.65;
@@ -572,6 +574,7 @@ export class Player {
       const coop = (game.players?.length ?? 1) > 1;
       if (coop && !this.downed) {
         this.downed = true;
+        game.recordRound?.('downs');
         this.bleedT = 60;      // a full minute for somebody to reach you
         this.invuln = 1.2;
         game.shake?.(9, 0.5);

@@ -369,3 +369,17 @@ See [the QA/security report](docs/QA_REPORT.md) for reproductions, fixes,
 measurements and untested areas. The relay is intended for trusted LAN play,
 not unauthenticated public hosting. Its HTTP server intentionally serves only
 runtime assets; repository metadata and developer tools are not public files.
+
+## Music listening room and round reports
+
+Open debug (backquote, or five taps on the round counter while paused on a
+phone), then select the third **MUSIC** tab. It contains **20 original procedural
+scores, 5–9 minutes each** (~2 h 22 min total), repeat/playlist/once modes, volume,
+minute-seeking and an evacuation-fanfare preview. Closing debug keeps the chosen
+score playing; STOP returns to the adaptive score. Selection is local in co-op.
+
+Each completed wave now has a 20-metric report and a 12-second intermission;
+Tab toggles the report and [x] dismisses it. The final screen shows run totals.
+Successful evacuation gets a major-key celebration on both host and guest.
+See [the listening guide and catalogue](docs/MUSIC.md) for controls, track moods,
+stat definitions and technical/testing limitations.

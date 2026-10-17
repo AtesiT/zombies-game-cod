@@ -1,3 +1,5 @@
+import { SoundtrackPlayer, SOUNDTRACKS } from './soundtracks.js';
+
 // Fully procedural WebAudio SFX -- no asset files, everything is synthesised.
 // The context is created lazily on the first user gesture (browser policy).
 
@@ -9,6 +11,7 @@ export class AudioEngine {
     this.ambientGain = null;
     this.muted = false;
     this.ready = false;
+    this.musicMode = 'repeat';
     this._lastGrowl = 0;
     this._lastShriek = -9;
     this._lastWhimper = -9;
@@ -92,6 +95,28 @@ export class AudioEngine {
     if (this._sfxVol !== undefined) this.sfxBus.gain.linearRampToValueAtTime(this._sfxVol, t + 0.05);
     if (this._ambVol !== undefined) this.ambientBus.gain.linearRampToValueAtTime(this._ambVol, t + 0.05);
     if (this._musicVol !== undefined && this.musicBus) this.musicBus.gain.linearRampToValueAtTime(this._musicVol, t + 0.05);
+  }
+
+  /** Local audition/background selection: never changes another peer's music. */
+  playSoundtrack(id) {
+    if (!SOUNDTRACKS.some((t) => t.id === id)) return false;
+    this.resume();
+    if (!this.ready) return false;
+    this._victoryUntil = 0;
+    if (this._victoryGroup) this._victoryGroup.disconnect();
+    this.soundtrack ??= new SoundtrackPlayer(this.ctx, this.musicBus);
+    this.soundtrack.mode = this.musicMode;
+    this.soundtrack.onFinish = () => this.setMusic({ calm: 0.45, combat: 0, last: 0, elegy: 0.55 });
+    const ok = this.soundtrack.play(id);
+    this.setMusic({ calm: 0, combat: 0, last: 0, elegy: 0 });
+    return ok;
+  }
+
+  stopSoundtrack() {
+    this.soundtrack?.stop();
+    if (this._victoryGroup) this._victoryGroup.disconnect();
+    this._victoryUntil = 0;
+    this.setMusic({ calm: 0.45, combat: 0, last: 0, elegy: 0.55 });
   }
 
   get t() { return this.ctx ? this.ctx.currentTime : 0; }
@@ -390,6 +415,9 @@ export class AudioEngine {
   /** Where each layer sits, 0..1. They are allowed to overlap. */
   setMusic({ calm, combat, last, elegy } = {}) {
     if (!this.ready || !this._music) return;
+    if (this.soundtrack?.current || this.t < (this._victoryUntil ?? 0)) {
+      calm = combat = last = elegy = 0;
+    }
     // `top` is the ceiling each layer is scaled by. It was 0.12, which -- with
     // the game asking for 0.45 of calm -- put the whole soundtrack at about
     // a twentieth of the volume of a gunshot. Music you cannot hear over the
@@ -1128,35 +1156,30 @@ export class AudioEngine {
   }
 
   /**
-   * Wheels-up music: the fight drains out of the mix and a major-key phrase
-   * climbs where the sad piano used to be. One shot, about ten seconds --
-   * the ending screen wants something that sounds like morning.
+   * Eighteen-second major-key celebration, isolated from the sad adaptive score.
+   * Uses the music fader, and stops a debug audition before the fanfare.
    */
   victory() {
-    if (!this.ready || this.muted) return;
-    this.setMusic({ calm: 0.55, combat: 0, last: 0, elegy: 0.9 });
-    const t = this.t;
-    // the climb: A minor's root walks up into C major
-    [220, 261.6, 329.6, 392, 523.3, 659.3].forEach((f, i) => this._pianoNote(f, t + 0.4 + i * 0.34, 0.6));
-    // the arrival: the chord struck, low C under it
-    [261.6, 329.6, 392, 523.3].forEach((f, i) => this._pianoNote(f, t + 2.7 + i * 0.07, 0.55));
-    this._pianoNote(130.8, t + 2.7, 0.5);
-    // and a warm pad that swells and lets go over nine seconds
-    const ctx = this.ctx;
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(0.09, t + 2.2);
-    g.gain.linearRampToValueAtTime(0.0001, t + 9.5);
-    g.connect(this.musicBus);
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 900; lp.Q.value = 0.7;
-    lp.connect(g);
-    for (const [f, det] of [[130.8, 0], [261.6, -4], [329.6, 5], [392, -3], [523.3, 4]]) {
-      const o = ctx.createOscillator();
-      o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det;
-      const og = ctx.createGain(); og.gain.value = f > 400 ? 0.18 : 0.3;
-      o.connect(og).connect(lp);
-      o.start(t); o.stop(t + 9.6);
+    if (!this.ready) return;
+    this.soundtrack?.stop();
+    if (this._victoryGroup) this._victoryGroup.disconnect();
+    this._victoryUntil = this.t + 18;
+    this.setMusic({ calm: 0, combat: 0, last: 0, elegy: 0 });
+    const ctx = this.ctx, t = this.t;
+    const group = this._victoryGroup = ctx.createGain();
+    group.gain.value = 0.7; group.connect(this.musicBus);
+    // C major fanfare, answering bells and a final warm C6/9 chord. No minor drone.
+    const phrase = [60, 64, 67, 72, 71, 67, 69, 72, 76, 74, 72, 79];
+    phrase.forEach((note, i) => {
+      const f = 440 * 2 ** ((note - 69) / 12), at = t + 0.12 + i * 0.38;
+      this._tone('triangle', f, f, at, i === 11 ? 2.2 : 0.65, 0.085, group);
+      this._tone('sine', f * 2, f * 2, at + 0.02, 1.2, 0.025, group);
+    });
+    for (const [offset, chord] of [[0, [48, 52, 55]], [2.3, [53, 57, 60]], [4.6, [55, 59, 62]], [6.9, [48, 52, 55, 57, 62, 72]]]) {
+      for (const note of chord) {
+        const f = 440 * 2 ** ((note - 69) / 12);
+        this._tone('sine', f, f, t + offset, offset > 6 ? 10 : 3.6, 0.035, group);
+      }
     }
   }
 

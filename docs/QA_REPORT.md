@@ -275,3 +275,75 @@ Additional retained risks / follow-up:
 3. `tools/genmap.py` explicitly warns that generation overwrites hand-maintained map changes; that existing content/tooling drift was not resolved. Do not run `npm run map` on the live map without reviewing/merging the output.
 4. Residual offscreen cosmetic event/particle/audio floor context and full WebAudio resource disposal deserve dedicated follow-up. This audit fixed demonstrated simulation errors, not every possible presentation ownership issue.
 5. The 48-suite runner intentionally selects executable assertion suites. Historical screenshot/benchmark utilities were not all run, and no claim is made that every source line/file received two complete manual reads.
+
+## Follow-up: doors, supplies and combat readability — 2026-10-17
+
+- Closed doors now face the fixed camera consistently. Open-door leaves park on the adjacent wall tile; the middle of the aperture is left clear. Collision still follows the actual doorway axis.
+- All six upstairs supply caches remain on their original reachable floor tiles. Added case artwork and battery-lit markings above the lighting layer. Taken state now synchronizes to guests, including when the host is downstairs.
+- Preserved throwable shop kinds in map construction; upstairs shops offer Molotovs and gas bombs. Purchases cannot overfill the four-item pocket.
+- Capped throw launch speed at 280 world units/second for local and remote throws. Together with existing friction/fuse this keeps unobstructed frag travel below 180 world units, irrespective of far cursor position.
+- Fixed screen-to-world aim conversion, refreshed target detection for guests and changed target crosshair colors to red. Other-floor, dead and wall-occluded enemies do not light it up.
+- Expanded authored vehicle collision tiles to match the enlarged wreck artwork: car `(28..33,45..47)`, tank `(61..67,42..45)`. These masks affect movement, bullets and navigation.
+- Removed only upstairs TABLE tiles; crates, bunks and lockers remain.
+
+Validation: `npm test` **28/28**, including eight new scene/gameplay tests in `tools/harness/scene.test.mjs`. Historical regression runner **48/48**. The first regression run exposed two harness assumptions: old pre-enlargement wreck bounds and radio crates leaking into an isolated supply test; updated those fixtures. Music assertions passed but its live piano scheduler held the test process open; the fixture now stops that timer on completion. After the final aim-head flag cleanup, reran `npm test` (28/28) and the crosshair harness (pass). `git diff --check` is clean.
+
+Inspected a native headless render of the second floor with generator power off. This verifies the cache markings/render path, not browser/GPU behavior or an end-to-end multiplayer play session. Browser play remains a manual check; the local relay/preview can be started with `npm start`.
+
+## Follow-up: pixel achievement badges — 2026-10-17
+
+- Added 37 distinct hand-pixelled achievement badges in `src/achievementIcons.js`.
+  Artwork uses integer-aligned canvas rectangles, no fonts or external images.
+  Every achievement has its own mapped sprite; round medals use pixel digits.
+- List badges use the same silhouette in a muted locked palette and a coloured
+  unlocked palette. Unlock notifications reuse the sprite at 3x scale, with
+  wrapped descriptions. Achievement IDs, conditions and persistent storage keys
+  are unchanged; existing earned progress is preserved.
+- Added future-only run skills and optional field assignments to `docs/IDEAS.md`.
+  No XP, skill effects, new objectives or reward balance were implemented.
+
+Validation: `npm test` **33/33**, including five new badge tests (coverage and
+unique sprites, pixel bounds/scaling/state, locked colours/fallback, saved progress,
+list/toast rendering and complete description wrapping). Targeted harnesses:
+`ach`, `overlay`, `boot`, `touchctx` — pass. Inspected native renders of all 37
+badges, mixed locked/unlocked list and the longest evacuation unlock toast.
+Full historical regression suite and real-browser/device rendering were not rerun
+for this visual-only follow-up. Native canvas quantizes restored alpha and has a
+stale fillStyle getter; tests verify tolerance and actual restored paint instead.
+
+## Follow-up: music listening room, telemetry and evacuation — 2026-10-17
+
+- Third debug tab MUSIC: 20 original procedural scores, 128 bars / eight sections
+  each, 5:20–8:49 per score, ~2 h 22 min total. Different keys, instrumentation,
+  tempos, rhythms, development and codas; no downloaded/licensed audio assets.
+  Local play/stop, repeat/playlist/once, music volume, minute seeking and a victory
+  preview. Playback continues with debug closed; reset restores adaptive music.
+- Look-ahead AudioContext scheduling avoids long buffers, skips stale backlog,
+  disconnects ended voices and cancels old timers/sources on switches. Short
+  output fades avoid hard track cuts. Music/master/mute controls are respected.
+- Independent team telemetry: 20 wave metrics and cumulative run totals. Frozen
+  completed-wave report, 12-second intermission, Tab/click dismissal, no paused
+  combat time, no range farming. Accuracy counts rays that hit at least one target,
+  not contacts per piercing bullet. Health loss excludes armour and overkill.
+  Both reports and run totals are transmitted by the host; guests use team labels.
+- Major-key ~18-second evacuation melody, bells and warm final chord replace the
+  sad score. Guest and late-snapshot playback is guarded once per run; repeated
+  snapshots do not replay the cue. Auditioning it does not alter evacuation state.
+
+Validation: `npm test` **42/42**, including nine new soundtracks/report tests;
+full historical regression **48/48** before the final small cleanup (counting monkey
+throws, report-hide reset and removing redundant per-frame once-mode restoration).
+After those edits, reran the main suite. New coverage: all 20 complete arrangements,
+valid audio scheduling for every score, one complete ~9-minute simulated score
+with <100 live voices, repeat/playlist/wrap/once, seeking/fast switching/cleanup,
+third-tab geometry/input and guest-local controls, faders/major cue, report/reset/
+intermission isolation, real armour/damage/throws/points and piercing accuracy,
+guest snapshot totals, once-only evacuation and report dismissal without firing.
+Native renders of the music tab, wave report and final evacuation totals inspected.
+`git diff --check` and changed-module syntax checks pass.
+
+Not claimed: real-browser acoustic listening, mobile-speaker mix evaluation,
+background-tab timer behavior across browsers, or a live two-browser audio session.
+The WebAudio stand-in validates scheduling/routing/state, not musical taste or
+real-world loudness. The listening room is deliberately provided for user audition.
+Guide/catalogue: `docs/MUSIC.md`.

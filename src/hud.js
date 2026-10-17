@@ -1,9 +1,12 @@
+import { SOUNDTRACKS, musicTime } from './soundtracks.js';
+import { audio } from './audio.js';
 // HUD, overlays and full-screen menus.
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
 import { recipe, recipeIds, craftRowNote } from './crafting.js';
 import { ACHIEVEMENTS } from './achievements.js';
+import { drawAchievementIcon } from './achievementIcons.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
 import { T } from './art.js';
@@ -203,7 +206,8 @@ export class HUD {
     this._net(ctx, game, w, h);
     this._squad(ctx, game, w, h);
     this._revive(ctx, game, w, h);
-    this._banners(ctx, game, w, h);
+    this._roundReport(ctx, game, w, h);
+    if (game.roundActive || !game.roundReport || game.banner?.title !== `ROUND ${game.round} CLEARED`) this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
@@ -604,6 +608,30 @@ export class HUD {
     ctx.restore();
   }
 
+  _roundReport(ctx, game, w, h) {
+    const r = game.roundReport;
+    if (!r || game.roundActive || game.intermission <= 0 || game.gameOver || game.rangeMode || game._reportHidden === r.round) return;
+    const { cw, ch, x, y } = roundReportPanel(w, h);
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,14,19,0.95)'; ctx.fillRect(x, y, cw, ch);
+    ctx.strokeStyle = '#70603e'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
+    ctx.fillStyle = '#e3c878'; ctx.fillRect(x, y, cw, 3);
+    text(ctx, `ROUND ${r.round} CLEARED`, x + 18, y + 25, { font: 'bold 18px "Courier New", monospace', colour: GOLD });
+    text(ctx, r.players > 1 ? 'TEAM / THIS WAVE ONLY' : 'THIS WAVE ONLY', x + cw - 45, y + 24,
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right' });
+    text(ctx, '[x]', x + cw - 17, y + 24, { font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center' });
+    const rows = roundReportRows(r);
+    rows.forEach(([label, value], i) => {
+      const col = i >= 10 ? 1 : 0, row = i % 10;
+      const left = x + 18 + col * (cw / 2);
+      text(ctx, label, left, y + 51 + row * 18, { font: '10px "Courier New", monospace', colour: INK_DIM });
+      text(ctx, value, left + 270, y + 51 + row * 18, { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
+    });
+    text(ctx, `NEXT WAVE IN ${Math.ceil(game.intermission)}s     TAB: HIDE / SHOW`, x + cw / 2, y + ch - 13,
+      { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
+    ctx.restore();
+  }
+
   // ------------------------------------------------------- achievement toast --
   _toast(ctx, game, w, h) {
     const a = game.achievements.banner;
@@ -612,7 +640,7 @@ export class HUD {
     const fade = k > 0.85 ? (1 - k) / 0.15 : k < 0.18 ? k / 0.18 : 1;
     ctx.save();
     ctx.globalAlpha = clamp(fade, 0, 1);
-    const bw = 300, bh = 52;
+    const bw = 360, bh = 72;
     const x = w - bw - 14, y = h * 0.16;
     ctx.fillStyle = 'rgba(10,11,15,0.9)';
     ctx.fillRect(x, y, bw, bh);
@@ -621,16 +649,26 @@ export class HUD {
     ctx.strokeStyle = 'rgba(240,217,138,0.5)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, bw - 1, bh - 1);
+    drawAchievementIcon(ctx, a.icon, x + 12, y + 18, 3);
+    const tx = x + 60, tw = bw - 72;
     ctx.fillStyle = 'rgba(240,217,138,0.85)';
     ctx.font = 'bold 9px "Courier New", monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('ACHIEVEMENT UNLOCKED', x + 12, y + 16);
+    ctx.fillText('ACHIEVEMENT UNLOCKED', tx, y + 15);
     ctx.fillStyle = INK;
     ctx.font = 'bold 15px "Courier New", monospace';
-    ctx.fillText(a.name.toUpperCase(), x + 12, y + 34);
+    ctx.fillText(a.name.toUpperCase(), tx, y + 33, tw);
     ctx.fillStyle = INK_DIM;
     ctx.font = 'bold 9px "Courier New", monospace';
-    ctx.fillText(a.desc, x + 12, y + 46);
+    // The longest descriptions need two lines, not text spilling off-screen.
+    const lines = [''];
+    for (const word of a.desc.split(' ')) {
+      const i = lines.length - 1;
+      const next = lines[i] ? `${lines[i]} ${word}` : word;
+      if (ctx.measureText(next).width > tw && lines[i]) lines.push(word);
+      else lines[i] = next;
+    }
+    lines.slice(0, 2).forEach((line, i) => ctx.fillText(line, tx, y + 48 + i * 12, tw));
     ctx.restore();
   }
 
@@ -933,7 +971,7 @@ export class HUD {
     }
     const tight = onTarget ? spread * 0.62 : spread;
     const ink = onTarget
-      ? (game.aimOnHead ? 'rgba(255,150,110,0.98)' : 'rgba(250,120,90,0.95)')
+      ? (game.aimOnHead ? '#ff302b' : '#f04438')
       : 'rgba(240,235,215,0.9)';
     ctx.strokeStyle = ink;
     ctx.lineWidth = onTarget ? 2 : 1;
@@ -943,7 +981,7 @@ export class HUD {
       ctx.lineTo(m.x + dx * (tight + len), m.y + dy * (tight + len));
       ctx.stroke();
     }
-    ctx.fillStyle = onTarget ? 'rgba(255,150,110,0.95)' : 'rgba(240,235,215,0.7)';
+    ctx.fillStyle = onTarget ? '#ff302b' : 'rgba(240,235,215,0.7)';
     ctx.fillRect(m.x | 0, m.y | 0, 1, 1);
 
     if (this.hitMarker > 0) {
@@ -1374,11 +1412,7 @@ export function drawAchievements(ctx, game, w, h) {
     ctx.fillRect(cx + 14, y - 13, 26, 26);
     ctx.strokeStyle = got ? GOLD : '#3a3f4a';
     ctx.strokeRect(cx + 14.5, y - 12.5, 25, 25);
-    ctx.save();
-    if (got) { ctx.globalAlpha = 1; }
-    else { ctx.globalAlpha = 0.4; }
-    text(ctx, a.icon, cx + 27, y + 3, { font: 'bold 12px "Courier New", monospace', colour: got ? GOLD : '#8a8371', align: 'center' });
-    ctx.restore();
+    drawAchievementIcon(ctx, a.icon, cx + 15, y - 12, 2, got);
     // name + description
     text(ctx, a.name, cx + 50, y - 4, { font: 'bold 11px "Courier New", monospace', colour: got ? '#e6dcc2' : '#5c5748' });
     text(ctx, a.desc, cx + 50, y + 9, { font: '9px "Courier New", monospace', colour: got ? '#8f8a7a' : '#4a463a' });
@@ -1625,6 +1659,7 @@ export const DEBUG_ROW = 22;
 export const DEBUG_TABS = [
   { id: 'cheats', label: 'CHEATS' },
   { id: 'zombies', label: 'ZOMBIES' },
+  { id: 'music', label: 'MUSIC' },
 ];
 
 /** Where the strip of tabs sits, shared by the drawing and the click test. */
@@ -1651,7 +1686,8 @@ export function debugTabHit(game, w, h, mx, my) {
  */
 export function debugPanel(game, w, h) {
   const rows = game.debugRows();
-  const cw = 380, HEAD = 46 + 24, FOOT = 40;   // the extra 24 is the tab strip
+  const music = game.debugTab === 2;
+  const cw = music ? 540 : 380, HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
   // rows keep arriving (the round picker, and whatever comes next): squeeze
   // them so the LAST one always lands inside the panel -- a row you cannot
   // see is a row you cannot click
@@ -1711,6 +1747,15 @@ export function drawDebug(ctx, game, w, h) {
     });
   });
 
+  if (game.debugTab === 2) {
+    const current = audio.soundtrack?.current;
+    const selected = SOUNDTRACKS.find((t) => game.debugRows()[game.debugIndex]?.id === `music:${t.id}`);
+    text(ctx, current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cx + 18, cy + 68,
+      { font: 'bold 11px "Courier New", monospace', colour: GOLD });
+    text(ctx, audio.muted || settings.get('music') === 0 || settings.get('master') === 0 ? 'SOUND IS MUTED / CHECK VOLUME IN SETTINGS (O)' : selected ? `${selected.mood} / ${selected.bpm} BPM` : 'Local playback. Music continues after closing debug.', cx + 18, cy + 84,
+      { font: '10px "Courier New", monospace', colour: INK_DIM });
+  }
+
   let y = cy + p.head;
   rows.forEach((r, i) => {
     const sel = i === game.debugIndex;
@@ -1737,9 +1782,13 @@ export function drawDebug(ctx, game, w, h) {
     y += p.rowH;
   });
 
-  text(ctx, 'W / S — pick      \u2190 / \u2192 — tab      ENTER — do it      ` or ESC — close',
-    cx + cw / 2, cy + ch - 16, {
+  text(ctx, 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO',
+    cx + cw / 2, cy + ch - 27, {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  text(ctx, game.debugTab === 2 ? '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE' : '` / ESC: CLOSE',
+    cx + cw / 2, cy + ch - 12, {
+      font: '9px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   ctx.restore();
 }
@@ -1953,6 +2002,26 @@ export function drawCursor(ctx, game) {
   ctx.restore();
 }
 
+export function roundReportPanel(w, h) {
+  const cw = Math.min(620, w - 24), ch = 266;
+  return { cw, ch, x: (w - cw) / 2, y: Math.round(h * 0.25) };
+}
+
+export function roundReportRows(r) {
+  return [
+    ['COMBAT TIME', musicTime(r.seconds)], ['KILLS', String(r.kills)],
+    ['HEADSHOT KILLS', `${r.headshots} (${r.headshotRate ?? 0}%)`], ['SPECIAL KILLS', String(r.specialKills)],
+    ['SUMMONED KILLS', String(r.summonedKills)], ['KNIFE KILLS', String(r.knifeKills)],
+    ['TRAP KILLS', String(r.trapKills)], ['BULLETS / PELLETS', String(r.rays)],
+    ['RAYS ON TARGET', `${r.hitRays} (${r.accuracy ?? 0}%)`], ['POINTS EARNED', String(r.points)],
+    ['SCRAP FROM KILLS', String(r.salvage)], ['HEALTH LOST', String(Math.round(r.damage))],
+    ['ARMOUR ABSORBED', String(Math.round(r.armor))], ['PLANKS REBUILT', String(r.planks)],
+    ['DOORS OPENED', String(r.doors)], ['ITEMS CRAFTED', String(r.crafted)],
+    ['THROWABLES USED', String(r.throws)], ['MEDKITS USED', String(r.medkits)],
+    ['TEAMMATES REVIVED', String(r.revives)], ['TIMES DOWNED', String(r.downs)],
+  ];
+}
+
 export function drawGameOver(ctx, game, w, h) {
   // The same screen wears two faces: the night got you, or you got out.
   const evac = !!game.evacuated;
@@ -1974,23 +2043,21 @@ export function drawGameOver(ctx, game, w, h) {
     });
   }
 
-  const s = game.stats;
-  const acc = s.shots ? Math.round((s.hits / s.shots) * 100) : 0;
-  const rows = [
-    ['ROUNDS SURVIVED', String(s.round)],
-    ['TOTAL KILLS', String(s.kills)],
-    ['HEADSHOTS', String(s.headshots)],
-    ['POINTS EARNED', String(s.points)],
-    ['BARRICADES REBUILT', String(s.planks)],
-    ['DOORS OPENED', String(s.doors)],
-    ['ACCURACY', `${acc}%`],
-  ];
-  let y = h * 0.20 + 40;
-  for (const [k, v] of rows) {
-    text(ctx, k, w / 2 - 14, y, { font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'right' });
-    text(ctx, v, w / 2 + 14, y, { font: 'bold 12px "Courier New", monospace', colour: INK, align: 'left' });
-    y += 18;
-  }
+  const m = game.runMetrics;
+  const rows = m ? [
+    ['ROUND REACHED', String(game.round)],
+    ...roundReportRows({ ...m, accuracy: m.rays ? Math.round(100 * m.hitRays / m.rays) : 0,
+      headshotRate: m.kills ? Math.round(100 * m.headshots / m.kills) : 0 }),
+  ] : [];
+  text(ctx, (game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN', w / 2, h * 0.20 + 24,
+    { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
+  rows.forEach(([label, value], i) => {
+    const col = i >= 11 ? 1 : 0, row = i % 11;
+    const left = w / 2 - 310 + col * 320, y = h * 0.20 + 43 + row * 16;
+    text(ctx, label, left, y, { font: '10px "Courier New", monospace', colour: INK_DIM });
+    text(ctx, value, left + 282, y, { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
+  });
+  let y = h * 0.20 + 43 + 11 * 16;
 
   const board = game.board ?? loadBoard();
   if (board.length) {

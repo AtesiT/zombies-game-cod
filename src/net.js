@@ -749,6 +749,7 @@ export class Net {
         ? ['closed', 'spinning', 'offering', 'leaving', 'gone'].indexOf(g.box.state) : 0,
       r2(g.box.timer ?? 0), g.box.weapon ?? ''],
       z, p, b: floors, d: doors,
+      ca: g.map.floors.map((F) => F.cacheSpots.map((c) => c.taken ? 1 : 0)),
       pu: g.powerups.map((u) => [r0(u.x), r0(u.y), u.id, r2(u.life ?? 0), u.f ?? 0]),
       // A guest draws whatever arrives here, so whatever arrives here must be
       // drawable. Grenades used to come over as bare {x, y} and the renderer
@@ -791,6 +792,7 @@ export class Net {
         r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
       ]),
       sw: (g.map.floors?.[0]?.secretSwitches ?? []).map((x) => (x.found ? 1 : 0)),
+      rr: g.roundReport, rm: g.runMetrics,
       evc: g.evacuated ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
@@ -803,6 +805,8 @@ export class Net {
     if (!s) return;
     g.round = s.r;
     g.roundActive = !!s.ra;
+    g.roundReport = s.rr ?? null;
+    if (s.rm) g.runMetrics = { ...s.rm };
     g.intermission = s.im ?? 0;
     g.zombiesKilled = s.zk ?? 0;
     g.zombiesTotal = s.zt ?? 0;
@@ -814,6 +818,7 @@ export class Net {
     // the roof ending, painted from the host's numbers: phase timers run on
     // both sides (see game._heliStep), the phase itself only advances there
     if (s.evc) g.evacuated = true;
+    if (s.evc || (s.he?.[0] ?? 0) >= 4) g.playEvacuationAudio?.();
     if (s.he && g.heli) {
       g.heli.phase = s.he[0] ?? 0;
       g.heli.t = s.he[1] ?? 0;
@@ -836,6 +841,7 @@ export class Net {
 
     for (let f = 0; f < g.map.floors.length; f++) {
       const F = g.map.floors[f];
+      if (s.ca?.[f]) for (let i = 0; i < F.cacheSpots.length; i++) F.cacheSpots[i].taken = !!s.ca[f][i];
       const bp = s.b?.[f] ?? [];
       for (let i = 0; i < F.barricades.length; i++) F.barricades[i].planks = bp[i] ?? 0;
       const dp = s.d?.[f] ?? [];
