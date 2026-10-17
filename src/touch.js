@@ -357,13 +357,31 @@ export class TouchControls {
     panel.addEventListener('touchmove', this._onMove, { passive: false });
     panel.addEventListener('touchend', this._onEnd, { passive: false });
     panel.addEventListener('touchcancel', this._onEnd, { passive: false });
-    // a mouse on a touch laptop should be able to use the same panel
-    panel.addEventListener('mousedown', (e) => this._onStart({ changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY, target: e.target }], preventDefault: () => {} }));
-    window.addEventListener?.('mousemove', (e) => {
+    panel.addEventListener('mousedown', this._onMouseDown);
+    // the drag and the release belong to the window: the finger (or the
+    // held mouse button) is allowed to leave the panel mid-stroke
+    this._onMouseMove = (e) => {
       if (this._touches.has(-1)) this._onMove({ changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY }], preventDefault: () => {} });
-    });
-    window.addEventListener?.('mouseup', () => {
+    };
+    this._onMouseUp = () => {
       if (this._touches.has(-1)) this._onEnd({ changedTouches: [{ identifier: -1 }], preventDefault: () => {} });
+    };
+    window.addEventListener?.('mousemove', this._onMouseMove);
+    window.addEventListener?.('mouseup', this._onMouseUp);
+  }
+
+  /**
+   * A mouse on a touch laptop should be able to use the same panel. The event
+   * must not also reach the window: Input listens there for the trigger, so
+   * clicking the panel's FIRE button used to fire a second, invisible shot at
+   * wherever the cursor happened to be.
+   */
+  _onMouseDown(e) {
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    this._onStart({
+      changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY, target: e.target }],
+      preventDefault: () => {},
     });
   }
 
@@ -381,11 +399,6 @@ export class TouchControls {
     which.knob.style.top = `${off}px`;
   }
 
-  /**
-   * A bare tap on the game surface. Without this the panel would swallow
-   * every menu press on a phone, which makes the front door unusable on the
-   * one device that most needs on-screen controls.
-   */
   /**
    * Is a list on screen? In one, a finger behaves differently: the row under
    * it lights up as it slides, and the choice is made when it lets go. In the
@@ -414,6 +427,11 @@ export class TouchControls {
       || g.controlsOpen || g.debugOpen || g.player?.skillDraft);
   }
 
+  /**
+   * A bare tap on the game surface. Without this the panel would swallow
+   * every menu press on a phone, which makes the front door unusable on the
+   * one device that most needs on-screen controls.
+   */
   _tap(t, mode = 'move') {
     const inp = this.input;
     const box = inp?.canvas?.getBoundingClientRect?.();
@@ -608,6 +626,8 @@ export class TouchControls {
 
   dispose() {
     if (this._onBlur) window.removeEventListener('blur', this._onBlur);
+    if (this._onMouseMove) window.removeEventListener?.('mousemove', this._onMouseMove);
+    if (this._onMouseUp) window.removeEventListener?.('mouseup', this._onMouseUp);
     this.show(false);
     if (this.panel && this.panel.parentNode) this.panel.parentNode.removeChild(this.panel);
     this._built = false;

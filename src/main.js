@@ -140,6 +140,16 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) unlo
 window.addEventListener('focus', () => { audio.resume(); });
 window.addEventListener('pageshow', () => { audio.resume(); });
 
+// Looking away. The window keeps drawing while another app has the focus, so
+// a solo round used to carry on -- and keep biting -- during a coffee break.
+// A shared game is left running (the world belongs to the host), and a menu
+// or a death screen has nothing live to pause; `pauseForFocusLoss` decides.
+// `visibilitychange` covers phones, where switching apps does not always blur
+// the window; both paths are idempotent.
+const lookAway = () => { game.pauseForFocusLoss(); };
+window.addEventListener('blur', lookAway);
+document.addEventListener('visibilitychange', () => { if (document.hidden) lookAway(); });
+
 // ---------------------------------------------------------------------------
 //  Loop
 // ---------------------------------------------------------------------------

@@ -111,6 +111,13 @@ The pause screen is a menu you can click (or thumb): five rows — resume, setti
 controls, restart the run, return to the front page — each with its old shortcut
 printed on the right, because the keyboard way still works.
 
+Leaving is never a way to lose a night: **RESTART** (or `R`) writes the run into
+the all-time diary before it wipes it, and **QUIT TO MENU** resets the world, so
+the next SOLO starts with 500 points and an empty ledger instead of the last
+run's wallet. On the death screen, `Esc` (or `Backspace`) goes back to the front
+page without starting another run — a tap still starts one, because that is what
+a thumb wants there.
+
 ## Run skills: one card every five rounds (switched off for now)
 
 > **Off at the moment.** The pool, the draft, the effects, the co-op wire and

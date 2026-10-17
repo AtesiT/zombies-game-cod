@@ -61,6 +61,27 @@ test('a tap is a click in a menu and a trigger in a round', () => {
   }
 });
 
+test('one mouse click on the panel is one press, not two', () => {
+  // Input listens on the window, and the panel sits above the canvas: the
+  // click used to reach both, so pressing FIRE fired a second, invisible
+  // shot at the pointer's position on the same frame
+  let got = null;
+  const t = { _onStart: (e) => { got = e; } };
+  const e = {
+    clientX: 12, clientY: 34, target: 'FIRE', prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+  };
+  proto._onMouseDown.call(t, e);
+  assert.equal(e.prevented, true);
+  assert.equal(e.stopped, true, 'the window must not see the click as well');
+  assert.ok(got, 'the panel did not receive the press');
+  assert.equal(got.changedTouches.length, 1);
+  assert.equal(got.changedTouches[0].identifier, -1);
+  assert.equal(got.changedTouches[0].clientX, 12);
+  assert.equal(got.changedTouches[0].target, 'FIRE');
+});
+
 
 const M = await load();
 

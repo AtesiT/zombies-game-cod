@@ -1685,7 +1685,7 @@ export function menuRows(scene, game) {
   return [
     { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
     { id: 'range', label: 'TEST RANGE', hint: 'every gun on the walls, a button per creature' },
-    { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
+    { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to twelve of you' },
     { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
     // everything every night on this machine has added up to
     { id: 'stats', label: 'STATISTICS', hint: 'the entire diary, all runs, on one page' },
@@ -2169,9 +2169,12 @@ export function drawSettings(ctx, game, w, h) {
         colour: v ? '#8fdc6a' : INK_DIM, align: 'right',
       });
     } else {
-      text(ctx, 'ENTER', cx + cw - 18, y + 2, {
+      // the destructive row asks twice (src/game.js `_settingsReset`), and
+      // says so where the first press happened
+      const armed = d.id === 'reset' && (game._resetArmT ?? 0) > 0;
+      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, y + 2, {
         font: 'bold 12px "Courier New", monospace',
-        colour: sel ? GOLD : INK_DIM, align: 'right',
+        colour: armed ? '#e0896a' : sel ? GOLD : INK_DIM, align: 'right',
       });
     }
     y += ROW;
@@ -2190,10 +2193,13 @@ export function drawSettings(ctx, game, w, h) {
   }
 
   // hint line for whatever is selected
-  const hint = SETTING_DEFS[game.settingsIndex]?.hint;
+  const chosen = SETTING_DEFS[game.settingsIndex];
+  const armed = chosen?.id === 'reset' && (game._resetArmT ?? 0) > 0;
+  const hint = armed ? 'PRESS AGAIN TO PUT EVERYTHING BACK' : chosen?.hint;
   if (hint) {
     text(ctx, hint, w / 2, cy + ch - 30, {
-      font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      font: 'bold 11px "Courier New", monospace',
+      colour: armed ? '#e0896a' : INK_DIM, align: 'center',
     });
   }
   text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 14, {
@@ -2354,6 +2360,10 @@ export function drawGameOver(ctx, game, w, h) {
       ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
       : (evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN'), w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+    });
+    // the way out that does not cost a new run -- there used to be none
+    text(ctx, 'ESC — FRONT DOOR', w / 2, h * 0.86 + 16, {
+      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   }
   ctx.restore();

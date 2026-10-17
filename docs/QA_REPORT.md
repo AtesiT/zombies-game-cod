@@ -406,3 +406,70 @@ Native renders inspected: front page with the diary headline and seven rows,
 the statistics page with best nights, and a 4× crop of walker/hound/brute.
 Not claimed: a real phone or browser run (none in this sandbox); iOS safe-area
 and momentum scrolling remain covered only by geometry and stubs.
+
+## Review pass: no lost inputs, no lost progress — 2026-10-17
+
+A full read of the tree with one rule for the fixes: an input the game asked for
+must land exactly once, and a night that ended must be written down exactly
+once.
+
+- **A new run after QUIT TO MENU inherited the old one.** `_quitToMenu` banked
+  the night but left the world on the table (`started = false`, `_banked =
+  true`). Choosing SOLO then walked back into the half-played map: doors, guns,
+  points and tallies from the previous run, and because `_banked` was still
+  set, the *next* night was never written to the all-time diary at all. The
+  probe read `{banked: true, round: 1, kills: 42, points: 3000}` on a fresh
+  SOLO. A quit is now a full stop: it banks, closes the wire and calls
+  `reset()`. `begin()` also clears `runMetrics`/`_banked`, so any door into a
+  run starts with an empty ledger.
+- **RESTART erased the night that QUIT would have banked.** One row apart in
+  the same pause menu, two different outcomes for the same decision. `_restartRun`
+  now banks first and is the single path used by the pause row, the `R` key and
+  the death screen.
+- **The death screen had no way back to the front door.** `Esc`/`Backspace`
+  now leaves the run (banked, same as QUIT) and the prompt says so; a tap still
+  starts a new night, which is what a thumb expects.
+- **ESC in the room list could be swallowed.** Leaving was handled *after* the
+  row under the cursor, so ESC on REFRESH re-asked for rooms and ESC on the
+  "no rooms" notice did nothing. ESC is now handled first and always returns
+  to the front page, with the cursor on MULTIPLAYER; BACK does the same (it
+  used to land on TEST RANGE because the index was written down as `1`).
+  Closing ACHIEVEMENTS or STATISTICS finds its row by id (`_menuRowIndex`).
+- **RESTORE DEFAULTS wiped every setting on one press.** It is the only
+  destructive row in the panel and a thumb can land on it while scrolling. It
+  now asks twice: the first press arms the row for four seconds (`SURE?`, an
+  amber hint line), the second on the same row resets; closing the panel or
+  waiting disarms it.
+- **One mouse click on the touch panel was two presses.** The panel sits above
+  the canvas and Input listens on the window: pressing FIRE fired the button
+  *and* a second shot at the pointer. `_onMouseDown` now prevents the event
+  from reaching the window, and the window drag/release handlers are stored so
+  `dispose()` removes them.
+- **Losing focus left a solo round running.** The window keeps drawing while
+  another app has the focus. `pauseForFocusLoss()` pauses a solo round, declines
+  in co-op (the world belongs to the host), and does nothing on menus, drafts or
+  the death screen; `src/main.js` wires it to `blur` and `visibilitychange`.
+- **One badge could never be earned.** `daily_dogged` ("finish a daily
+  challenge") shipped before daily challenges existed, so the wall showed a
+  badge no code awarded. It is retired, following the precedent already in
+  `docs/IDEAS.md`; `Achievements.reset()` now also clears queued toasts. A new
+  test scrapes `src/` for literal `unlock('id')` calls and fails if a badge has
+  no award site (or an award names a badge that is not on the list).
+- **Smaller corrections.** The achievements page advanced `game.time` a second
+  time per frame (all menu blinking ran double speed after a visit); the
+  multiplayer hint said "up to four" while `MAX_PLAYERS` is 12; the skills
+  catalogue still described sixteen ✅ cards as live when `SKILLS_ENABLED` is
+  false; the one-line "pause menu's last row" comment sat above the wrong
+  function.
+
+Validation: `npm test` **90/90** (73 before; +4 menu navigation, +3 focus,
++3 settings reset, +3 run lifecycle, +3 achievements, +1 touch mouse press)
+and the full historical regression **48/48**. Native renders inspected: the
+front page with its diary headline, SETTINGS scrolled to the armed row
+(`SURE?` + hint), the pause menu, and the death screen with the new
+`ESC — FRONT DOOR` line. `git diff --check` clean, `node --check` on every
+changed module.
+
+Not claimed: a real browser or phone run (none in this sandbox); window blur
+and `visibilitychange` firing order across browsers is covered by the method's
+own rule, not by a live window.

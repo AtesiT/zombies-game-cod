@@ -1842,19 +1842,33 @@ export class Game {
     this.settingsView = clamp(v, 0, L.over);
   }
 
+  /**
+   * A new night from scratch. The old one is banked first -- restarting from
+   * the pause screen is the same decision as quitting to the menu and walking
+   * back in, and it must not quietly erase the diary entry the quit would
+   * have written.
+   */
+  _restartRun() {
+    this._bankRun();
+    this.reset();
+    this.started = true;
+    this.startRound(1);
+  }
+
   /** The pause menu's last row: leave the run and stand at the front door. */
   _quitToMenu() {
     // quitting mid-night still counts: the diary takes what was earned
     this._bankRun();
     if (this.net?.playing || this.net?.active) this.net.close();
     audio.heliOff();
-    this.paused = false;
-    this.settingsOpen = false;
+    // A quit is a full stop, not a pause. Without the reset the front door's
+    // SOLO row walked back into the half-played map with the old guns, doors,
+    // points and tallies -- and with `_banked` still set, so the next night
+    // was never written to the diary at all.
+    this.reset();
     this.controlsOpen = false;
     this.debugOpen = false;
     this.craftOpen = false;
-    this.gameOver = false;
-    this.started = false;
     this.scene = 'menu';
   }
 
@@ -3304,7 +3318,7 @@ export class Game {
     if (oPressed) {
       const was = this.settingsOpen;
       this.settingsOpen = !this.settingsOpen;
-      if (this.settingsOpen) this.settingsView = null;
+      if (this.settingsOpen) { this.settingsView = null; this._resetArmT = 0; }
       openedByO = !was;
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
@@ -3321,6 +3335,8 @@ export class Game {
 
     if (this.settingsOpen) {
       const S = settings;
+      // the second press of RESTORE DEFAULTS has a few seconds to arrive
+      this._resetArmT = Math.max(0, (this._resetArmT ?? 0) - dt);
       // the mouse and the wheel are first-class citizens here too: hover
       // picks a row, a click flips or drags it, the wheel scrolls the window
       // (the selection keeps its place while the list moves under it)
@@ -3358,7 +3374,7 @@ export class Game {
             const raw = d.min + k * (d.max - d.min);
             S.set(d.id, Math.round(raw / d.step) * d.step);
           } else S.nudge(d.id, 1);
-        } else if (d.id === 'reset') S.reset();
+        } else if (d.id === 'reset') this._settingsReset();
         else S.activate(d.id);
       }
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
@@ -3374,11 +3390,12 @@ export class Game {
       if (this.input.wasPressed('ArrowLeft', 'KeyA')) S.nudge(SETTING_DEFS[this.settingsIndex].id, -1);
       if (this.input.wasPressed('ArrowRight', 'KeyD')) S.nudge(SETTING_DEFS[this.settingsIndex].id, 1);
       if (this.input.wasPressed('Enter', 'Space')) {
-        if (SETTING_DEFS[this.settingsIndex].id === 'reset') S.reset();
+        if (SETTING_DEFS[this.settingsIndex].id === 'reset') this._settingsReset();
         else S.activate(SETTING_DEFS[this.settingsIndex].id);
       }
       if (this.input.wasPressed('Escape', 'KeyP') || (oPressed && !openedByO)) {
         this.settingsOpen = false;
+        this._resetArmT = 0;
         this.paused = this._wasPaused || false;
       }
       this.hud.update(dt, this);
@@ -3481,11 +3498,14 @@ export class Game {
       if (this.net?.active && this.net.isHost) this.net.step(dt);
       this.particles.update(dt, this.map);
       this.popups.update(dt);
-      if (this.overT > 1.1 && (this.input.wasPressed('KeyR') || this.input.mouse.pressed)) {
-        if (this.net?.playing && !this.net.isHost) this.net.close();
-        this.reset();
-        this.started = true;
-        this.startRound(1);
+      if (this.overT > 1.1) {
+        // the one screen with no way back to the front door used to be this
+        // one: a player who wanted to stop had to start a run first
+        if (this.input.wasPressed('Escape', 'Backspace')) { this._quitToMenu(); return; }
+        if (this.input.wasPressed('KeyR') || this.input.mouse.pressed) {
+          if (this.net?.playing && !this.net.isHost) this.net.close();
+          this._restartRun();
+        }
       }
       return;
     }
@@ -3519,10 +3539,10 @@ export class Game {
         if (hit === 0) this.paused = false;
         else if (hit === 1) { this.settingsOpen = true; this._wasPaused = true; }
         else if (hit === 2) { this.controlsOpen = true; this._wasPaused = true; }
-        else if (hit === 3) { this.reset(); this.started = true; this.startRound(1); }
+        else if (hit === 3) this._restartRun();
         else if (hit === 4) this._quitToMenu();
       }
-      if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
+      if (this.input.wasPressed('KeyR')) this._restartRun();
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
       if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
@@ -4181,6 +4201,10 @@ export class Game {
   begin() {
     this.started = true;
     this.scene = null;
+    // whichever door led here -- the front page, the test range, a hosted
+    // room -- a run starts with an empty ledger and an unbanked entry
+    this.runMetrics = newRoundMetrics();
+    this._banked = false;
     this.applySettings();
     audio.init();
     audio.resume();
@@ -4195,7 +4219,50 @@ export class Game {
     }
   }
 
+  /**
+   * RESTORE DEFAULTS is the one row in this panel that throws work away, and
+   * on a phone a thumb can land on it while scrolling the list. Ask twice:
+   * the first press arms the row for a few seconds and the second one, on
+   * the same row, is the one that resets. Anything else -- moving away,
+   * closing the panel -- disarms it.
+   */
+  _settingsReset() {
+    if ((this._resetArmT ?? 0) > 0) {
+      this._resetArmT = 0;
+      settings.reset();
+      return true;
+    }
+    this._resetArmT = 4;
+    audio.deny();
+    return false;
+  }
+
+  /**
+   * The player looked away from a solo run. The window keeps drawing while
+   * another app has the focus, so without this a coffee break is a death
+   * sentence; a co-op world belongs to the host, though, and freezing it
+   * would stop everyone else, so a shared game is deliberately left alone.
+   * Menus, the bench and the death screen are already not live rounds.
+   */
+  pauseForFocusLoss() {
+    if (!this.started || this.gameOver || this.paused) return false;
+    if (this.net?.playing) return false;
+    if (this.player?.skillDraft) return false;
+    this.paused = true;
+    return true;
+  }
+
   // ------------------------------------------------------------------ menus
+  /**
+   * The front-door row with this id. Closing a page should put the cursor
+   * back on the row that opened it -- and a new row must not silently move
+   * it, which is what a hard-coded number does.
+   */
+  _menuRowIndex(id) {
+    const i = menuRows('menu', this).findIndex((r) => r.id === id);
+    return i >= 0 ? i : 0;
+  }
+
   /**
    * The front door. Solo behaves exactly as it always did; multiplayer opens
    * a room on the relay and then simply starts playing, because somebody
@@ -4235,11 +4302,20 @@ export class Game {
     if (!enter && !esc) return;
     if (esc && this.scene === 'menu') return;
 
+    // leaving is never the row's business: ESC has to work even when the
+    // selection happens to sit on REFRESH or on the empty-list notice
+    if (esc) {
+      this.scene = 'menu';
+      // ...and it lands back on MULTIPLAYER, not on whatever row a submenu
+      // happened to have selected
+      this.menuIndex = this._menuRowIndex('mp');
+      audio.dryFire();
+      return;
+    }
     const row = rows[this.menuIndex];
-    if (row?.id === 'refresh') { this.net.askForRooms(); return; }
-    if (row?.id === 'none') return;
-    if (esc) { this.scene = this.scene === 'mp' || this.scene === 'rooms' ? 'menu' : 'menu'; audio.dryFire(); return; }
     if (!row) return;
+    if (row.id === 'refresh') { this.net.askForRooms(); return; }
+    if (row.id === 'none') return;
     audio.reload(2);
     switch (row.id) {
       case 'solo':
@@ -4268,7 +4344,7 @@ export class Game {
         break;
       case 'name': this._askName(); break;
       case 'addr': this._askAddress(); break;
-      case 'back': this.scene = 'menu'; this.menuIndex = 1; break;
+      case 'back': this.scene = 'menu'; this.menuIndex = this._menuRowIndex('mp'); break;
       case 'waiting': break;
       default:
         if (row.room) this._joinRoom(row.room);
@@ -4282,7 +4358,9 @@ export class Game {
    */
   _achUpdate(dt) {
     const inp = this.input;
-    this.time += dt;
+    // `update()` advanced the clock already; adding it again made the page
+    // blink at double speed
+
     const rowsH = Math.min((this.vh ?? 500) - 20, 460) - 46 - 26;
     const visible = Math.floor(rowsH / 40);
     const total = this.achievements?.total ?? 0;
@@ -4314,11 +4392,11 @@ export class Game {
     }
     if (m?.pressed) {
       if (this._achDragged) this._achDragged = false;
-      else { this.scene = 'menu'; this.menuIndex = 3; audio.dryFire(); return; }
+      else { this.scene = 'menu'; this.menuIndex = this._menuRowIndex('achievements'); audio.dryFire(); return; }
     }
     if (inp.wasPressed('Escape', 'Backspace', 'Enter')) {
       this._achDragY = undefined; this._achDragged = false;
-      this.scene = 'menu'; this.menuIndex = 3; audio.dryFire();
+      this.scene = 'menu'; this.menuIndex = this._menuRowIndex('achievements'); audio.dryFire();
     }
   }
 
@@ -4334,7 +4412,7 @@ export class Game {
     if (inp.wasPressed('Escape', 'Backspace', 'Enter', 'Space')
       || inp.mouse.pressed) {
       this.scene = 'menu';
-      this.menuIndex = 4;      // the STATISTICS row, where the player left
+      this.menuIndex = this._menuRowIndex('stats');   // where the player left
       audio.dryFire();
     }
   }

@@ -35,7 +35,6 @@ export const ACHIEVEMENTS = [
   { id: 'untouchable', name: 'Untouchable', desc: 'Clear a whole round without a scratch.', icon: 'shield' },
   { id: 'packed', name: 'Punched', desc: 'Run a weapon through the Pack-a-Punch.', icon: 'packed' },
   { id: 'trap_master', name: 'Home Alone', desc: 'Kill 15 zombies with traps in one run.', icon: 'trap' },
-  { id: 'daily_dogged', name: 'Daily Grind', desc: 'Finish a daily challenge run.', icon: 'calendar' },
   { id: 'upstairs', name: 'Upstairs', desc: 'Take the stairs to the second floor.', icon: 'stairs' },
   { id: 'up_on_the_roof', name: 'Up On The Roof', desc: 'Climb the attic ladder and step out onto the roof.', icon: 'roof' },
   { id: 'cache_raider', name: 'Cache Raider', desc: 'Crack open the supply cache in the attic.', icon: 'cache' },
@@ -102,7 +101,15 @@ export class Achievements {
     }
   }
 
-  reset() { this.unlocked.clear(); safeSet(ACH_KEY, []); }
+  reset() {
+    this.unlocked.clear();
+    // a toast already queued for a badge that no longer exists would still
+    // flash on screen after the wipe
+    this.pending.length = 0;
+    this.banner = null;
+    this.bannerT = 0;
+    safeSet(ACH_KEY, []);
+  }
 }
 
 // ---------------------------------------------------------------------------
