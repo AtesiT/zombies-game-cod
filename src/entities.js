@@ -1,9 +1,17 @@
 // Player, zombies, projectiles and the particle system.
 import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art.js';
-import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer, GRENADE_MAX } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
+import { SKILLS, skillEffects, NO_SKILLS } from './skills.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
+
+// One hand for everything thrown. The three counters are still the wire and
+// save format, but the game only ever fills one of them at a time: whatever
+// you bought last is what G throws, and buying another kind replaces it.
+export const THROW_KINDS = ['frag', 'molotov', 'gas'];
+export const THROW_POCKET = Object.freeze({ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' });
+export const throwPocket = (kind) => THROW_POCKET[kind] ?? 'grenades';
 
 const SPRITE_OX = SPRITE_W / 2;
 const SPRITE_OY = BODY_ROW;             // sprite pixel drawn at the entity origin
@@ -260,6 +268,11 @@ export class Player {
     this.friction = 12;
 
     this.perks = new Set();
+    // Run skills: a separate set from the bought perks. They last one night
+    // and are picked between waves (see src/skills.js), never bought.
+    this.skills = new Set();
+    this.skillDraft = null;   // { round, ids, index, t } while the pick is open
+    this.skillFx = NO_SKILLS;
     this.applyPerks();
 
     this.loadout = {};
@@ -292,6 +305,7 @@ export class Player {
     this.grenades = 0;
     this.molotovs = 0;      // fire bottles: a pool of burning fuel where they land
     this.gasbombs = 0;      // stink pots: a cloud that slows the horde to a crawl
+    this.throwKind = 'frag'; // the one kind in the throwing hand
     this.ownThrow = { frag: false, molotov: false, gas: false };
     // Whether *this body* has the bench menu open. It used to be one flag on
     // the game, which works for one player and is a lie for four: a guest at
@@ -319,15 +333,40 @@ export class Player {
   }
 
   applyPerks() {
-    this.perkFx = perkEffects(this.perks);
+    // Perks and skills are two different purses, but they spend from the same
+    // stat block: fold them into one object here so every caller downstream
+    // (reload, trigger, legs, regen) keeps reading `perkFx` and cannot forget
+    // that skills exist.
+    const fx = perkEffects(this.perks);
+    const sk = skillEffects(this.skills);
+    fx.maxHp += sk.bonusHp;
+    fx.reloadMul *= sk.reloadMul;
+    fx.fireDelayMul *= sk.fireDelayMul;
+    fx.speedMul *= sk.speedMul;
+    fx.sprintMul *= sk.sprintMul;
+    fx.regenDelay *= sk.regenDelayMul;
+    fx.regenRate *= sk.regenRateMul;
+    this.perkFx = fx;
+    this.skillFx = sk;
     const prevMax = this.maxHp ?? 100;
-    this.maxHp = this.perkFx.maxHp;
+    this.maxHp = fx.maxHp;
     if (this.maxHp > prevMax) this.hp += (this.maxHp - prevMax);
     this.hp = Math.min(this.hp, this.maxHp);
-    this.regenDelay = this.perkFx.regenDelay;
-    this.regenRate = this.perkFx.regenRate;
-    this.baseSpeed = 132 * this.perkFx.speedMul;
+    this.regenDelay = fx.regenDelay;
+    this.regenRate = fx.regenRate;
+    this.baseSpeed = 132 * fx.speedMul;
   }
+
+  /** Add a run skill. Unknown or duplicate ids are refused, never thrown. */
+  addSkill(id) {
+    if (!id || this.skills.has(id)) return false;
+    if (!(id in SKILLS)) return false;
+    this.skills.add(id);
+    this.applyPerks();
+    return true;
+  }
+
+  hasSkill(id) { return this.skills.has(id); }
 
   hasPerk(id) { return this.perks.has(id); }
 
@@ -483,8 +522,64 @@ export class Player {
   useMedkit() {
     if ((this.medkits ?? 0) <= 0 || this.hp >= this.maxHp) return false;
     this.medkits--;
-    this.heal(55);
+    this.heal(Math.round(55 * (this.skillFx?.medkitMul ?? 1)));
     return true;
+  }
+
+  // ------------------------------------------------------ the throwing hand --
+  // Grenades, molotovs and gas bombs share one slot. `throwKind` remembers
+  // what is in it (or what came out of it last), so a round refill gives the
+  // same kind back and the HUD knows which icon to draw even at zero.
+
+  /** Which throwable is in the hand right now. */
+  throwableKind() {
+    if ((this.molotovs ?? 0) > 0) return 'molotov';
+    if ((this.gasbombs ?? 0) > 0) return 'gas';
+    if ((this.grenades ?? 0) > 0) return 'frag';
+    return this.throwKind || 'frag';
+  }
+
+  /** How many are in it. */
+  throwableCount() { return this[throwPocket(this.throwableKind())] ?? 0; }
+
+  /**
+   * Put something in the throwing hand. The same kind stacks to the ordinary
+   * cap; a different kind *replaces* what was there, because that is the one
+   * slot the player has. Returns how many were actually added.
+   */
+  giveThrowable(kind, n = 2) {
+    if (!THROW_KINDS.includes(kind)) return 0;
+    const key = throwPocket(kind);
+    const had = this.throwableKind();
+    const before = (this[key] ?? 0);
+    if (had !== kind) {
+      // buying a molotov when the hand is full of frags is a replacement, not
+      // a second pocket -- the old contents go with the decision
+      for (const k of THROW_KINDS) if (k !== kind) this[throwPocket(k)] = 0;
+    }
+    const cur = had === kind ? before : 0;
+    const next = Math.min(GRENADE_MAX, cur + Math.max(0, Math.floor(n) || 0));
+    this[key] = next;
+    this.throwKind = kind;
+    if (this.ownThrow) this.ownThrow[kind] = true;
+    return next - cur;
+  }
+
+  /** Take one out of the hand; returns the kind, or null when it is empty. */
+  takeThrowable() {
+    const kind = this.throwableKind();
+    const key = throwPocket(kind);
+    if ((this[key] ?? 0) <= 0) return null;
+    this[key]--;
+    this.throwKind = kind;
+    return kind;
+  }
+
+  /** Between rounds: the kind you carry comes back, two at a time. */
+  refillThrowable(n = 2) {
+    const kind = this.throwKind || this.throwableKind();
+    if (!this.ownThrow?.[kind]) return 0;
+    return this.giveThrowable(kind, n);
   }
 
   /**
@@ -531,6 +626,8 @@ export class Player {
     if (this.invuln > 0 || this.dead) return false;
     if (this.evac) return false;                 // aboard the bird, out of the war
     if (game?.debug?.god || this.god) return false;   // the debug panel's god mode
+    // a run skill can take the edge off everything that arrives
+    amount = amount * (this.skillFx?.takenMul ?? 1);
     // already on the floor: the hits do not kill you and they do not hurry
     // you up either -- the clock is the only thing out here that finishes
     // somebody, so a zombie chewing on a downed body is just scenery
@@ -653,7 +750,24 @@ export class Player {
     const moving = mv.x !== 0 || mv.y !== 0;
     this.sprinting = moving && !game.paused && !this.downed
       && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
+    // Second Wind: one burst of legs per round, the moment the health bar
+    // falls into the red. It buys distance, never immunity.
+    if (this.skillFx?.secondwind) {
+      if (!this._windUsed && this.hp > 0 && this.hp < this.maxHp * 0.30) {
+        this._windUsed = true;
+        this.windT = 2;
+        game.popups?.add?.(this.pos.x, this.pos.y - 30, 'SECOND WIND', '#7fbf5f', 11);
+        audio.perk?.();
+      }
+      this.windT = Math.max(0, (this.windT ?? 0) - dt);
+    }
+    // Cold Blood: staying put for half a second (and not while being shoved
+    // around) loads exactly one shot with extra punch.
+    const still = Math.hypot(this.vel.x, this.vel.y) < 8 && !this.sprinting;
+    this._stillT = still ? (this._stillT ?? 0) + dt : 0;
+    if (this.skillFx?.coolhead && this._stillT >= 0.6) this._coolReady = true;
     this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
+      * (this.windT > 0 ? (this.skillFx?.secondwindSpeed ?? 1) : 1)
       * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1);
     const targetVx = mv.x * this.speed;
     const targetVy = mv.y * this.speed;
@@ -754,7 +868,7 @@ export class Player {
     }
     hits.sort((a, b) => a.d - b.d);
 
-    const dmg = 260 + game.round * 22;
+    const dmg = (260 + game.round * 22) * (this.skillFx?.dmgMul ?? 1);
     let any = false;
     for (const h of hits.slice(0, 2)) {
       const z = h.z;
@@ -941,8 +1055,13 @@ export const ENEMY_TYPES = {
     chew: 3.4, points: 1.7, set: 'brute', headOff: 1.25, smash: true,
   },
   dog: {
-    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 6.0, scale: 1,
-    chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45, sprinty: true, four: true,
+    // A hound is a big animal, not a lap dog. The sprite is a side-on 18x12
+    // drawing, so on a 20x22 human it read as a puppy at scale 1: it now sits
+    // at 1.7 and its collision radius grew with it. `hitScale` keeps the
+    // bullets honest -- a bigger body is a bigger target, or the picture lies.
+    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 8.6, scale: 1.7,
+    hitScale: 1.6, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
+    sprinty: true, four: true,
   },
   crawler: {
     id: 'crawler', name: 'Crawler', hp: 0.28, speed: 0.46, dmg: 0.85, r: 5.5, scale: 1,
@@ -2189,9 +2308,15 @@ export class Zombie {
     if (sc !== 1) { ctx.translate(px, py); ctx.scale(sc, sc); ctx.translate(-px, -py); }
 
     const attacking = this.state === ZSTATE.BARRICADE || this.state === ZSTATE.DOOR || this.state === ZSTATE.ATTACK;
-    const { img } = this._set(art, attacking, flip);
+    const { img, framed } = this._set(art, attacking, flip);
     const gx = px - SPRITE_OX;
-    const gy = py - SPRITE_OY - (attacking ? 1 : 0);
+    // The dog is drawn in its own little 18x12 frame, not in the 20x22 human
+    // one: hanging it from the human shoulder line left it floating a hand's
+    // width above its own shadow. A body in its own frame is centred on the
+    // entity instead, which puts the paws back on the ground.
+    const gy = framed
+      ? py - SPRITE_OY - (attacking ? 1 : 0)
+      : py - img.height / 2;
 
     // frozen / webbed overlay
     if (this.frozen > 0.05) {
@@ -2590,10 +2715,11 @@ export class MonkeyBomb {
 //  Grenade
 // ---------------------------------------------------------------------------
 export class Grenade {
-  constructor(x, y, vx, vy, floor = 0) {
+  constructor(x, y, vx, vy, floor = 0, owner = null) {
     this.pos = { x, y };
     this.vel = { x: vx, y: vy };
     this.floor = floor;     // it rolls on, and blows up on, the storey it was thrown from
+    this.owner = owner;     // who gets the credit (and whose Demo skill widens it)
     this.fuse = 2.4;
     this.r = 3;
     this.rot = 0;
@@ -2613,7 +2739,9 @@ export class Grenade {
   explode(game) {
     this.remove = true;
     const { x, y } = this.pos;
-    const R = 96;
+    const fx = this.owner?.skillFx ?? NO_SKILLS;
+    // Demolitionist: the same frag, a wider ring and a little more bite
+    const R = 96 * (fx.blastR ?? 1);
     game.explosion(x, y, R);
     game.hurtHaunts?.(x, y, R, 300, this.floor ?? 0);
     let killed = 0;
@@ -2624,7 +2752,7 @@ export class Grenade {
       if (game.tryCrawl(z, 0.30)) continue;         // blast takes the legs
       const k = 1 - d / R;
       const ang = Math.atan2(z.pos.y - y, z.pos.x - x);
-      const boom = (420 + game.round * 55) * (k * k * 0.75 + k * 0.25);
+      const boom = (420 + game.round * 55) * (fx.blastDmgMul ?? 1) * (k * k * 0.75 + k * 0.25);
       if (z.hurt(boom, false, game, ang) === 2) { game.onZombieKilled(z, false, null, 'grenade'); killed++; }
       z.vel.x += Math.cos(ang) * 180 * k;
       z.vel.y += Math.sin(ang) * 180 * k;
@@ -2646,8 +2774,8 @@ export class Grenade {
   }
 }
 
-export function throwGrenade(game, px, py, aim, speed = 380, floor) {
+export function throwGrenade(game, px, py, aim, speed = 380, floor, owner = null) {
   const g = new Grenade(px, py, Math.cos(aim) * speed, Math.sin(aim) * speed,
-    floor ?? game.player?.floor ?? game.map.floor);
+    floor ?? game.player?.floor ?? game.map.floor, owner ?? game.player ?? null);
   game.grenades.push(g);
 }

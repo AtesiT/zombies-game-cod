@@ -12,53 +12,85 @@ export class AudioEngine {
     this.muted = false;
     this.ready = false;
     this.musicMode = 'repeat';
+    // Why the engine is not making noise, for the HUD and for the console.
+    // null means "fine"; a string is the reason the player sees on screen.
+    this.lastError = null;
     this._lastGrowl = 0;
     this._lastShriek = -9;
     this._lastWhimper = -9;
   }
 
+  /** Is the audio graph built AND the browser clock actually running? */
+  get running() { return !!(this.ready && this.ctx && this.ctx.state === 'running'); }
+
+  /**
+   * Build the graph. This is called from a user gesture (browser policy), but
+   * it has to survive being called twice, being called after a failure, and
+   * being called when the context was closed by the browser.
+   *
+   * If any part of the build throws, we tear the whole half-built engine down
+   * instead of leaving `ctx` set: `init()` used to return early on a non-null
+   * ctx, so one exception halfway through meant every later gesture did
+   * nothing, `ready` stayed false, and the game was silent for good.
+   */
   init() {
-    if (this.ctx) return;
+    if (this.ctx && this.ctx.state !== 'closed') return;
+    if (this.ctx) this._teardown();
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    this.ctx = new AC();
-    this.master = this.ctx.createGain();
+    if (!AC) { this.lastError = 'This browser has no WebAudio'; return; }
+    try {
+      this._build(new AC());
+    } catch (err) {
+      this.lastError = err?.message || String(err);
+      console.warn('[audio] the audio engine could not start; the next tap will retry', err);
+      this._teardown();
+    }
+  }
+
+  _build(ctx) {
+    this.ctx = ctx;
+    this.master = ctx.createGain();
     this.master.gain.value = 0.85;
-    this.master.connect(this.ctx.destination);
+    this.master.connect(ctx.destination);
     // every one-shot effect runs through the sfx bus; ambience has its own
     // routing: every effect -> sfx/ambient bus -> shared bus -> master -> out.
     // The shared bus has to exist *before* anything connects to it, otherwise
     // connect(undefined) throws and the whole engine dies silently.
-    const bus = this.ctx.createGain();
+    const bus = ctx.createGain();
     bus.gain.value = 1;
     bus.connect(this.master);
     this.bus = bus;
 
-    this.sfxBus = this.ctx.createGain();
+    this.sfxBus = ctx.createGain();
     this.sfxBus.gain.value = 1;
     this.sfxBus.connect(bus);
 
-    this.ambientBus = this.ctx.createGain();
+    this.ambientBus = ctx.createGain();
     this.ambientBus.gain.value = 1;
     this.ambientBus.connect(bus);
 
     // music has its own fader: it is the one thing you might want gone
     // while keeping the wind and the shots
-    this.musicBus = this.ctx.createGain();
+    this.musicBus = ctx.createGain();
     this.musicBus.gain.value = 1;
     this.musicBus.connect(bus);
 
     // shared white-noise buffer
-    const len = this.ctx.sampleRate * 2;
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     this.noise = buf;
 
-    this.ready = true;
     this._startAmbient();
     this._startReverb();
     this._startMusic();
+
+    // Only now is the engine usable: a throw above leaves `ready` false, and
+    // `_teardown` gives us a clean slate for the next gesture.
+    this.ready = true;
+    this.lastError = null;
+
     // volumes may have been set from storage before the context existed
     if (this._masterVol !== undefined || this._sfxVol !== undefined || this._ambVol !== undefined) {
       this.setVolumes({
@@ -69,11 +101,59 @@ export class AudioEngine {
       });
       this.setMuted(this.muted);
     }
+    // A context created outside a gesture starts suspended. Try to start it
+    // now -- if this is a gesture it works; if not, the next tap will.
+    this._kick();
+  }
+
+  /** Everything a failed or closed context leaves behind. */
+  _teardown() {
+    if (this._pianoTimer) { clearTimeout(this._pianoTimer); this._pianoTimer = null; }
+    try {
+      const closing = this.ctx?.close?.();
+      if (closing && typeof closing.catch === 'function') closing.catch(() => {});
+    } catch { /* the browser may already have closed it */ }
+    this.ctx = null;
+    this.master = null;
+    this.bus = null;
+    this.sfxBus = null;
+    this.ambientBus = null;
+    this.musicBus = null;
+    this.noise = null;
+    this.soundtrack = null;
+    this._victoryGroup = null;
+    this._music = null;
+    this._musicMix = null;
+    this._elegyGain = null;
+    this._conv = null;
+    this._revRet = null;
+    this._revIR = {};
+    this._windGain = null;
+    this._droneOsc = null;
+    this._droneGain = null;
+    this._pulseGain = null;
+    this.ambientGain = null;
+    this._victoryUntil = 0;
+    this.ready = false;
+  }
+
+  /** Ask the browser clock to run; safe to call from anywhere, any number of times. */
+  _kick() {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'running') return;
+    try {
+      const r = ctx.resume();
+      // A promise rejection here is normal: Chrome refuses a resume without a
+      // user gesture. Swallow it -- the permanent gesture listeners retry.
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    } catch { /* some engines throw synchronously when suspended by policy */ }
   }
 
   resume() {
+    if (this.ctx && this.ctx.state === 'closed') this._teardown();
     if (!this.ctx) this.init();
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    this._kick();
+    return !!this.ctx;
   }
 
   setMuted(m) {

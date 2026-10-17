@@ -70,6 +70,7 @@ const end = (id = 1, x = 0, y = 0) =>
 
 // a stand-in game: the touch layer only reads player.pos, cam, zombies, settings
 const game = {
+  started: true,             // a live round; the menu cases set this false
   player: { pos: { x: 400, y: 300 } },
   cam: { x: 0, y: 0 },
   zombies: [],
@@ -135,6 +136,8 @@ end(21);
 input.endFrame();
 
 // ------------------------------------------------------------------ 4. aim --
+// The sticks and the assist belong to a round: `started` is what tells the
+// panel the difference between the game and a menu.
 input.endFrame();
 start(touch.right.base, 666 + 60, 316, 30);      // aim right
 touch.update(game);
@@ -167,6 +170,7 @@ canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 500
 input.endFrame();
 
 // ---- in a menu: hold, slide to the row you want, let go -------------------
+game.started = false;
 // A thumb covers the row it is about to press, so the choice is made on
 // release, wherever the finger ended up -- not where it landed.
 start(touch.panel, 400, 100, 50);
@@ -195,7 +199,29 @@ end(51, 320, 160);
 ok(input.mouse.down === false && input.mouse.released === true, 'a press in the game never lifted');
 ok(input.mouse.pressed === false, 'a release in the game fired a second shot');
 input.endFrame();
+
+// ---- and the panel itself gets out of the way ------------------------------
+// On a phone the buttons used to sit over the front page and the death screen:
+// a thumb on FIRE chose a menu row with its last cursor position, and the aim
+// assist dragged the cursor onto a zombie while the player was trying to tap
+// STATISTICS -- so the click landed on whatever row was at that spot.
 game.started = false;
+game.zombies = [{ pos: { x: 700, y: 200 }, dead: false }];
+game.settings = { get: () => true };
+touch.update(game);
+ok(touch.buttons.fire.style.display === 'none', 'FIRE stayed on the menu');
+ok(touch.left.base.style.display === 'none', 'the walk stick stayed on the menu');
+ok(touch.right.base.style.display === 'none', 'the aim stick stayed on the menu');
+const held = { x: input.mouse.x, y: input.mouse.y };
+touch.update(game);
+ok(input.mouse.x === held.x && input.mouse.y === held.y,
+  'the aim assist moved the cursor while a menu was open');
+
+// ---- and it comes back the moment the round does --------------------------
+game.started = true;
+touch.update(game);
+ok(touch.buttons.fire.style.display !== 'none', 'the panel did not return for the round');
+ok(touch.left.base.style.display !== 'none', 'the walk stick did not return for the round');
 
 // --------------------------------------------------------------- 7. layout --
 // The panel is laid out in the same 800x500 space the game draws in, so a

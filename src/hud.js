@@ -4,11 +4,13 @@ import { audio } from './audio.js';
 import { clamp, TAU } from './util.js';
 import { WEAPONS } from './weapons.js';
 import { PERKS } from './perks.js';
+import { SKILLS, skillLine } from './skills.js';
 import { recipe, recipeIds, craftRowNote } from './crafting.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { drawAchievementIcon } from './achievementIcons.js';
 import { POWERUPS } from './powerups.js';
 import { loadBoard } from './achievements.js';
+import { lifetimeRows, lifetimeMenuLines } from './lifetime.js';
 import { T } from './art.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { MAX_PLAYERS } from './net.js';
@@ -171,7 +173,42 @@ export class HUD {
     ctx.restore();
   }
 
+  /**
+   * A small, honest chip when the game cannot be heard: muted with M, the
+   * browser holding the audio context suspended, or a fader at zero. Silence
+   * with no explanation is indistinguishable from a bug -- and the last time
+   * the engine failed to start, nothing on screen said so.
+   */
+  _sound(ctx, game, w, h) {
+    let label = null, colour = '#e0a040';
+    if (audio.muted) { label = 'MUTED — M'; colour = '#c4463a'; }
+    else if (!audio.ready) { label = 'SOUND IS OFF — CLICK'; colour = '#c4463a'; }
+    else if (audio.ctx && audio.ctx.state !== 'running') { label = 'SOUND PAUSED — CLICK'; }
+    else if (settings.get('master') === 0) { label = 'MASTER VOLUME 0 — O'; }
+    else if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
+      label = 'ALL FADERS AT 0 — O';
+    }
+    if (!label) return;
+    const tw = Math.ceil(label.length * 6.6) + 16;
+    const x = w - tw - 8;
+    const y = settings.get('fps') ? 28 : 6;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.72)';
+    ctx.fillRect(x, y, tw, 18);
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = colour;
+    ctx.strokeRect(x + 0.5, y + 0.5, tw - 1, 17);
+    ctx.restore();
+    text(ctx, label, x + tw / 2, y + 13, {
+      font: 'bold 10px "Courier New", monospace', colour, align: 'center',
+    });
+  }
+
   draw(ctx, game, w, h) {
+    // The end-of-run screen is a full page: the whole ledger, the best runs
+    // and the way out. Ammo counters and the round pill underneath it were
+    // readable through the panel and made it look like a torn newspaper.
+    if (game.gameOver) return;
     const p = game.player;
 
     this._lowHealth(ctx, game, w, h);
@@ -193,6 +230,7 @@ export class HUD {
     this._weapon(ctx, game, w, h);
     this._health(ctx, game, w, h);
     this._perks(ctx, game, w, h);
+    this._skills(ctx, game, w, h);
     this._timers(ctx, game, w, h);
     this._heliEta(ctx, game, w, h);
     this._scrap(ctx, game, w, h);
@@ -206,11 +244,14 @@ export class HUD {
     this._net(ctx, game, w, h);
     this._squad(ctx, game, w, h);
     this._revive(ctx, game, w, h);
-    this._roundReport(ctx, game, w, h);
-    if (game.roundActive || !game.roundReport || game.banner?.title !== `ROUND ${game.round} CLEARED`) this._banners(ctx, game, w, h);
+    // the death/evac screen has its own words, and its own ledger
+    if (!game.gameOver) this._banners(ctx, game, w, h);
     this._fps(ctx, game, w, h);
+    this._sound(ctx, game, w, h);
     this._floor(ctx, game, w, h);
     if (game.craftOpen) this._craftMenu(ctx, game, w, h);
+    // the draft sits over everything: while it is open the hand belongs to it
+    this._skillDraft(ctx, game, w, h);
     this._toast(ctx, game, w, h);
   }
 
@@ -608,27 +649,125 @@ export class HUD {
     ctx.restore();
   }
 
-  _roundReport(ctx, game, w, h) {
-    const r = game.roundReport;
-    if (!r || game.roundActive || game.intermission <= 0 || game.gameOver || game.rangeMode || game._reportHidden === r.round) return;
-    const { cw, ch, x, y } = roundReportPanel(w, h);
+  // ---------------------------------------------------------- run skills --
+  /**
+   * The run's small permanent-for-this-night upgrades, as a row of chips
+   * above the perk icons. The chosen ones are the only ones that exist; the
+   * row is empty until the first draft is answered.
+   */
+  _skills(ctx, game, w, h) {
+    const p = game.player;
+    if (!p?.skills?.size) return;
+    const list = [...p.skills];
+    const size = 18, gap = 3;
+    const totalW = list.length * size + (list.length - 1) * gap;
+    let x = w / 2 - totalW / 2;
+    const y = h - 114;
+    for (const id of list) {
+      const def = SKILLS[id];
+      if (!def) continue;
+      ctx.save();
+      ctx.fillStyle = 'rgba(10,11,15,0.85)';
+      ctx.fillRect(x, y, size, size);
+      ctx.fillStyle = def.colour;
+      ctx.globalAlpha = 0.9;
+      ctx.fillRect(x + 2, y + 2, size - 4, size - 4);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(8,10,14,0.9)';
+      ctx.font = 'bold 8px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(def.short, x + size / 2, y + size / 2 + 3);
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+      ctx.restore();
+      x += size + gap;
+    }
+  }
+
+  /** One card's worth of word wrap, measured in the card's own font. */
+  _wrap(ctx, str, maxW) {
+    const lines = [''];
+    for (const word of String(str).split(' ')) {
+      const i = lines.length - 1;
+      const next = lines[i] ? `${lines[i]} ${word}` : word;
+      if (ctx.measureText(next).width > maxW && lines[i]) lines.push(word);
+      else lines[i] = next;
+    }
+    return lines;
+  }
+
+  /**
+   * Between-wave draft: three cards, one hand. Deliberately a modal panel --
+   * the wave is already over, the next one is held until an answer or the
+   * clock, and the player should be reading cards, not shooting.
+   */
+  _skillDraft(ctx, game, w, h) {
+    const d = game.player?.skillDraft;
+    if (!d || !game.started || game.gameOver || game.paused) return;
+    const L = skillDraftLayout(w, h);
+    const { x, y, pw, ph } = L;
     ctx.save();
-    ctx.fillStyle = 'rgba(10,14,19,0.95)'; ctx.fillRect(x, y, cw, ch);
-    ctx.strokeStyle = '#70603e'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
-    ctx.fillStyle = '#e3c878'; ctx.fillRect(x, y, cw, 3);
-    text(ctx, `ROUND ${r.round} CLEARED`, x + 18, y + 25, { font: 'bold 18px "Courier New", monospace', colour: GOLD });
-    text(ctx, r.players > 1 ? 'TEAM / THIS WAVE ONLY' : 'THIS WAVE ONLY', x + cw - 45, y + 24,
-      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right' });
-    text(ctx, '[x]', x + cw - 17, y + 24, { font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center' });
-    const rows = roundReportRows(r);
-    rows.forEach(([label, value], i) => {
-      const col = i >= 10 ? 1 : 0, row = i % 10;
-      const left = x + 18 + col * (cw / 2);
-      text(ctx, label, left, y + 51 + row * 18, { font: '10px "Courier New", monospace', colour: INK_DIM });
-      text(ctx, value, left + 270, y + 51 + row * 18, { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
+    ctx.fillStyle = 'rgba(4,6,9,0.55)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(10,14,19,0.97)';
+    ctx.fillRect(x, y, pw, ph);
+    ctx.strokeStyle = '#70603e';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, pw - 1, ph - 1);
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(x, y, pw, 3);
+    text(ctx, `ROUND ${d.round} CLEARED — PICK ONE`, x + 18, y + 27,
+      { font: 'bold 17px "Courier New", monospace', colour: GOLD });
+    text(ctx, 'a skill lasts the rest of this night', x + 18, y + 44,
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM });
+
+    const cards = skillCardRects(w, h, d.ids.length);
+    d.ids.forEach((id, i) => {
+      const def = SKILLS[id];
+      if (!def) return;
+      const c = cards[i];
+      const hot = i === (d.index ?? 0);
+      ctx.fillStyle = hot ? 'rgba(240,217,138,0.16)' : 'rgba(18,22,28,0.8)';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.strokeStyle = hot ? def.colour : 'rgba(120,126,140,0.4)';
+      ctx.lineWidth = hot ? 2 : 1;
+      ctx.strokeRect(c.x + (hot ? 1 : 0.5), c.y + (hot ? 1 : 0.5), c.w - (hot ? 2 : 1), c.h - (hot ? 2 : 1));
+      ctx.fillStyle = def.colour;
+      ctx.fillRect(c.x, c.y, c.w, 3);
+      // the key that takes it
+      text(ctx, `${i + 1}`, c.x + 12, c.y + 22,
+        { font: 'bold 13px "Courier New", monospace', colour: hot ? def.colour : INK_DIM });
+      // the selected card wears a solid bar down its left edge: the arrow read
+      // as part of the three-letter badge
+      if (hot) {
+        ctx.fillStyle = def.colour;
+        ctx.fillRect(c.x, c.y + 3, 3, c.h - 3);
+      }
+      text(ctx, def.short, c.x + c.w - 12, c.y + 22,
+        { font: 'bold 13px "Courier New", monospace', colour: def.colour, align: 'right' });
+      text(ctx, def.name.toUpperCase(), c.x + 10, c.y + 43,
+        { font: 'bold 12px "Courier New", monospace', colour: INK });
+      ctx.font = '10px "Courier New", monospace';
+      const lines = this._wrap(ctx, def.desc, c.w - 20);
+      lines.slice(0, 5).forEach((line, k) => {
+        text(ctx, line, c.x + 10, c.y + 62 + k * 14,
+          { font: '10px "Courier New", monospace', colour: INK_DIM });
+      });
+      text(ctx, def.tag, c.x + 10, c.y + c.h - 9,
+        { font: 'bold 8px "Courier New", monospace', colour: 'rgba(154,145,124,0.8)' });
     });
-    text(ctx, `NEXT WAVE IN ${Math.ceil(game.intermission)}s     TAB: HIDE / SHOW`, x + cw / 2, y + ch - 13,
-      { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
+
+    text(ctx, '[1] [2] [3]   ·   ARROWS + ENTER   ·   OR CLICK A CARD',
+      x + pw / 2, y + ph - 46,
+      { font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+    const picked = skillLine(game.player.skills);
+    text(ctx, picked ? `YOUR SKILLS  ${picked}` : 'NO SKILLS YET — THIS IS THE FIRST CARD',
+      x + 18, y + ph - 22,
+      { font: 'bold 10px "Courier New", monospace', colour: picked ? GOLD : INK_DIM });
+    const left = Math.max(0, Math.ceil(d.t ?? 0));
+    text(ctx, `AUTO-PICK IN ${left}s`, x + pw - 18, y + ph - 22,
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right' });
     ctx.restore();
   }
 
@@ -791,21 +930,22 @@ export class HUD {
       });
     }
 
-    // grenades, bottles, pots -- whatever the pockets hold
-    if ((p.molotovs ?? 0) > 0) {
-      text(ctx, `\u25B2 x${p.molotovs}`, x, yOther - 30, {
-        font: 'bold 10px "Courier New", monospace', colour: '#e08a4a', align: 'right',
-      });
-    }
-    if ((p.gasbombs ?? 0) > 0) {
-      text(ctx, `\u25CF x${p.gasbombs}`, x, yOther - 42, {
-        font: 'bold 10px "Courier New", monospace', colour: '#8ab06a', align: 'right',
-      });
-    }
-    // grenades
-    if (p.grenades > 0) {
-      text(ctx, `\u25C8 x${p.grenades}`, x, yOther - 16, {
-        font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+    // One throwing hand: frag, molotov or gas -- whichever was bought last.
+    // The three counters still exist on the wire, but only one is ever full.
+    const throwKind = p.throwableKind
+      ? p.throwableKind()
+      : ((p.molotovs ?? 0) > 0 ? 'molotov' : (p.gasbombs ?? 0) > 0 ? 'gas' : 'frag');
+    const throwCount = p.throwableCount
+      ? p.throwableCount()
+      : (p[throwKind === 'molotov' ? 'molotovs' : throwKind === 'gas' ? 'gasbombs' : 'grenades'] ?? 0);
+    if (throwCount > 0) {
+      const look = {
+        frag: ['\u25C8', GOLD, 'FRAG'],
+        molotov: ['\u25B2', '#e08a4a', 'MOLOTOV'],
+        gas: ['\u25CF', '#8ab06a', 'GAS'],
+      }[throwKind] ?? ['\u25C8', GOLD, 'FRAG'];
+      text(ctx, `${look[0]} ${look[2]} x${throwCount} [G]`, x, yOther - 16, {
+        font: 'bold 10px "Courier New", monospace', colour: look[1], align: 'right',
       });
     }
 
@@ -1260,9 +1400,8 @@ export const CONTROL_ROWS = [
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['SPRINT', 'SHIFT   DASH'],
-  ['GRENADE', 'G   NADE'],
-  ['MOLOTOV', 'X   MOL'],
-  ['GAS BOMB', 'B   GAS'],
+  ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS'],
+  ['PICK A SKILL', '1  2  3   ARROWS + ENTER   CLICK A CARD'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
@@ -1286,9 +1425,8 @@ export const TOUCH_CONTROL_ROWS = [
   ['RELOAD', 'R'],
   ['SWAP WEAPON', 'Q'],
   ['SPRINT', '>>'],
-  ['GRENADE', 'G'],
-  ['MOLOTOV', 'X'],
-  ['GAS BOMB', 'B'],
+  ['THROW FRAG / MOLOTOV / GAS', 'G'],
+  ['PICK A SKILL', 'TAP A CARD'],
   ['MEDKIT', 'H'],
   ['KNIFE', 'V'],
   ['PAUSE  SETTINGS  MENU', 'II'],
@@ -1304,9 +1442,12 @@ export function drawControls(ctx, game, w, h) {
   // the stick layout, a keyboard reads the keys
   const onTouch = !!game.touch?.enabled && game.touch?.panel;
   const rows = onTouch ? TOUCH_CONTROL_ROWS : CONTROL_ROWS;
-  const step = CONTROLS_STEP;
   const cw = Math.min(w - 30, 470);
-  const ch = Math.min(h - 24, 62 + rows.length * step + 40);
+  // the list grows every time a feature lands, so the row height is whatever
+  // still fits inside the panel instead of a constant that quietly runs the
+  // last row under the footer
+  const ch = Math.min(h - 24, 62 + rows.length * CONTROLS_STEP + 40);
+  const step = Math.min(CONTROLS_STEP, Math.max(13, (ch - 62 - 40) / rows.length));
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
 
   ctx.fillStyle = '#14171d';
@@ -1317,7 +1458,7 @@ export function drawControls(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYBOARD & MOUSE', cx + 14, cy + 20,
+  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYS', cx + 14, cy + 20,
     { font: 'bold 16px "Courier New", monospace', colour: GOLD });
   text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
@@ -1421,9 +1562,96 @@ export function drawAchievements(ctx, game, w, h) {
     y += ACH_ROW;
   }
 
-  text(ctx, 'UP / DOWN OR WHEEL TO SCROLL      ESC TO CLOSE', cx + cw / 2, cy + ch - 9, {
+  text(ctx, 'UP / DOWN OR DRAG TO SCROLL      ESC OR TAP TO CLOSE', cx + cw / 2, cy + ch - 9, {
     font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
+  ctx.restore();
+}
+
+/**
+ * The all-time page. Two columns, no scrolling: eight numbers about the nights
+ * themselves on the left, sixteen about what happened in them on the right.
+ * Every figure is a sum or a maximum over every run this browser has finished,
+ * kept in localStorage by src/lifetime.js.
+ */
+export function statsPanel(w, h) {
+  const cw = Math.min(w - 20, 600);
+  const ch = Math.min(h - 20, 440);
+  return {
+    cw, ch,
+    x: Math.round((w - cw) / 2),
+    y: Math.round((h - ch) / 2),
+    head: 46, foot: 26,
+  };
+}
+
+export function drawStats(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.9)';
+  ctx.fillRect(0, 0, w, h);
+
+  const { x: cx, y: cy, cw, ch, head } = statsPanel(w, h);
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  text(ctx, 'ALL-TIME STATISTICS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, 'THIS MACHINE', cx + cw - 14, cy + 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  });
+
+  const rows = lifetimeRows(game?.lifetime);
+  const nights = rows.filter((r) => r[2] === 0);
+  const deeds = rows.filter((r) => r[2] === 1);
+  const gap = 26;
+  const colW = Math.floor((cw - 32 - gap) / 2);
+  const ax = cx + 16;
+  const bx = cx + 16 + colW + gap;
+
+  const heading = (x, label) => {
+    text(ctx, label, x, cy + head + 2, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
+    ctx.fillStyle = 'rgba(200,190,160,0.18)';
+    ctx.fillRect(x, cy + head + 8, colW, 1);
+  };
+  heading(ax, 'THE NIGHTS');
+  heading(bx, 'EVERYTHING ELSE');
+
+  const line = (x, y, label, value, colour = INK) => {
+    text(ctx, label, x, y, { font: '10px "Courier New", monospace', colour: INK_DIM });
+    text(ctx, value, x + colW, y, { font: 'bold 11px "Courier New", monospace', colour, align: 'right' });
+  };
+
+  let y = cy + head + 26;
+  for (const [label, value] of nights) { line(ax, y, label, value); y += 26; }
+  y = cy + head + 26;
+  for (const [label, value] of deeds) { line(bx, y, label, value); y += 21; }
+
+  // the record book, under the short column: the numbers above say how much,
+  // these say how good the best of it was
+  const board = loadBoard();
+  if (board.length) {
+    let by = cy + head + 26 + nights.length * 26 + 26;
+    text(ctx, 'BEST NIGHTS', ax, by, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
+    ctx.fillStyle = 'rgba(200,190,160,0.18)';
+    ctx.fillRect(ax, by + 6, colW, 1);
+    by += 22;
+    board.slice(0, 3).forEach((e, i) => {
+      text(ctx, `${i + 1}.  ROUND ${e.round}${e.evac ? ' EVAC' : ''}  \u00b7  ${e.kills} KILLS`, ax, by, {
+        font: '10px "Courier New", monospace', colour: i === 0 ? GOLD : INK_DIM,
+      });
+      by += 15;
+    });
+  }
+
+  const empty = !(game?.lifetime?.runs);
+  text(ctx, empty ? 'NO NIGHTS YET  \u00b7  ESC OR TAP TO CLOSE' : 'ESC OR TAP TO CLOSE',
+    cx + cw / 2, cy + ch - 9, {
+      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
   ctx.restore();
 }
 
@@ -1457,8 +1685,10 @@ export function menuRows(scene, game) {
   return [
     { id: 'solo', label: 'SOLO', hint: 'just you and the windows' },
     { id: 'range', label: 'TEST RANGE', hint: 'every gun on the walls, a button per creature' },
-    { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to four of you' },
+    { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to twelve of you' },
     { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
+    // everything every night on this machine has added up to
+    { id: 'stats', label: 'STATISTICS', hint: 'the entire diary, all runs, on one page' },
     { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
     { id: 'settings', label: 'SETTINGS', hint: 'volume, lighting, on-screen controls' },
   ];
@@ -1561,21 +1791,31 @@ export function drawMenu(ctx, game, w, h) {
     });
   }
 
+  // The diary, right under the title where it cannot be missed: the whole
+  // point of an all-time number is that the player runs into it on the way in.
+  if (game.scene === 'menu') {
+    const [line1, line2] = lifetimeMenuLines(game.lifetime);
+    text(ctx, line1, w / 2, h * 0.24 + 50, {
+      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
+    });
+    if (line2) {
+      // brighter than the usual dim ink: this line sits over the live map,
+      // which the title backdrop only dims, not hides
+      text(ctx, line2, w / 2, h * 0.24 + 68, {
+        font: 'bold 10px "Courier New", monospace', colour: 'rgba(230,220,194,0.82)', align: 'center',
+      });
+    }
+  }
+
   // controls, but only on the front page where there is room for them
   if (game.scene === 'menu') {
-    const lines = [
-      'WASD / ARROWS move   \u00b7   MOUSE aim   \u00b7   LEFT CLICK fire',
-      'R reload  \u00b7  Q / WHEEL swap  \u00b7  SHIFT sprint  \u00b7  V knife  \u00b7  G frag  \u00b7  H medkit',
-      'E or F buy, open, spin, rebuild   \u00b7   O settings   \u00b7   P / ESC pause',
-    ];
-    let y = h - 74;
-    for (const l of lines) {
-      text(ctx, l, w / 2, y, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
-      y += 15;
-    }
+    // one line, not three: CONTROLS is a row now and the panel has one more
+    // row than it used to, so the old three-line block would sit over the hint
+    text(ctx, 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS',
+      w / 2, h - 20, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     const board = loadBoard();
     if (board.length) {
-      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, y + 4, {
+      text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, h - 39, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
       });
     }
@@ -1929,9 +2169,12 @@ export function drawSettings(ctx, game, w, h) {
         colour: v ? '#8fdc6a' : INK_DIM, align: 'right',
       });
     } else {
-      text(ctx, 'ENTER', cx + cw - 18, y + 2, {
+      // the destructive row asks twice (src/game.js `_settingsReset`), and
+      // says so where the first press happened
+      const armed = d.id === 'reset' && (game._resetArmT ?? 0) > 0;
+      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, y + 2, {
         font: 'bold 12px "Courier New", monospace',
-        colour: sel ? GOLD : INK_DIM, align: 'right',
+        colour: armed ? '#e0896a' : sel ? GOLD : INK_DIM, align: 'right',
       });
     }
     y += ROW;
@@ -1950,10 +2193,13 @@ export function drawSettings(ctx, game, w, h) {
   }
 
   // hint line for whatever is selected
-  const hint = SETTING_DEFS[game.settingsIndex]?.hint;
+  const chosen = SETTING_DEFS[game.settingsIndex];
+  const armed = chosen?.id === 'reset' && (game._resetArmT ?? 0) > 0;
+  const hint = armed ? 'PRESS AGAIN TO PUT EVERYTHING BACK' : chosen?.hint;
   if (hint) {
     text(ctx, hint, w / 2, cy + ch - 30, {
-      font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center',
+      font: 'bold 11px "Courier New", monospace',
+      colour: armed ? '#e0896a' : INK_DIM, align: 'center',
     });
   }
   text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 14, {
@@ -2002,9 +2248,34 @@ export function drawCursor(ctx, game) {
   ctx.restore();
 }
 
-export function roundReportPanel(w, h) {
-  const cw = Math.min(620, w - 24), ch = 266;
-  return { cw, ch, x: (w - cw) / 2, y: Math.round(h * 0.25) };
+// The between-wave skill draft. Geometry lives here so the renderer and the
+// click handler (game.js) can never disagree about where a card is.
+export function skillDraftLayout(w, h) {
+  const pw = Math.min(600, w - 24);
+  const ph = 246;
+  return { pw, ph, x: Math.round((w - pw) / 2), y: Math.round(h * 0.13) };
+}
+
+export function skillCardRects(w, h, count = 3) {
+  const { x, y, pw } = skillDraftLayout(w, h);
+  const n = Math.max(1, count);
+  const gap = 10, pad = 18;
+  const cw = (pw - pad * 2 - gap * (n - 1)) / n;
+  const ch = 132;
+  const top = y + 56;
+  return Array.from({ length: n }, (_, i) => ({
+    x: x + pad + i * (cw + gap), y: top, w: cw, h: ch,
+  }));
+}
+
+/** Which card, if any, is under a point. -1 means "none of them". */
+export function skillCardAt(w, h, px, py, count = 3) {
+  const cards = skillCardRects(w, h, count);
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    if (px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h) return i;
+  }
+  return -1;
 }
 
 export function roundReportRows(r) {
@@ -2027,9 +2298,12 @@ export function drawGameOver(ctx, game, w, h) {
   const evac = !!game.evacuated;
   const guestWaiting = !evac && game.net?.playing && !game.net.isHost;
   ctx.save();
+  // Nearly opaque on purpose: this screen now carries the whole run's ledger,
+  // and a round banner or a points counter ghosting through it turns a
+  // readable table into a puzzle.
   ctx.fillStyle = evac
-    ? `rgba(8,13,7,${Math.min(0.85, game.overT * 0.7)})`
-    : `rgba(40,4,4,${Math.min(0.82, game.overT * 0.7)})`;
+    ? `rgba(8,13,7,${Math.min(0.94, game.overT * 0.7)})`
+    : `rgba(34,4,4,${Math.min(0.93, game.overT * 0.7)})`;
   ctx.fillRect(0, 0, w, h);
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
@@ -2049,7 +2323,11 @@ export function drawGameOver(ctx, game, w, h) {
     ...roundReportRows({ ...m, accuracy: m.rays ? Math.round(100 * m.hitRays / m.rays) : 0,
       headshotRate: m.kills ? Math.round(100 * m.headshots / m.kills) : 0 }),
   ] : [];
-  text(ctx, (game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN', w / 2, h * 0.20 + 24,
+  // The end of the night is where the whole ledger gets read: the run's
+  // totals and the skills that shaped them, on one quiet line.
+  const picked = game.player?.skills?.size ? skillLine(game.player.skills) : '';
+  text(ctx, `${(game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN'}${picked ? `  ·  SKILLS ${picked}` : ''}`,
+    w / 2, h * 0.20 + 24,
     { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
   rows.forEach(([label, value], i) => {
     const col = i >= 11 ? 1 : 0, row = i % 11;
@@ -2082,6 +2360,10 @@ export function drawGameOver(ctx, game, w, h) {
       ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
       : (evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN'), w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+    });
+    // the way out that does not cost a new run -- there used to be none
+    text(ctx, 'ESC — FRONT DOOR', w / 2, h * 0.86 + 16, {
+      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   }
   ctx.restore();

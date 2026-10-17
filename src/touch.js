@@ -37,15 +37,15 @@ const BUTTONS = [
   // because it is the one you press with your eyes on the horde
   { id: 'medkit', key: 'KeyH', label: 'H', colour: 0x3a6b5f, scale: 1.25 },
   { id: 'knife', key: 'KeyV', label: 'V', colour: 0x5a5a5a },
-  { id: 'molotov', key: 'KeyX', label: 'X', colour: 0x8a4a2a },
-  { id: 'gas', key: 'KeyB', label: 'B', colour: 0x4a6b3a },
 ];
 
 // the small ones, laid out in a grid to the left of FIRE: [column, row]
+// G is the one throwing hand now: frag, molotov or gas, whichever was bought
+// last. There is no second or third throw button to reach for.
 const GRID = {
   interact: [0, 0], reload: [1, 0], knife: [2, 0],
   swap: [0, 1], sprint: [1, 1], grenade: [2, 1],
-  medkit: [0, 2], molotov: [1, 2], gas: [2, 2],
+  medkit: [0, 2],
 };
 
 export class TouchControls {
@@ -357,13 +357,31 @@ export class TouchControls {
     panel.addEventListener('touchmove', this._onMove, { passive: false });
     panel.addEventListener('touchend', this._onEnd, { passive: false });
     panel.addEventListener('touchcancel', this._onEnd, { passive: false });
-    // a mouse on a touch laptop should be able to use the same panel
-    panel.addEventListener('mousedown', (e) => this._onStart({ changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY, target: e.target }], preventDefault: () => {} }));
-    window.addEventListener?.('mousemove', (e) => {
+    panel.addEventListener('mousedown', this._onMouseDown);
+    // the drag and the release belong to the window: the finger (or the
+    // held mouse button) is allowed to leave the panel mid-stroke
+    this._onMouseMove = (e) => {
       if (this._touches.has(-1)) this._onMove({ changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY }], preventDefault: () => {} });
-    });
-    window.addEventListener?.('mouseup', () => {
+    };
+    this._onMouseUp = () => {
       if (this._touches.has(-1)) this._onEnd({ changedTouches: [{ identifier: -1 }], preventDefault: () => {} });
+    };
+    window.addEventListener?.('mousemove', this._onMouseMove);
+    window.addEventListener?.('mouseup', this._onMouseUp);
+  }
+
+  /**
+   * A mouse on a touch laptop should be able to use the same panel. The event
+   * must not also reach the window: Input listens there for the trigger, so
+   * clicking the panel's FIRE button used to fire a second, invisible shot at
+   * wherever the cursor happened to be.
+   */
+  _onMouseDown(e) {
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    this._onStart({
+      changedTouches: [{ identifier: -1, clientX: e.clientX, clientY: e.clientY, target: e.target }],
+      preventDefault: () => {},
     });
   }
 
@@ -382,22 +400,38 @@ export class TouchControls {
   }
 
   /**
-   * A bare tap on the game surface. Without this the panel would swallow
-   * every menu press on a phone, which makes the front door unusable on the
-   * one device that most needs on-screen controls.
-   */
-  /**
    * Is a list on screen? In one, a finger behaves differently: the row under
    * it lights up as it slides, and the choice is made when it lets go. In the
    * game itself a press has to fire the instant it lands, or shooting would
    * feel a thumb-beat late.
    */
   _menuOpen() {
-    const g = this.game;
-    if (!g) return false;
-    return !g.started || g.settingsOpen || g.craftOpen || g.paused;
+    return this._menuMode(this.game);
   }
 
+  /**
+   * Is something other than the game in charge of the screen? Then the sticks
+   * and buttons are not just useless, they are in the way: a thumb on the walk
+   * stick cannot tap a menu row underneath it, and a tap on the death screen
+   * must not pull a trigger. Everything the panel draws goes away, and the tap
+   * becomes a plain click for whatever list is up.
+   *
+   * This used to know only about the front door, settings and the pause; the
+   * death screen, the controls page, the debug panel and the two full-screen
+   * lists were all "playing" as far as a thumb was concerned.
+   */
+  _menuMode(g = this.game) {
+    if (!g) return false;
+    if (!g.started) return true;
+    return !!(g.gameOver || g.paused || g.settingsOpen || g.craftOpen
+      || g.controlsOpen || g.debugOpen || g.player?.skillDraft);
+  }
+
+  /**
+   * A bare tap on the game surface. Without this the panel would swallow
+   * every menu press on a phone, which makes the front door unusable on the
+   * one device that most needs on-screen controls.
+   */
   _tap(t, mode = 'move') {
     const inp = this.input;
     const box = inp?.canvas?.getBoundingClientRect?.();
@@ -455,12 +489,28 @@ export class TouchControls {
   update(game) {
     this.game = game;          // the panel has to know when a list is open
     if (!this.enabled) return;
+    // a list, a pause or a death screen: the panel gets out of the way. Done
+    // the moment the mode changes, not on the nine-frame visibility tick --
+    // a thumb is faster than that.
+    const menu = this._menuMode(game);
+    if (menu !== this._menu) {
+      this._menu = menu;
+      this._applyMode(menu);
+      if (!menu) this._syncVisibility(game);
+    }
     // buttons appear when they mean something: a phone screen is too small
     // for a permanent row of maybe-useful circles. Knife, fire and sprint are
     // always live; the rest surface exactly when there is a job for them.
     this._visT = (this._visT ?? 0) - 1;
     if (this._visT <= 0) { this._visT = 9; this._syncVisibility(game); }
     const inp = this.input;
+    // in a menu the cursor belongs to the finger, not to the aim assist: it
+    // used to be dragged onto the nearest zombie while the player was trying
+    // to tap a menu row, which put the click on whatever row sat there
+    if (menu) {
+      if (inp.stick) { inp.stick.x = 0; inp.stick.y = 0; }
+      return;
+    }
     // walking: the stick is a vector, the keyboard still works alongside it
     inp.stick = this.move;
     // aiming: put the virtual cursor 300 px out along the right stick, from
@@ -505,7 +555,7 @@ export class TouchControls {
    * carry two guns.
    */
   _syncVisibility(game) {
-    if (!this._built) return;
+    if (!this._built || this._menu) return;
     const p = game?.player;
     if (!p) return;
     let offer = null;
@@ -518,9 +568,7 @@ export class TouchControls {
       interact: !!offer,
       reload: !!p.reloading || !!(s && d && s.mag < d.mag && s.reserve > 0),
       swap: !!slots[0] && !!slots[1],
-      grenade: (p.grenades ?? 0) > 0,
-      molotov: (p.molotovs ?? 0) > 0,
-      gas: (p.gasbombs ?? 0) > 0,
+      grenade: (p.throwableCount ? p.throwableCount() : (p.grenades ?? 0)) > 0,
       medkit: (p.medkits ?? 0) > 0 && p.hp < (p.maxHp ?? 100),
     };
     for (const [id, on] of Object.entries(vis)) {
@@ -531,9 +579,38 @@ export class TouchControls {
     }
   }
 
+  /**
+   * Hide or restore the whole panel. Entering a menu also lets go of every
+   * key and stick first: a sprint held when the night ends would otherwise
+   * still be held on the front page, and the next run would start running.
+   */
+  _applyMode(menu) {
+    if (!this._built) return;
+    const els = [this.left?.base, this.right?.base, ...Object.values(this.buttons ?? {})];
+    for (const el of els) if (el) el.style.display = menu ? 'none' : '';
+    // leaving the menu must not wipe a thumb that is already on a stick --
+    // it has to be usable on the very first frame of the round. Entering one
+    // must, or the walk and the sprint stay held on the front page.
+    if (!menu) return;
+    this.move.x = 0; this.move.y = 0;
+    this.aim.x = 0; this.aim.y = 0;
+    if (this.input?.stick) { this.input.stick.x = 0; this.input.stick.y = 0; }
+    if (this.input?.mouse) this.input.mouse.down = false;
+    for (const id of [...this.held]) this._press(id, false);
+    this._resetKnob(this.left);
+    this._resetKnob(this.right);
+  }
+
   show(on) {
     this.enabled = !!on;
     if (this.panel) this.panel.style.display = on ? 'block' : 'none';
+    // Switching the panel on while a menu is up must not paste a stick over
+    // it: re-apply the mode straight away instead of waiting for a change.
+    if (on && this.game) {
+      this._menu = this._menuMode(this.game);
+      this._applyMode(this._menu);
+      if (!this._menu) this._syncVisibility(this.game);
+    }
     if (!on) {
       this.input.stick.x = this.input.stick.y = 0;
       this.input.mouse.down = false;
@@ -549,6 +626,8 @@ export class TouchControls {
 
   dispose() {
     if (this._onBlur) window.removeEventListener('blur', this._onBlur);
+    if (this._onMouseMove) window.removeEventListener?.('mousemove', this._onMouseMove);
+    if (this._onMouseUp) window.removeEventListener?.('mouseup', this._onMouseUp);
     this.show(false);
     if (this.panel && this.panel.parentNode) this.panel.parentNode.removeChild(this.panel);
     this._built = false;

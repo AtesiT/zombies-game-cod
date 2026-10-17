@@ -116,15 +116,16 @@ test('wave metrics are independent snapshots; intermission support only affects 
   g.recordRound('seconds', 63.5); g.recordRound('points', 1500); g.recordRound('planks', 2);
   g.recordRound('kills', NaN); g.recordRound('damage', -4);
   g.endRound(); assert.equal(g.intermission, 12);
-  const report = g.roundReport; assert.equal(report.kills, 8); assert.equal(report.accuracy, 70); assert.equal(report.headshotRate, 38);
-  g.endRound(); assert.equal(g.roundReport, report);
-  g.recordRound('crafted'); assert.equal(report.crafted, 0); assert.equal(g.runMetrics.crafted, 1);
+  assert.equal(g.roundActive, false);
+  const wave = { ...g.roundMetrics };
+  g.recordRound('crafted'); assert.equal(g.runMetrics.crafted, 1);
+  assert.equal(g.roundMetrics.crafted, 0, 'a finished wave takes no more numbers');
   g.startRound(2); assert.equal(g.roundMetrics.kills, 0); assert.equal(g.runMetrics.kills, 8);
-  g.recordRound('kills'); assert.equal(report.kills, 8);
-  assert.equal(roundReportRows(report).length, 20);
-  assert.doesNotThrow(() => g.hud._roundReport(nc(800, 500).getContext('2d'), { ...g, roundActive: false, intermission: 10 }, 800, 500));
+  g.recordRound('kills'); assert.equal(g.roundMetrics.kills, 1); assert.equal(g.runMetrics.kills, 9);
+  // the end-of-run ledger reads the same shape the old per-wave panel used
+  assert.equal(roundReportRows({ ...wave, accuracy: 70, headshotRate: 38 }).length, 20);
   g.rangeMode = true; g.recordRound('kills', 100); assert.equal(g.runMetrics.kills, 9);
-  g.reset(); assert.equal(g.roundReport, null); assert.equal(g.runMetrics.kills, 0); assert.equal(g._evacAudioPlayed, false);
+  g.reset(); assert.equal(g.runMetrics.kills, 0); assert.equal(g._evacAudioPlayed, false);
   cleanup();
 });
 
@@ -138,14 +139,14 @@ test('real damage, armour, throws and points feed the ledger; piercing accuracy 
   g.zombies = [350, 400].map((x) => { const z = g.makeZombie({ x, y: 300 }, 'walker'); z.pos = { x, y: 300 }; return z; });
   g.fireHitscan(300, 300, 0, def, { x: 300, y: 300 });
   assert.equal(g.roundMetrics.rays, 1); assert.equal(g.roundMetrics.hitRays, 1);
-  g.endRound(); assert.equal(g.roundReport.accuracy, 100); cleanup();
+  g.endRound(); assert.equal(g.roundMetrics.hitRays, 1); cleanup();
 });
 
 test('reports and run totals reach guests; evacuation celebration plays once, including late snapshots', () => {
   const host = fresh(), guest = fresh();
   host.recordRound('kills', 12); host.recordRound('revives', 2); host.endRound();
   guest.net._apply(host.net.snapshot(), true);
-  assert.deepEqual(guest.roundReport, host.roundReport); assert.equal(guest.runMetrics.revives, 2);
+  assert.equal(guest.runMetrics.revives, 2);
   let cues = 0; const victory = audio.victory; audio.victory = () => cues++;
   try {
     host.heli.phase = 4; const snap = host.net.snapshot();
@@ -156,16 +157,17 @@ test('reports and run totals reach guests; evacuation celebration plays once, in
   } finally { audio.victory = victory; cleanup(); }
 });
 
-test('round reports can be hidden with Tab or their close button, without firing a shot', () => {
+test('a cleared round leaves only the number on screen; the ledger waits for the end', () => {
   const g = fresh(); g.recordRound('kills', 2); g.endRound();
-  g.input.pressed.add('Tab'); g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, g.round);
-  g.input.pressed.add('Tab'); g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, null);
+  assert.equal(g.roundActive, false);
+  assert.equal(g.banner.title, 'ROUND 1 CLEARED');
+  assert.equal(g.banner.sub, null, 'no "catch your breath", no rows');
+  assert.equal(g.roundReport, undefined);
+  // nothing at the old report panel's geometry can swallow a click any more
   const before = g.stats.shots;
   Object.assign(g.input.mouse, { x: 692, y: 145, pressed: true, down: true });
   g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, g.round); assert.equal(g.stats.shots, before);
+  assert.notEqual(g.stats.shots, before, 'the click belongs to the world, not a panel');
   const seconds = g.runMetrics.seconds; g.debugOpen = true; g.paused = true;
   g.update(3); assert.equal(g.runMetrics.seconds, seconds, 'paused time is not combat time');
   cleanup();
