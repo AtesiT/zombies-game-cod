@@ -108,3 +108,6 @@ if (fails.length) {
 } else {
   console.log('MUSIC PASS  the drone is loud enough to hear and in a register you can hear it in');
 }
+
+// The live elegy scheduler must not keep a finished headless test running.
+audio._pianoWant(false);

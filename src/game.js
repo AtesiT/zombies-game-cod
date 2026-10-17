@@ -1,3 +1,5 @@
+import { SOUNDTRACKS, musicTime } from './soundtracks.js';
+import { newRoundMetrics, recordRound, finishRoundReport } from './roundReport.js';
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
 import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
@@ -15,7 +17,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, roundReportPanel, drawAchievements, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -23,6 +25,8 @@ import {
 
 export const VW = 800;
 export const VH = 500;
+// Roughly 7 tiles of travel on an unobstructed floor, regardless of cursor distance.
+export const MAX_THROW_SPEED = 280;
 
 const POINTS_HIT = 10;
 const POINTS_KILL = 60;
@@ -312,6 +316,12 @@ export class Game {
   }
 
   reset() {
+    audio.stopSoundtrack();
+    this._evacAudioPlayed = false;
+    this.roundMetrics = newRoundMetrics();
+    this.runMetrics = newRoundMetrics();
+    this._reportHidden = null;
+    this.roundReport = null;
     this.map = new GameMap();
     this._clearDecals();
     this.decals = this._decalFor(this.map.floor);
@@ -391,7 +401,7 @@ export class Game {
     // part of the game -- it opens on the backquote key, or, on a phone that
     // has no such key, on five taps of the round counter.
     this.debugOpen = false;
-    this.debugTab = 0;      // 0 = cheats, 1 = the zoo
+    this.debugTab = 0;      // 0 = cheats, 1 = the zoo, 2 = local music library
     this._dbgWhere = 'front';   // where the zoo tab drops what it spawns
     this.debugIndex = 0;
     this.debug = { god: false, ammo: false, paths: false };
@@ -609,7 +619,10 @@ export class Game {
   get craftOpen() { return !!(this.player && this.player.craftOpen); }
   set craftOpen(v) { if (this.player) this.player.craftOpen = !!v; }
 
+  recordRound(key, n = 1) { recordRound(this, key, n); }
+
   addPoints(n, x, y, colour, who) {
+    if (n > 0) this.recordRound('points', n);
     const t = who ?? this.player;
     if (t) t.points = (t.points ?? 0) + n;
     if (t === this.player) {
@@ -655,9 +668,17 @@ export class Game {
     this.onPlayerTeleport(from, to);
   }
 
+  fallenNear(p) {
+    return this.players.find((o) => o !== p && o.downed && !o.dead && !o.evac
+      && (o.floor ?? this.map.floor) === (p.floor ?? this.map.floor)
+      && dist(p.pos.x, p.pos.y, o.pos.x, o.pos.y) < 40);
+  }
+
   /** Stand some poor soul back up. Co-op only exists for this. */
   revive(downed, by) {
-    if (!downed?.downed) return;
+    if (!downed?.downed || downed.dead || !by || by.dead || by.downed || by.evac
+      || this.fallenNear(by) !== downed) return;
+    this.recordRound('revives');
     downed.downed = false;
     downed._downTold = 0;
     downed.hp = Math.round(downed.maxHp * 0.5);
@@ -681,6 +702,7 @@ export class Game {
   medkitFor(p) {
     if (!p || p.dead || p.downed) return;
     if (p.useMedkit?.()) {
+      this.recordRound('medkits');
       audio.chime();
       this.popups.add(p.pos.x, p.pos.y - 26, '+55 HEALTH', '#63c74d', 12);
     }
@@ -787,6 +809,7 @@ export class Game {
   }
 
   startRound(n) {
+    this.roundMetrics = newRoundMetrics();
     this.round = n;
     this.stats.round = n;
     // throwables come back two at a time for whoever already owns the kind
@@ -871,8 +894,11 @@ export class Game {
   }
 
   endRound() {
+    if (!this.roundActive) return;
+    this._reportHidden = null;
+    this.roundReport = finishRoundReport(this);
     this.roundActive = false;
-    this.intermission = 6;
+    this.intermission = 12;
     this.respawnQueue = 0;
     this.setWeatherKind(null);   // the sky clears while you catch your breath
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
@@ -1163,6 +1189,12 @@ export class Game {
     if (z.def.jams && this.jamT > 0) { this.jamT = Math.min(this.jamT, 0.45); this.jamSrc = null; }
     if (z.type === 'medic') this.say('medic');
     else if (z.type === 'fusion') this.say('amalgam');
+    this.recordRound('kills');
+    if (head) this.recordRound('headshots');
+    if (z.summoned) this.recordRound('summonedKills');
+    if (!['walker', 'runner', 'crawler', 'dog', 'skeleton'].includes(z.type)) this.recordRound('specialKills');
+    if (source === 'knife') this.recordRound('knifeKills');
+    if (source === 'trap') this.recordRound('trapKills');
     this.stats.kills++;
     if (head) this.stats.headshots++;
     const pts = ptsOverride
@@ -1178,6 +1210,7 @@ export class Game {
     if (Math.random() < dropChance) {
       const n = z.type === 'brute' ? randInt(2, 4) : 1;
       who.salvage = (who.salvage ?? 0) + n;
+      this.recordRound('salvage', n);
       this.popups.add(z.pos.x + randRange(-6, 6), z.pos.y - 34, `+${n} SCRAP`, '#9fd0e0', 9);
     }
 
@@ -1288,9 +1321,9 @@ export class Game {
 
   /** The Shocker's bolt. Walls eat it; you do not. */
   zapPlayer(z, p) {
-    if (!p) return;
+    if (!p || (p.floor ?? 0) !== (z.floor ?? 0)) return;
     const tx = p.pos.x, ty = p.pos.y - 6;
-    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty);
+    const wall = this.map.rayWall(z.pos.x, z.pos.y - 12, tx, ty, Infinity, z.floor ?? this.map.floor);
     const ex = wall ? wall.x : tx, ey = wall ? wall.y : ty;
     const floor = z.floor ?? this.map.floor;
     this.bolts.push({
@@ -1578,8 +1611,7 @@ export class Game {
       return;
     }
     H.phase = 4; H.t = 0;
-    audio.evacSting();
-    audio.victory();
+    this.playEvacuationAudio();
     this.shake(6, 1.4);
     this.bannerShow('WHEELS UP', 'the room agreed -- everybody aboard', { dur: 3.4, colour: '#f0d98a' });
     this._speak('We have them. Deck is clear, going up. Somebody put the kettle on.');
@@ -1632,7 +1664,14 @@ export class Game {
   }
 
   /** The bird is a star over the west trees: the run ends, the board remembers. */
+  playEvacuationAudio() {
+    if (this._evacAudioPlayed) return;
+    this._evacAudioPlayed = true;
+    audio.victory();
+  }
+
   _finishEvac() {
+    this.playEvacuationAudio();
     this.gameOver = true;
     this.evacuated = true;
     this.overT = 0;
@@ -1715,8 +1754,7 @@ export class Game {
    * It does hold the regen timer open, which is the point -- you cannot stand
    * in a fire and heal through it.
    */
-  scorchPlayer(dmg, game, owner) {
-    const p = this.player;
+  scorchPlayer(dmg, game, owner, p = this.player) {
     if (p.dead || this.gameOver) return;
     if (p.evac || p.downed) return;               // aboard, or already on the floor
     if (this.debug?.god || p.god) return;         // god mode means ALL of it
@@ -1775,7 +1813,7 @@ export class Game {
         let n = 0;
         for (const z of this.zombies) {
           if (z.dead) continue;
-          z.hurt(1e9, false, this, Math.atan2(z.pos.y - p.pos.y, z.pos.x - p.pos.x));
+          if (z.hurt(1e9, false, this, Math.atan2(z.pos.y - p.pos.y, z.pos.x - p.pos.x)) !== 2) continue;
           this.onZombieKilled(z, false, 0);
           n++;
         }
@@ -1841,7 +1879,8 @@ export class Game {
 
   splat(x, y, r, alpha = 0.5, colour = '#4d1214') {
     if (!settings.get('blood')) return;
-    const f = this.map.floor;
+    const f = this.fxFloor;
+    this._decalFor(f);
     const box = this._decalBox[f]
       ?? (this._decalBox[f] = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
     // remember where the mess is, so a clean stretch of floor costs nothing
@@ -1851,7 +1890,7 @@ export class Game {
     if (y + r * 2 > box.y1) box.y1 = y + r * 2;
     this._decalCount[f] = (this._decalCount[f] ?? 0) + 1;
     if (this._decalCount[f] > DECAL_MAX) this._washDecals(f);
-    const c = this.decalCtx;
+    const c = this._decalCtx[f];
     c.save();
     c.globalAlpha = alpha;
     c.fillStyle = colour;
@@ -1873,9 +1912,10 @@ export class Game {
     const p = this.player;
     const m = this.input.mouse;
     const ox = p.pos.x, oy = p.pos.y;
-    let dx = m.x - ox, dy = m.y - oy;
+    const cursor = this.screenToWorld(m.x, m.y);
+    let dx = cursor.x - ox, dy = cursor.y - oy;
     const d = Math.hypot(dx, dy);
-    if (d < 1) { this.aimOnTarget = false; return; }
+    if (d < 1) { this.aimOnTarget = false; this.aimOnHead = false; return; }
     dx /= d; dy /= d;
     const def = p.def;
     const wall = this.map.rayWall(ox, oy, ox + dx * def.range, oy + dy * def.range);
@@ -1883,19 +1923,20 @@ export class Game {
     let hit = false, head = false;
     for (const z of this.zombies) {
       if (z.dead) continue;
-      if ((z.floor ?? 0) !== this.map.floor) continue;
+      if ((z.floor ?? 0) !== (p.floor ?? this.map.floor)) continue;
       const hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       const low = z.def.low ? 0.72 : 1;
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
       const headR = 5.2 * low;
+      let isHead = false;
       // no head on a skeleton: there is nothing to aim at but the ribs
       if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1);
         if (res.d2 > bodyR * bodyR) continue;
-      } else head = true;
+      } else isHead = true;
       if (Math.hypot(res.cx - ox, res.cy - oy) > wallT) continue;
-      hit = true;
+      hit = true; head = isHead;
       break;
     }
     this.aimOnTarget = hit;
@@ -1905,16 +1946,19 @@ export class Game {
   // -------------------------------------------------------------- shooting
   fireHitscan(ox, oy, angle, def, muzzle, by = null, doSpecial = true) {
     this.stats.shots++;
+    this.recordRound('rays');
     const dx = Math.cos(angle), dy = Math.sin(angle);
     const ex = ox + dx * def.range, ey = oy + dy * def.range;
-    const wall = this.map.rayWall(ox, oy, ex, ey);
+    const shooter = by ?? this.player;
+    const floor = shooter.floor ?? this.map.floor;
+    const wall = this.map.rayWall(ox, oy, ex, ey, Infinity, floor);
     const wallT = wall ? wall.t : def.range;
 
     const hits = [];
-    const magnet = this.player.perkFx.headMagnet;
+    const magnet = shooter.perkFx.headMagnet;
     for (const z of this.zombies) {
       if (z.dead) continue;
-      if ((z.floor ?? 0) !== this.map.floor) continue;   // different storey
+      if ((z.floor ?? 0) !== floor) continue;   // different storey
       // Deadshot Daiquiri nudges the ray toward the head box
       let hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       if (magnet > 0) {
@@ -1940,7 +1984,7 @@ export class Game {
     // headstone is the whole point of them
     for (const arr of [this.totems, this.graves]) {
       for (const st of arr) {
-        if (st.dead || (st.f ?? 0) !== this.map.floor) continue;
+        if (st.dead || (st.f ?? 0) !== floor) continue;
         const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
         if (res.d2 > 13 * 13) continue;
         const t = Math.hypot(res.cx - ox, res.cy - oy);
@@ -1998,13 +2042,15 @@ export class Game {
       else if (insta === 1) { endT = h.t; break; }
     }
 
+    if (anyHit) this.recordRound('hitRays');
+
     // wonder-weapon extras fire once per shot, at the point of impact --
     // a multi-pellet gun only lets the first pellet carry the extra, or a
     // rift shotgun would tear six floors open per trigger pull
     if (doSpecial && def.special && def.special !== 'shock' && def.special !== 'lure') {
       const ix = firstHit ? firstHit.x : ox + dx * endT;
       const iy = firstHit ? firstHit.y : oy + dy * endT;
-      this.applySpecial(def, ix, iy, firstHit ? firstHit.z : null, insta);
+      this.applySpecial(def, ix, iy, firstHit ? firstHit.z : null, insta, floor, shooter);
       endT = Math.min(endT, Math.hypot(ix - ox, iy - oy));
     }
 
@@ -2035,10 +2081,10 @@ export class Game {
   }
 
   /** Ray Gun splash / DG-2 chain / Winter's Howl frost. */
-  applySpecial(def, x, y, source, insta = 1) {
+  applySpecial(def, x, y, source, insta = 1, floor = null, by = null) {
     // a wonder weapon belongs to the storey the shot came from: a guest
     // firing upstairs does not blow the floor below apart
-    const sf = source?.floor ?? this.map.floor;
+    const sf = floor ?? source?.floor ?? this.fxFloor;
     if (def.special === 'splash') {
       this.explosionLights.push({ x, y, r: def.splashR * 3.2, life: 0.28, max: 0.28, colour: def.splashColor, f: sf });
       for (const z of this.zombies) {
@@ -2085,7 +2131,7 @@ export class Game {
 
     if (def.special === 'lob') {
       // the launcher's round ends the way a grenade does, just ruder
-      this.explodeAt(x, y, def.lobR, def.lobDmg, { blast: true, colour: '#f0a050' });
+      this.explodeAt(x, y, def.lobR, def.lobDmg, { blast: true, colour: '#f0a050', floor: sf, owner: by });
       return;
     }
 
@@ -2106,10 +2152,10 @@ export class Game {
       // not already alight, or a held trigger would carpet the whole hallway
       let near = false;
       for (const f of this.fires) {
-        if (dist(f.x, f.y, x, y) < 24) { near = true; break; }
+        if ((f.f ?? 0) === sf && dist(f.x, f.y, x, y) < 24) { near = true; break; }
       }
       if (!near) {
-        this.fires.push({ x, y, r: def.flameR, life: 1.1, max: 1.1, tick: 0, puff: 0, f: this.fxFloor });
+        this.fires.push({ x, y, r: def.flameR, life: 1.1, max: 1.1, tick: 0, puff: 0, f: sf, owner: by });
         this.particles.smoke(x, y, 3);
       }
       return;
@@ -2130,7 +2176,7 @@ export class Game {
     if (def.special === 'freeze') {
       let frozen = 0;
       for (const z of this.zombies) {
-        if (z.dead) continue;
+        if (z.dead || (z.floor ?? 0) !== sf) continue;
         const d = dist(x, y, z.pos.x, z.pos.y);
         if (d > def.freezeR) continue;
         z.frozen = def.freezeTime;
@@ -2148,10 +2194,12 @@ export class Game {
   /** What a given body could reach right now: prices and reach are per
    *  player, since four of you are carrying four wallets. */
   interactionFor(p = this.player) {
+    const floor = p.floor ?? this.map.floor;
+    const F = this.map.floors[floor];
     let best = null;
     const offer = (o) => { if (!best || o.d < best.d) best = o; };
 
-    for (const wb of this.map.wallBuys) {
+    for (const wb of F.wallBuys) {
       const d = dist(p.pos.x, p.pos.y, wb.x, wb.y);
       if (d >= 30) continue;
       const def = WEAPONS[wb.weapon];
@@ -2160,14 +2208,14 @@ export class Game {
       offer({ type: 'wallbuy', weapon: wb.weapon, price, affordable: p.points >= price, d, wb });
     }
 
-    for (const pd of this.map.rangePads ?? []) {
+    for (const pd of F.rangePads ?? []) {
       const d = dist(p.pos.x, p.pos.y, pd.x, pd.y);
       if (d < 30) {
         offer({ type: 'pad', pad: pd, d, price: 0, affordable: true });
       }
     }
 
-    for (const g of this.map.grenadeCrates) {
+    for (const g of F.grenadeCrates) {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
         offer({
@@ -2178,19 +2226,19 @@ export class Game {
       }
     }
 
-    for (const dr of this.map.doors) {
+    for (const dr of F.doors) {
       if (dr.open) continue;
       const d = dist(p.pos.x, p.pos.y, dr.cx, dr.cy);
       if (d < 34) offer({ type: 'door', door: dr, price: dr.price, affordable: p.points >= dr.price, d });
     }
 
-    const nearB = this.map.nearestBarricade(p.pos.x, p.pos.y, 34, false);
+    const nearB = this.map.nearestBarricade(p.pos.x, p.pos.y, 34, false, floor);
     if (nearB) {
       const d = dist(p.pos.x, p.pos.y, nearB.cx, nearB.cy);
       if (d < 34) offer({ type: 'barricade', barricade: nearB, d, affordable: true, price: 0 });
     }
 
-    for (const ps of this.map.perkSpots) {
+    for (const ps of F.perkSpots) {
       const d = dist(p.pos.x, p.pos.y, ps.x, ps.y);
       if (d >= 40) continue;
       const def = PERKS[ps.id];
@@ -2214,24 +2262,24 @@ export class Game {
       });
     }
 
-    if (this.map.powerSwitch) {
-      const dps = dist(p.pos.x, p.pos.y, this.map.powerSwitch.x, this.map.powerSwitch.y);
+    if (F.powerSwitch) {
+      const dps = dist(p.pos.x, p.pos.y, F.powerSwitch.x, F.powerSwitch.y);
       if (dps < 36) offer({ type: 'power', d: dps, price: 0, affordable: !this.powerOn });
     }
 
-    const wb = this.map.workbench;
+    const wb = F.workbench;
     if (wb) {
       const dwb = dist(p.pos.x, p.pos.y, wb.x, wb.y);
       if (dwb < 40) offer({ type: 'workbench', d: dwb, price: 0, affordable: true });
     }
 
-    for (const c of this.map.cacheSpots ?? []) {
+    for (const c of F.cacheSpots ?? []) {
       if (c.taken) continue;
       const d = dist(p.pos.x, p.pos.y, c.x, c.y);
       if (d < 34) offer({ type: 'cache', cache: c, d, price: 0, affordable: true });
     }
 
-    const nt = this.traps.nearest(p.pos.x, p.pos.y, 46, this.map.floor);
+    const nt = this.traps.nearest(p.pos.x, p.pos.y, 46, floor);
     if (nt) {
       offer({
         type: 'trap', i: nt.i, d: dist(p.pos.x, p.pos.y, nt.x, nt.y),
@@ -2239,7 +2287,7 @@ export class Game {
       });
     }
 
-    const dpp = this.map.papSpot ? dist(p.pos.x, p.pos.y, this.map.papSpot.x, this.map.papSpot.y) : 1e9;
+    const dpp = F.papSpot ? dist(p.pos.x, p.pos.y, F.papSpot.x, F.papSpot.y) : 1e9;
     if (dpp < 44) {
       const id = p.current;
       const already = p.packed.has(id);
@@ -2250,7 +2298,7 @@ export class Game {
       });
     }
 
-    for (const sw of this.map.secretSwitches ?? []) {
+    for (const sw of F.secretSwitches ?? []) {
       const d = dist(p.pos.x, p.pos.y, sw.x, sw.y);
       if (d < 32) offer({ type: 'switch', sw, d, price: 0, affordable: !sw.found });
     }
@@ -2269,7 +2317,7 @@ export class Game {
     }
 
     if (this.map.secretDoorOpen) {
-      for (const l of this.map.secretLoot) {
+      for (const l of F.secretLoot) {
         const d = dist(p.pos.x, p.pos.y, l.x, l.y);
         if (d < 30) offer({ type: 'loot', loot: l, d, price: 0, affordable: true });
       }
@@ -2310,6 +2358,7 @@ export class Game {
       p.points -= it.price;
       it.door.open = true;
       this.stats.doors++;
+      this.recordRound('doors');
       this.say('door');   // round ten onwards, on its own cooldown: sometimes he begs
       audio.buy();
       audio.door();
@@ -2348,7 +2397,7 @@ export class Game {
       const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
       if (p.points < it.price || (p[pocket] ?? 0) >= GRENADE_MAX) { audio.deny(); return; }
       p.points -= it.price;
-      p[pocket] = (p[pocket] ?? 0) + 2;
+      p[pocket] = Math.min(GRENADE_MAX, (p[pocket] ?? 0) + 2);
       p.ownThrow[kind] = true;
       audio.buy();
       this.popups.add(p.pos.x, p.pos.y - 26,
@@ -2525,6 +2574,7 @@ export class Game {
       this._rebuildT = 0;
       b.planks++;
       this.stats.planks++;
+      this.recordRound('planks');
       this.addPoints(POINTS_PLANK, b.cx + randRange(-6, 6), b.cy - 6, '#f0d98a', p);
       audio.wood(true);
       this.particles.dust(b.cx, b.cy, randRange(0, TAU), 3);
@@ -2655,7 +2705,8 @@ export class Game {
       const dd = Math.hypot(dx, dy);
       if (dd > 8) { aim = Math.atan2(dy, dx); d = dd; }
     }
-    const speed = Math.max(150, Math.min(700, d * 1.64));
+    this.recordRound('throws');
+    const speed = Math.max(150, Math.min(MAX_THROW_SPEED, Number.isFinite(d) ? d * 1.64 : MAX_THROW_SPEED));
     const floor = p.floor ?? this.map.floor;
     p.vel.x -= Math.cos(aim) * 26;
     p.vel.y -= Math.sin(aim) * 26;
@@ -2674,6 +2725,7 @@ export class Game {
 
   /** Throw a Monkey Bomb from the player's hands -- whoever that player is. */
   throwMonkey(by) {
+    this.recordRound('throws');
     const p = by || this.player;
     const def = WEAPONS.monkeybomb;
     p.slot.mag--;
@@ -2684,15 +2736,17 @@ export class Game {
       Math.cos(p.aim) * speed + p.vel.x * 0.4, Math.sin(p.aim) * speed + p.vel.y * 0.4,
       def, p.floor ?? this.map.floor,
     ));
+    this.monkeys[this.monkeys.length - 1].owner = p;
     this._monkeyKills = 0;
     audio.shot('throw', 0);
   }
 
   /** Thunder Gun: a cone of concussive force, no hitscan. */
   fireShockwave(ox, oy, angle, def, by = null) {
+    const floor = by?.floor ?? this.map.floor;
     let hit = 0;
     for (const z of this.zombies) {
-      if (z.dead) continue;
+      if (z.dead || (z.floor ?? 0) !== floor) continue;
       const dx = z.pos.x - ox, dy = z.pos.y - oy;
       const d = Math.hypot(dx, dy);
       if (d > def.shockRange) continue;
@@ -2700,7 +2754,7 @@ export class Game {
       while (da > Math.PI) da -= TAU;
       while (da < -Math.PI) da += TAU;
       if (Math.abs(da) > def.shockAngle) continue;
-      if (this.map.lineBlocked(ox, oy, z.pos.x, z.pos.y)) continue;
+      if (this.map.lineBlocked(ox, oy, z.pos.x, z.pos.y, floor)) continue;
       const falloff = 1 - (d / def.shockRange) * 0.45;
       const res = z.hurt(def.shockDmg * falloff, false, this, Math.atan2(dy, dx), by);
       z.vel.x += Math.cos(Math.atan2(dy, dx)) * def.shockPush * falloff;
@@ -2716,7 +2770,8 @@ export class Game {
 
   /** Shared explosion: grenades, Monkey Bombs, Ray Gun splashes. */
   explodeAt(x, y, r, dmg, opts = {}) {
-    const p = this.player;
+    const p = opts.owner ?? this.player;
+    const floor = opts.floor ?? this.fxFloor;
     audio.explosion();
     this.shake(opts.shake ?? 10, 0.4);
     this.explosionLights.push({ x, y, r: r * 2.6, life: 0.42, max: 0.42, colour: opts.colour, f: this.fxFloor });
@@ -2729,20 +2784,20 @@ export class Game {
       if (z.dead) continue;
       const d = dist(x, y, z.pos.x, z.pos.y);
       if (d > r) continue;
+      if ((z.floor ?? 0) !== floor) continue;
       if (opts.blast && this.tryCrawl(z)) continue;
       const falloff = 1 - d / r;
-      if ((z.floor ?? 0) !== this.map.floor) continue;
       const res = z.hurt(dmg * falloff, false, this, Math.atan2(z.pos.y - y, z.pos.x - x));
       if (res === 2) this.onZombieKilled(z, false, null, opts.fromPlayer ? 'monkey' : 'blast');
     }
 
     // the furniture takes its share: a totem or a headstone near a blast
     // does not get to sit it out
-    this.hurtHaunts(x, y, r, Math.min(dmg, 320), this.map.floor);
+    this.hurtHaunts(x, y, r, Math.min(dmg, 320), floor);
 
     // self-damage: normal grenades hurt you, PhD Flopper says otherwise
     const pd = dist(x, y, p.pos.x, p.pos.y);
-    if (pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
+    if ((p.floor ?? 0) === floor && pd < r && opts.fromPlayer !== false && !p.perkFx.splashImmune) {
       p.hurt(Math.round(75 * (1 - pd / r)), x, y, this);
     } else if (pd < r && p.perkFx.diveBlast) {
       p.heal(0);
@@ -2768,6 +2823,7 @@ export class Game {
       return false;
     }
     this.workbench.craft(this, id, p);
+    this.recordRound('crafted');
     if (p === this.player) {
       this.stats.crafted++;
       if (this.stats.crafted >= 5) this.achievements.unlock('master_crafter');
@@ -2912,6 +2968,16 @@ export class Game {
 
   debugRows() {
     if (this.debugTab === 1) return this._zooRows();
+    if (this.debugTab === 2) return [
+      { id: 'music:stop', label: 'STOP / ADAPTIVE SCORE', value: 'STOP' },
+      { id: 'music:mode', label: 'AFTER THE TRACK', value: (audio.musicMode ?? 'repeat').toUpperCase() },
+      { id: 'music:volume', label: 'MUSIC VOLUME (cycle)', value: `${settings.get('music')}%` },
+      { id: 'music:victory', label: 'EVACUATION FANFARE', value: '0:18' },
+      { id: 'music:forward', label: 'SEEK FORWARD 60 SECONDS', value: '+1:00' },
+      { id: 'music:back', label: 'SEEK BACK 60 SECONDS', value: '-1:00' },
+      ...SOUNDTRACKS.map((t, i) => ({ id: `music:${t.id}`, label: `${String(i + 1).padStart(2, '0')} ${t.title}`,
+        value: audio.soundtrack?.current?.id === t.id ? `${musicTime(audio.soundtrack.elapsed)} / ${musicTime(t.duration)}` : musicTime(t.duration) })),
+    ];
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
     return [
@@ -2939,6 +3005,23 @@ export class Game {
   /** Do the thing on that row. `remote` is a guest's body: the row runs on
    *  the host, but the buff belongs to whoever pressed it. */
   _debugRun(id, remote) {
+    if (id.startsWith('music:')) {
+      if (remote) return; // auditions are always local, never a remote cheat
+      const choice = id.slice(6);
+      if (choice === 'stop') audio.stopSoundtrack();
+      else if (choice === 'victory') { audio.resume(); audio.victory(); }
+      else if (choice === 'forward' || choice === 'back') {
+        audio.soundtrack?.seek(audio.soundtrack.elapsed + (choice === 'forward' ? 60 : -60));
+      } else if (choice === 'mode') {
+        const modes = ['repeat', 'playlist', 'once'];
+        audio.musicMode = modes[(modes.indexOf(audio.musicMode ?? 'repeat') + 1) % modes.length];
+        if (audio.soundtrack) audio.soundtrack.mode = audio.musicMode;
+      } else if (choice === 'volume') {
+        settings.set('music', (Math.floor(settings.get('music') / 25) * 25 + 25) % 125);
+        audio.setVolumes({ music: settings.get('music') });
+      } else audio.playSoundtrack(choice);
+      return;
+    }
     const p = remote ?? this.player;
     if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
     switch (id) {
@@ -3159,7 +3242,7 @@ export class Game {
       }
     }
     if (this.debugOpen) {
-      const rows = this.debugRows();
+      let rows = this.debugRows();
       const n = rows.length;
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.debugIndex = (this.debugIndex - 1 + n) % n; audio.dryFire();
@@ -3168,7 +3251,7 @@ export class Game {
         this.debugIndex = (this.debugIndex + 1) % n; audio.dryFire();
       }
       // left and right move between the tabs, and reset the cursor with them
-      const tabs = 2;
+      const tabs = DEBUG_TABS.length;
       if (this.input.wasPressed('ArrowLeft', 'KeyQ')) {
         this.debugTab = (this.debugTab - 1 + tabs) % tabs;
         this.debugIndex = 0; audio.dryFire();
@@ -3188,9 +3271,10 @@ export class Game {
         : debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
       if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
+        rows = this.debugRows();
         const row = rows[this.debugIndex] ?? rows[0];
         if (row) {
-          if (this.net?.playing && !this.net.isHost) {
+          if (this.net?.playing && !this.net.isHost && !row.id.startsWith('music:')) {
             // the guest's panel is a remote control: the world lives on the
             // host, so the row runs there (GOD arms your own body only)
             this.net.send(this.net.hostId, { m: 'dbg', id: row.id });
@@ -3204,6 +3288,16 @@ export class Game {
       }
       this.hud.update(dt, this);
       return;
+    }
+
+    if (this.roundReport && !this.roundActive && !this.gameOver && !this.paused) {
+      const r = roundReportPanel(VW, VH), m = this.input.mouse;
+      const close = this._reportHidden !== this.roundReport.round && m.pressed
+        && m.x >= r.x + r.cw - 32 && m.x <= r.x + r.cw - 3 && m.y >= r.y + 4 && m.y <= r.y + 32;
+      if (this.input.wasPressed('Tab') || close) {
+        this._reportHidden = this._reportHidden === this.roundReport.round ? null : this.roundReport.round;
+        if (close) { m.pressed = false; m.down = false; }
+      }
     }
 
     // ---- a guest runs no simulation at all: it draws what the host says ---
@@ -3297,6 +3391,7 @@ export class Game {
     // ---- co-op: the host also drives every body that joined ---------------
     this._fxOn(this.player);
     if (this.net?.active) this.net.step(dt);
+    this._fxOn(this.player);
 
     // ---- workbench craft menu ---------------------------------------------
     // While it is up it swallows the digits, the arrows and the pointer, so
@@ -3336,6 +3431,7 @@ export class Game {
       // medkit
       if (this.input.wasPressed('KeyH')) {
         if (this.player.useMedkit()) {
+          this.recordRound('medkits');
           audio.chime();
           this.popups.add(this.player.pos.x, this.player.pos.y - 26, '+55 HEALTH', '#63c74d', 12);
         }
@@ -3346,8 +3442,8 @@ export class Game {
     this.updateAimTarget();
     this.updateInteraction();
     // ---- co-op: pick somebody up, or get on with buying things ------------
-    const fallen = this.players.find((o) => o !== this.player && o.downed && !o.dead
-      && dist(this.player.pos.x, this.player.pos.y, o.pos.x, o.pos.y) < 40);
+    const fallen = this.fallenNear(this.player);
+    if (this.reviveTarget !== fallen) this._reviveT = 0;
     this.reviveTarget = fallen ?? null;
     if (fallen && !this.player.downed && !this.player.dead && this.input.isDown('KeyF')) {
       this._reviveT = (this._reviveT ?? 0) + dt;
@@ -3368,6 +3464,7 @@ export class Game {
 
     // ---- waves -------------------------------------------------------------
     if (this.roundActive) {
+      this.recordRound('seconds', dt);
       const plan = this.roundPlan(this.round);
       const aliveCount = this.zombies.filter((z) => !z.dead).length;
       if (this.zombiesSpawned < this.zombiesTotal) {
@@ -3476,12 +3573,13 @@ export class Game {
     // ---- power-ups ---------------------------------------------------------
     for (const pu of this.powerups) pu.update(dt);
     for (const pu of this.powerups) {
-      if ((pu.f ?? 0) !== this.map.floor) continue;
+      if (pu.dead) continue;
       for (const pl of this.players ?? []) {
         if (!pl || pl.dead || pl.downed || pl.evac) continue;
         if ((pl.floor ?? 0) !== (pu.f ?? 0)) continue;
         if (dist(pu.x, pu.y, pl.pos.x, pl.pos.y) < 24) {
           pu.dead = true;
+          this._fxOn(pl);
           this.collectPowerup(pu, pl);
           break;
         }
@@ -3533,11 +3631,12 @@ export class Game {
       const r = this.rifts[i];
       r.life -= dt;
       if (r.life <= 0) { this.rifts.splice(i, 1); continue; }
+      this._fxOn({ floor: r.f ?? 0 });
       r.tick += dt;
       if (r.tick >= 0.4) {
         r.tick -= 0.4;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (r.f ?? 0)) continue;
           if (dist(r.x, r.y, z.pos.x, z.pos.y) > r.r + z.r) continue;
           const res = z.hurt(r.dmg, false, this, randRange(0, TAU));
           if (res === 2) this.onZombieKilled(z, false);
@@ -3548,18 +3647,18 @@ export class Game {
     // ---- fire and gas -----------------------------------------------------
     this.inFire = 0;
     this.inGas = 0;
-    const p = this.player;
     for (let i = this.fires.length - 1; i >= 0; i--) {
       const f = this.fires[i];
       f.life -= dt;
       if (f.life <= 0) { this.fires.splice(i, 1); continue; }
+      this._fxOn({ floor: f.f ?? 0 });
       // cooks zombies properly, and you if you stand in it
       f.tick += dt;
       const stepT = 0.25;
       while (f.tick >= stepT) {
         f.tick -= stepT;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (f.f ?? 0)) continue;
           if (dist(f.x, f.y, z.pos.x, z.pos.y) > f.r + z.r) continue;
           const res = z.hurt(90 * stepT, false, this, randRange(0, TAU));
           z.burning = Math.max(z.burning ?? 0, 2.2);
@@ -3567,9 +3666,11 @@ export class Game {
           if (res === 2) this.onZombieKilled(z, false, null, 'fire');
         }
       }
-      if (!p.dead && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
-        this.inFire = 1;
-        this.scorchPlayer(20 * dt, this, f.owner);
+      for (const p of this.players) {
+        if (!p.dead && (p.floor ?? 0) === (f.f ?? 0) && dist(f.x, f.y, p.pos.x, p.pos.y) < f.r + p.r) {
+          if (p === this.player) this.inFire = 1;
+          this.scorchPlayer(20 * dt, this, f.owner, p);
+        }
       }
       f.puff -= dt;
       if (f.puff <= 0) {
@@ -3583,13 +3684,14 @@ export class Game {
       const g = this.gases[i];
       g.life -= dt;
       if (g.life <= 0) { this.gases.splice(i, 1); continue; }
+      this._fxOn({ floor: g.f ?? 0 });
       g.drift += dt * 0.3;
       // zombies choke in it; a thrown pot also bites a little
       g.tick = (g.tick ?? 0) + dt;
       while (g.tick >= 0.5) {
         g.tick -= 0.5;
         for (const z of this.zombies) {
-          if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
+          if (z.dead || (z.floor ?? 0) !== (g.f ?? 0)) continue;
           if (dist(g.x, g.y, z.pos.x, z.pos.y) > g.r + z.r) continue;
           z.webbed = Math.max(z.webbed ?? 0, 0.45);
           if (g.owner) {
@@ -3598,9 +3700,11 @@ export class Game {
           }
         }
       }
-      if (!p.dead && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
-        this.inGas = 1;
-        this.scorchPlayer(11 * dt, this, g.owner);
+      for (const p of this.players) {
+        if (!p.dead && (p.floor ?? 0) === (g.f ?? 0) && dist(g.x, g.y, p.pos.x, p.pos.y) < g.r + p.r) {
+          if (p === this.player) this.inGas = 1;
+          this.scorchPlayer(11 * dt, this, g.owner, p);
+        }
       }
       g.puff -= dt;
       if (g.puff <= 0) {
@@ -3610,6 +3714,7 @@ export class Game {
       }
     }
 
+    this._fxOn(this.player);
     this._stepHaunts(dt);
     this._heliStep(dt);
 
@@ -4147,6 +4252,7 @@ export class Game {
     net.step(dt);
     // bells, hums, snowballs and the rain on the glass: the timers and the
     // kinematics are the guest's to run, the consequences are not (isAuth)
+    this._fxOn(this.player);
     this._stepHaunts(dt);
     this._heliStep(dt);
     if (pl && pl.floor !== undefined && pl.floor !== this.map.floor) {
@@ -4157,13 +4263,14 @@ export class Game {
     // price on a door, no "the box is spinning", no bench -- and presses E on
     // faith while the host does the work somewhere off screen.
     this.updateInteraction();
+    this.updateAimTarget();
     // The bench is the one thing a guest drives for itself: the menu is local,
     // so it opens the instant E goes down with no round trip, and only the
     // building travels (net.js, `m:'craft'`).
     // kneeling over a friend: the host owns the revive, the guest owns the bar
     if (pl && !pl.dead && !pl.downed && this.input?.isDown('KeyF')) {
-      const fallen = this.players.find((o) => o !== pl && o.downed && !o.dead
-        && dist(pl.pos.x, pl.pos.y, o.pos.x, o.pos.y) < 40);
+      const fallen = this.fallenNear(pl);
+      if (this.reviveTarget !== fallen) this._reviveT = 0;
       if (fallen) {
         this.reviveTarget = fallen;
         this.reviveNeed = pl.perks?.has('quickrevive') ? 5 : 10;
@@ -4362,6 +4469,7 @@ export class Game {
     this.drawSecretSwitches(ctx);
     this.drawSecretLoot(ctx);
     this.drawSupplies(ctx);
+    this.drawCaches(ctx);
     if (!this.rangeMode && this.map.floor === HELI_PAD.f) {
       this.drawHeliPad(ctx);
       this.drawRoofBeacons(ctx);
@@ -4595,6 +4703,11 @@ export class Game {
     // sells guns reads through the pre-power gloom and never looks like
     // a second piece of furniture
     this.box.drawBeacon(ctx, this.time, camX, camY);
+    // Small battery-lit cache markings remain readable before generator power.
+    ctx.save();
+    ctx.translate(-camX, -camY);
+    this.drawCaches(ctx, true);
+    ctx.restore();
 
     // 10b. DLSS5's grade over the lit scene: warm highlights, pushed contrast,
     // a touch of film grain. Cheap full-screen blits, only when it is switched
@@ -4988,19 +5101,17 @@ export class Game {
       const x = d.tx * T, y = d.ty * T;
       const hz = d.horizontal;
       if (d.open) {
-        // doorway: a dark threshold, and the leaf swung flat against the wall
-        ctx.fillStyle = 'rgba(10,10,14,0.55)';
-        ctx.fillRect(x, y, T, T);
+        // Keep the aperture bare. The jambs line its sides; the leaf is parked
+        // on the adjacent wall tile, beyond the hinge, never in the walking lane.
         ctx.fillStyle = '#3f2a17';
-        if (hz) { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
-        else { ctx.fillRect(x - 1, y, 2, T); ctx.fillRect(x + T - 1, y, 2, T); }
-        const side = hz ? (d.ty % 2 ? y + 1 : y + T - 5) : (d.tx % 2 ? x + 1 : x + T - 5);
+        if (hz) { ctx.fillRect(x - 1, y, 2, T); ctx.fillRect(x + T - 1, y, 2, T); }
+        else { ctx.fillRect(x, y - 1, T, 2); ctx.fillRect(x, y + T - 1, T, 2); }
         ctx.fillStyle = '#5a3d22';
-        if (hz) ctx.fillRect(x + 2, side, T - 4, 4);
-        else ctx.fillRect(side, y + 2, 4, T - 4);
-        ctx.fillStyle = '#7a5730';
-        if (hz) ctx.fillRect(x + 2, side, T - 4, 1);
-        else ctx.fillRect(side, y + 2, 1, T - 4);
+        if (hz) ctx.fillRect(x - T + 2, y + 2, T - 4, 4);
+        else ctx.fillRect(x + 2, y - T + 2, 4, T - 4);
+        ctx.fillStyle = '#a07a46';
+        if (hz) ctx.fillRect(x - T + 2, y + 2, T - 4, 1);
+        else ctx.fillRect(x + 2, y - T + 2, 1, T - 4);
         continue;
       }
       // closed: a real paneled door standing in a frame -- it used to be a
@@ -5011,8 +5122,7 @@ export class Game {
       ctx.fillStyle = '#6b4a2b';                      // the slab
       ctx.fillRect(x, y, T, T);
       ctx.fillStyle = 'rgba(48,30,14,0.45)';          // grain, along the slab
-      if (hz) { ctx.fillRect(x, y + 7, T, 1); ctx.fillRect(x, y + 16, T, 1); }
-      else { ctx.fillRect(x + 7, y, 1, T); ctx.fillRect(x + 16, y, 1, T); }
+      ctx.fillRect(x + 7, y, 1, T); ctx.fillRect(x + 16, y, 1, T);
       const panel = (px, py, pw, ph) => {             // two recessed panels
         ctx.fillStyle = '#4a3018';
         ctx.fillRect(px, py, pw, ph);
@@ -5022,15 +5132,13 @@ export class Game {
         ctx.fillRect(px + 1, py + ph - 2, pw - 2, 1);
         ctx.fillRect(px + pw - 2, py + 1, 1, ph - 2);
       };
-      if (hz) { panel(x + 3, y + 3, 8, T - 6); panel(x + 13, y + 3, 8, T - 6); }
-      else { panel(x + 3, y + 3, T - 6, 8); panel(x + 3, y + 13, T - 6, 8); }
+      // Fixed camera: every closed slab reads front-on, regardless of wall axis.
+      panel(x + 3, y + 3, T - 6, 8); panel(x + 3, y + 13, T - 6, 8);
       ctx.fillStyle = '#20222a';                      // hinges
-      if (hz) { ctx.fillRect(x + 1, y + 2, 2, 3); ctx.fillRect(x + 1, y + T - 5, 2, 3); }
-      else { ctx.fillRect(x + 2, y + 1, 3, 2); ctx.fillRect(x + T - 5, y + 1, 3, 2); }
+      ctx.fillRect(x + 1, y + 2, 2, 3); ctx.fillRect(x + 1, y + T - 5, 2, 3);
       ctx.fillStyle = '#c9a24a';                      // the brass knob
       ctx.beginPath();
-      if (hz) ctx.arc(x + T - 4, y + T / 2, 1.7, 0, Math.PI * 2);
-      else ctx.arc(x + T / 2, y + T - 4, 1.7, 0, Math.PI * 2);
+      ctx.arc(x + T - 4, y + T / 2, 1.7, 0, Math.PI * 2);
       ctx.fill();
       // price tag -- a Jammer takes the numbers off everything you buy
       const p = this.player;
@@ -5527,7 +5635,7 @@ export class Game {
    * the flow field; this carries the rust.
    */
   drawWrecks(ctx) {
-    // ---- the car, tiles (30..31, 46): a burnt sedan, nose to the west -----
+    // ---- car: enlarged hull collision at tiles (28..33, 45..47) ----------
     {
       const x = 31 * T, y = 46.5 * T;
       if (this._vis(x, y, 110)) {
@@ -5590,7 +5698,7 @@ export class Game {
         ctx.restore();
       }
     }
-    // ---- the tank, tiles (63..65, 43..44): hull, turret, a thrown track ---
+    // ---- tank: enlarged hull collision at tiles (61..67, 42..45) ----------
     {
       const x = 64.5 * T, y = 44 * T;
       if (this._vis(x, y, 120)) {
@@ -5655,6 +5763,34 @@ export class Game {
         ctx.fillRect(-16, -10, 12, 20);
         ctx.restore();
       }
+    }
+  }
+
+  drawCaches(ctx, markerOnly = false) {
+    for (const c of this.map.cacheSpots ?? []) {
+      if (c.taken || !this._vis(c.x, c.y, 40)) continue;
+      ctx.save();
+      if (!markerOnly) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(c.x - 11, c.y + 4, 22, 4);
+        ctx.fillStyle = '#293b36';
+        ctx.fillRect(c.x - 10, c.y - 8, 20, 14);
+        ctx.fillStyle = '#607d67';
+        ctx.fillRect(c.x - 10, c.y - 8, 20, 4);
+        ctx.strokeStyle = '#d8c88d'; ctx.lineWidth = 1;
+        ctx.strokeRect(c.x - 9.5, c.y - 7.5, 19, 13);
+        ctx.fillStyle = '#c8b36c';
+        ctx.fillRect(c.x - 8, c.y - 8, 2, 14);
+        ctx.fillRect(c.x + 6, c.y - 8, 2, 14);
+      } else {
+        ctx.globalAlpha = 0.8 + Math.sin(this.time * 3 + c.x) * 0.15;
+        ctx.fillStyle = '#f2e2a4';
+        ctx.fillRect(c.x - 1, c.y - 5, 2, 8);
+        ctx.fillRect(c.x - 4, c.y - 2, 8, 2);
+        ctx.strokeStyle = '#d7c780'; ctx.lineWidth = 1;
+        ctx.strokeRect(c.x - 11.5, c.y - 9.5, 23, 17);
+      }
+      ctx.restore();
     }
   }
 
@@ -5797,7 +5933,7 @@ export class Game {
 
   drawPowerups(ctx) {
     for (const pu of this.powerups) {
-      if ((pu.f ?? 0) !== this.map.floor) continue;
+      if (pu.dead) continue;
       if (this._vis(pu.x, pu.y, 40)) pu.draw(ctx);
     }
   }

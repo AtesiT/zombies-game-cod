@@ -7,8 +7,17 @@
   "scripts": {
     "start": "node server.mjs 8080",
     "map": "python3 tools/genmap.py",
-    "sprites": "node tools/preview.mjs tools/sprites_preview.png"
+    "sprites": "node tools/preview.mjs tools/sprites_preview.png",
+    "test": "node --test tests/*.test.mjs tools/harness/*.test.mjs",
+    "test:regression": "node tools/harness/regression.mjs"
   },
-  "keywords": ["game", "zombies", "canvas", "pixel-art", "top-down", "call-of-duty"],
+  "keywords": [
+    "game",
+    "zombies",
+    "canvas",
+    "pixel-art",
+    "top-down",
+    "call-of-duty"
+  ],
   "license": "MIT"
 }

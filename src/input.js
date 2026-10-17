@@ -38,10 +38,16 @@ export class Input {
     };
     window.addEventListener('keydown', (e) => onKey(e, true));
     window.addEventListener('keyup', (e) => onKey(e, false));
-    window.addEventListener('blur', () => { this.keys.clear(); this.mouse.down = false; });
+    window.addEventListener('blur', () => {
+      this.keys.clear(); this.pressed.clear(); this.released.clear();
+      this.mouse.down = this.mouse.rdown = this.mouse.pressed = this.mouse.released = false;
+      this.stick.x = this.stick.y = 0;
+      this.wheel = 0; this.anyInput = false;
+    });
 
     const toLocal = (e) => {
       const r = canvas.getBoundingClientRect();
+      if (!r.width || !r.height) return;
       this.mouse.cx = e.clientX - r.left;
       this.mouse.cy = e.clientY - r.top;
       this.mouse.x = (this.mouse.cx / r.width) * this.vw;

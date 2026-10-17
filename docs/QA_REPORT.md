@@ -1,0 +1,349 @@
+# Game QA and security audit — 2026-10-16
+
+## Executive summary
+
+**11 finding groups fixed**, spanning relay security, malformed input, transport lifecycle, multi-floor combat, co-op revival, persistence, focus handling, kill accounting and unreliable test fixtures.
+
+Final verification:
+
+- **20/20 new regression tests pass** (`npm test`).
+- **48/48 selected historical harness suites pass** (`npm run test:regression`). The runner checks output as well as exit status because some old tests print FAIL but exit successfully.
+- An additional decal-rendering suite passes.
+- **10 selected new tests fail against the original source** in an independent extraction of the starting commit, confirming the tests detect the original defects rather than only exercising the fixes. The transport-race test was excluded from that comparison because the original leaked interval prevents clean exit.
+- A 90-second simulation/render soak reports **0 exceptions and no non-finite state**. Sampled JS heap: 15, 20, 16 and 25 MB at 20/40/60/80 simulated seconds; final heap 31 MB. This is a short observation, not proof that all memory is leak-free.
+- A separate 40-second lighting-cache run settles at **0 new canvases/frame and 0 gradients/frame** after warmup; its allocation counter stabilizes at about 47.1 MB and JS heap at 18 MB. That counter measures canvas allocation activity, not measured retained memory.
+- Round-20 native software-canvas median frame times: HIGH **11.24 ms**, MEDIUM **9.66 ms**, LOW **8.73 ms**. Simulation cost per simulated second: 60 Hz **16.37 ms**, 120 Hz **17.10 ms**. These are environment-specific diagnostics, not browser/GPU performance guarantees.
+- ESLint `no-undef`, `no-unreachable`, and `no-constant-condition` checks pass on runtime modules, server and sprite-preview tool with browser/Node globals declared. `git diff --check` passes. Harness dependency audit reports **0 known vulnerabilities**.
+
+## Architecture and review scope
+
+The project has roughly 22,600 lines across runtime code, documentation and top-level tooling, in addition to the historical harness.
+
+| Area | Entry points / responsibilities | Review and verification |
+|---|---|---|
+| Boot/input | `index.html`, `styles.css`, `main.js`, `input.js`, `touch.js` | Logical/backing-store scaling, fixed-step loop, focus lifecycle, desktop/touch/menu harnesses |
+| Simulation | `game.js`, `entities.js` | Rounds, combat, movement, interactions, revival, damage, cleanup; repeated targeted review of changed paths |
+| World | `map.js`, `mapData.js` | Collision, DDA raycasts, flow fields, stairs, floor ownership; openings/reachability/stress suites |
+| Mechanics | `weapons.js`, `perks.js`, `powerups.js`, `crafting.js`, `mysterybox.js`, `traps.js`, `haunts.js` | State transitions, money/usefulness checks, bounds, floor isolation, rendering and co-op tests |
+| Presentation | `art.js`, `spriteData.js`, `lighting.js`, `hud.js`, `audio.js` | Static checks and render/audio-mock harnesses; cache/load measurements |
+| Persistence | `settings.js`, `achievements.js` | Malformed JSON shapes, invalid values, unavailable storage behavior and score submission |
+| Network | `net.js`, `server.mjs` | Peer authority, input fuzzing, framing, fragmented UTF-8, HTTP access, timeout/reconnect cleanup, live relay tests |
+| Tooling/docs | `package.json`, `.gitignore`, `tools/genmap.py`, `tools/preview.mjs`, README, docs, harness manifests/scripts | Tool contracts and documented caveats; deterministic fixtures and repeatable test runner |
+
+Critical paths mapped: boot → menu → begin/reset → round progression; input → player → combat/interactions → rewards; floor links → collision/flow/effects; guest input → relay → host simulation → snapshots/events → guest rendering; localStorage → settings/leaderboard; connection → admission → timeout/close/reconnect.
+
+Risk-led iterations: baseline gameplay suites; network/filesystem review and adversarial regressions; cross-reference floor-context usage throughout combat; re-examine changed code and fixtures; run broad regressions and soak/load diagnostics; final diff/static checks. This is a scoped multi-pass audit, **not a claim of the requested multi-hour schedule or twice reading every line of every file**.
+
+## Detailed findings
+
+### [BUG #1] Severity: HIGH
+
+**Location:** `server.mjs:36` (HTTP handler)
+
+**Type:** Security / Availability
+
+**Description:** The HTTP server exposed repository files, including `.git/HEAD`, and malformed percent escapes could throw outside an error boundary and terminate the server.
+
+**Reproduction Steps:** Request `/.git/HEAD` or `/server.mjs`; separately request `/%` over raw HTTP, then try to load the game again.
+
+**Root Cause:** The repository root doubled as the public document root; URL decoding ran without a catch.
+
+**Fix Applied:** Explicit allowlist for `index.html`, `styles.css`, and direct runtime `src/*.js` assets; reject traversal, backslashes, NULs and noncanonical/symlink paths. Malformed decoding returns 400. Unsupported methods return 405; HEAD and `nosniff` are handled. Port configuration is validated, including ephemeral port 0.
+
+**Tests Added:** Private-file/traversal/NUL/malformed-path requests, public-file availability, methods and post-error server liveness in `tests/relay.test.mjs`.
+
+**Similar Issues Found:** The custom WebSocket parser also needed explicit resource and protocol bounds (BUG #9).
+
+### [BUG #2] Severity: HIGH
+
+**Location:** `src/net.js:67`, `src/net.js:532`, `server.mjs:278`
+
+**Type:** Security / Input validation / Simulation integrity
+
+**Description:** A guest could send another guest host-only application messages such as `full`, `welcome` or `snap`. Malformed input arrays could throw in the host, nonnumeric movement could introduce NaN, and a huge finite aim angle could make repeated angle-normalization loops effectively nonterminating.
+
+**Reproduction Steps:** With three room members, direct `{m:'full'}` from one guest to another. Send an input message with `k:{}`, `mx:'bad'`, or an aim of `1e300` followed by melee against a nearby enemy.
+
+**Root Cause:** Guest messages were not authenticated against the relay-assigned host ID; host input accepted iterable/numeric assumptions without bounds. Finite alone is insufficient for angles later normalized using repeated addition/subtraction.
+
+**Fix Applied:** Relay restricts guest-directed traffic to the host and reserves broadcasts for the host. Guest accepts application messages only from its assigned host; peer traffic cannot be interpreted as relay control. Movement/wheel require finite numbers; keys use bounded arrays filtered to the supported key set; aim is reduced modulo 2π. Right Shift is included in supported sprint input.
+
+**Tests Added:** Third-peer authority rejection, live relay routing and forged-sender checks; malformed-type/numeric/key fuzzing including huge finite aim and movement vectors.
+
+**Similar Issues Found:** Incoming server JSON also needed to reject null/arrays (BUG #9). The original relay already stripped routing envelopes; no claim of a confirmed relay-envelope overwrite vulnerability is made.
+
+### [BUG #3] Severity: HIGH
+
+**Location:** `src/game.js:1913`, `src/game.js:2047`, `src/game.js:2702`, `src/game.js:2729`, `src/game.js:3563`; `src/entities.js:733`, `src/entities.js:2535`; `src/map.js:549`
+
+**Type:** Logic / Multiplayer / Floor isolation
+
+**Description:** Shared view-floor context was used as simulation-floor context. Fire/gas/rifts could damage enemies on the host's floor instead of their own floor; hazards omitted remote players. Remote gunfire used the host's collision map and targets. Melee, shockwaves and frost could affect enemies across floors. Monkey movement/blasts and remote-floor pickups also used the host view. Decals from offscreen events landed on the host's current floor.
+
+**Reproduction Steps:** Keep host on floor 0; place a guest, hazard or attacker on floor 1, with enemies at matching coordinates on both floors. Fire, knife, freeze or detonate; put both players in a hazard's XY footprint; try collecting a drop upstairs.
+
+**Root Cause:** Calls read mutable `map.floor` or `game.player` instead of the acting body/hazard's floor. Raycast APIs exposed no explicit floor argument. Effect context was not set while stepping remote players.
+
+**Fix Applied:** Floor-aware raycast/bullet-blocking API; attacker floor and perks used for hitscan; explicit filters for melee/shock/frost; hazard-floor targeting and damage for every eligible player; remote-floor pickup processing; monkey-floor collision/blast with owner propagation; check blast floor before crawler mutation; per-floor decal canvas selection. Remote simulation sets its effect context and restores host context afterward.
+
+**Tests Added:** Identically positioned cross-floor targets for hitscan, shock, frost, melee, fire/gas/rifts, pickups and blast; remote hazard damage; monkey collision independent of host map view; per-floor decal storage. Historical stairs, guest walk, combat, light-floor, decals and native render suites also pass.
+
+**Similar Issues Found:** Revival independently used XY-only proximity (BUG #4). Less consequential presentation paths still merit a future full floor-ownership audit; this fix does not claim every offscreen particle/audio event has been isolated.
+
+### [BUG #4] Severity: MEDIUM
+
+**Location:** `src/game.js:658`, `src/game.js:3362`, `src/game.js:4187`; `src/net.js:638`
+
+**Type:** Logic / State transitions
+
+**Description:** Co-op revival could reach through ceilings, and progress accumulated for one patient could complete on another.
+
+**Reproduction Steps:** Put a downed player upstairs at the reviver's XY position and hold F. Alternatively, channel most of a revive, switch to a different nearby downed player, and continue holding F.
+
+**Root Cause:** Range checks ignored floors and channel progress was not tied to patient identity.
+
+**Fix Applied:** Shared same-floor/range/eligibility query; defensive checks at actual revival; reset channel progress whenever the target changes in host, remote-host and guest-display paths.
+
+**Tests Added:** Cross-floor refusal and remote patient-switch reset/completion; historical co-op revival suite.
+
+**Similar Issues Found:** General combat/hazard floor errors (BUG #3).
+
+### [BUG #5] Severity: MEDIUM
+
+**Location:** `src/net.js:167`, `src/net.js:269`
+
+**Type:** Async / Resource lifecycle / UI errors
+
+**Description:** Canceling a connection before it opened did not close the pending WebSocket. Stale callbacks could reopen or overwrite a replacement connection. Reconnects could leave intervals alive. Join rejection text was erased during teardown.
+
+**Reproduction Steps:** Open connection A, cancel/reconnect to B, then deliver A's delayed open/close callback. Reject a join as full or let its welcome timer expire.
+
+**Root Cause:** Only attached transport was retained; callbacks had no connection identity check. Error assignment preceded a close routine that cleared it.
+
+**Fix Applied:** Track and retire raw sockets, invalidate callbacks before close, clear timers and pending queues, ignore stale events and close timed-out attempts. Preserve rejection reasons after teardown.
+
+**Tests Added:** Fake transport delivers saved late open/close callbacks after replacement/cancel; assertions cover selected socket, closed state and destroyed ping timer. Host-only rejection test also checks the error text. Existing real-wire/admission/retry suites pass.
+
+**Similar Issues Found:** Idle relay sockets and outbound backlog needed server-side bounds (BUG #9).
+
+### [BUG #6] Severity: MEDIUM
+
+**Location:** `src/settings.js:117`, `src/settings.js:128`, `src/settings.js:169`
+
+**Type:** Data / Configuration validation
+
+**Description:** Fractional enum values and nonnumeric settings could reach array-indexed rendering/control configuration. A stored string `"false"` enabled toggles.
+
+**Reproduction Steps:** Store `{"lighting":0.5,"touchSize":1.5,"dlss":"false","music":"broken"}` under `ndu.settings.v1`, then reload; or call `set('lighting', NaN)`.
+
+**Root Cause:** Clamping did not enforce finite numeric types or integer indices; boolean coercion treated any nonempty string as true.
+
+**Fix Applied:** One validator for load and set, strict boolean/numeric types, finite numbers, integer rounding and bounds. Invalid persisted values retain defaults.
+
+**Tests Added:** Malformed types, NaN/Infinity, fractional indices, out-of-range clamping and default preservation; settings mouse, quality and performance governor regressions.
+
+**Similar Issues Found:** Leaderboard trusted nested persisted entries (BUG #7).
+
+### [BUG #7] Severity: MEDIUM
+
+**Location:** `src/achievements.js:113`
+
+**Type:** Data / Crash recovery
+
+**Description:** Valid JSON containing invalid leaderboard rows could crash sorting/rendering or corrupt the best-round display.
+
+**Reproduction Steps:** Store `[null,{},"bad"]` under `ndu.leaderboard.v1`, then submit a score/open the board.
+
+**Root Cause:** Only the outer array shape was checked.
+
+**Fix Applied:** Filter entries to finite nonnegative fields, retain only supported fields, normalize evac, sort and cap to ten rows before use.
+
+**Tests Added:** Mixed null/object/string/string-number/valid rows followed by submission and ranking checks.
+
+**Similar Issues Found:** Settings validation (BUG #6); achievement IDs already had an allowlist.
+
+### [BUG #8] Severity: MEDIUM
+
+**Location:** `src/input.js:41`, `src/touch.js:70`, `src/touch.js:535`
+
+**Type:** Input / Focus lifecycle
+
+**Description:** Focus loss cleared left-button/key holds but retained right-button aiming, edge presses and stick state. Touch controls could retain held intent after a tab switch.
+
+**Reproduction Steps:** Hold aim/movement/fire or tap a grenade just before switching tabs; return without receiving the original release event.
+
+**Root Cause:** Blur cleanup covered only part of input state; touch had no blur lifecycle cleanup. Hidden/zero-sized canvas coordinates could divide by zero.
+
+**Fix Applied:** Clear keyboard edges, both mouse holds/edges, wheel and stick on blur; touch clears held controls on blur and unregisters the blur listener on dispose. Zero-sized coordinate conversion is ignored; touch-device probing tolerates missing navigator.
+
+**Tests Added:** Synthetic blur and zero-size coordinates; historical touch, touch-context, boot and settings input suites. Diff review caught and removed an over-broad intermediate edit that would have stopped firing when releasing the movement stick.
+
+**Similar Issues Found:** Connection teardown also omitted pending state (BUG #5).
+
+### [BUG #9] Severity: HIGH
+
+**Location:** `server.mjs:76`, `server.mjs:130`, `server.mjs:238`
+
+**Type:** Security / Resource exhaustion / Protocol correctness
+
+**Description:** WebSocket declared frame sizes, aggregate fragments, fragment count and outbound queued bytes were unbounded. Invalid/unmasked/control frames were accepted. UTF-8 characters split between continuation frames were decoded incorrectly. Upgrade `head` bytes were dropped. Cross-site WebSocket connections could drive a LAN relay from an unrelated site.
+
+**Reproduction Steps:** Send a length header declaring a huge frame without completing it; send many empty fragments; split a Cyrillic player's name between UTF-8 bytes across fragments; coalesce the first message with the HTTP upgrade. Attempt a browser upgrade with a different Origin.
+
+**Root Cause:** Custom framing omitted resource/protocol validation and decoded each fragment separately; upgrade handling ignored Node's buffered bytes.
+
+**Fix Applied:** 1 MiB frame/message limit, 4096-fragment cap, 2 MiB slow-client backlog threshold, 256-socket cap and 45-second idle timeout. Require masking and supported opcodes, validate control frames/handshake version/key, preserve fragment bytes until complete UTF-8 decoding, ignore non-object JSON, process upgrade head, validate supplied browser Origin against the serving host. Ping/pong and metadata are bounded/validated; unknown types no longer accumulate in a global warning-key set.
+
+**Tests Added:** Oversized headers and aggregate fragments, empty-fragment exhaustion, unsupported/unmasked/control frames, interleaved ping with fragmented UTF-8, upgrade head, null/malformed JSON, cross-site/version rejection, same-origin success and 500 rapidly coalesced messages plus byte-split input.
+
+**Similar Issues Found:** HTTP exceptions and private-file exposure (BUG #1). This remains a LAN development relay, not a hardened authenticated public service.
+
+### [BUG #10] Severity: LOW
+
+**Location:** `tools/harness/specials.mjs`, `tools/harness/haunts.mjs`, `tools/harness/net.mjs`; new `tools/harness/regression.mjs`
+
+**Type:** Test reliability / False negatives and false positives
+
+**Description:** Special-enemy fixtures immediately started a new round, invalidating their state assumptions; the mix assertion encoded an obsolete balance threshold. The storm test could reuse an already-flashing storm and require an impossible flash increase. Shot-routing fixtures sometimes aimed through a wall because admission placement is random. Some harness scripts returned success despite printing failures.
+
+**Reproduction Steps:** Run specials on the original code; run the broad suite repeatedly and inspect storm/shot-routing failures and exit statuses.
+
+**Root Cause:** Fixtures leaked live round/weather/random-world state into tests of unrelated behaviors; output and process exit status were inconsistent.
+
+**Fix Applied:** Keep fixture intermission open; assert the current documented contract that walker is the largest individual group rather than changing gameplay balance; start weather from clear sky; find a physically clear lane for shot-routing assertions. Specials now returns failing exit status; the new 48-suite runner checks output, status and timeout.
+
+**Tests Added:** Broad runner passes 48/48; the formerly flaky net suite also passed three consecutive isolated runs after lane isolation. No production balance was changed to satisfy tests.
+
+**Similar Issues Found:** New combat regression fixtures also explicitly remove spawn jitter so a floor-isolation test cannot randomly miss its target.
+
+### [BUG #11] Severity: MEDIUM
+
+**Location:** `src/game.js:1780`
+
+**Type:** Logic / Round and score accounting
+
+**Description:** A nuke counted buried, immune miners as killed even though they survived, causing ghost kills and inaccurate round/stat accounting.
+
+**Reproduction Steps:** Put a miner into `ZSTATE.BURIED`, collect a nuke and compare its alive state with `zombiesKilled`/kill stats.
+
+**Root Cause:** The nuke ignored `hurt()`'s result and unconditionally called the death-accounting callback.
+
+**Fix Applied:** Only account a nuke kill when damage returns the killed result. Existing buried immunity is preserved, rather than silently changing damage design.
+
+**Tests Added:** Buried miner survives without increasing either kill counter; all historical gameplay suites re-run after the fix.
+
+**Similar Issues Found:** Blast floor checks previously occurred after crawler mutation (BUG #3).
+
+## Reproduction commands
+
+Use Node 22 or newer for the built-in WebSocket used by the historical live-network tests.
+
+```sh
+npm ci --prefix tools/harness
+npm test                       # new adversarial + gameplay regressions
+npm run test:regression         # 48 selected historical suites, fail-output aware
+node tools/harness/decals.mjs
+node tools/harness/soak.mjs 90
+node tools/harness/leak.mjs
+node tools/harness/qualityperf.mjs 20
+npm audit --prefix tools/harness
+```
+
+Generated screenshots and detailed diagnostic logs were kept out of Git. The report records observed results, not an assertion that random simulation outcomes or timings will be byte-for-byte identical elsewhere.
+
+## Checklist and remaining limitations
+
+| Requested area | Status |
+|---|---|
+| Input validation | Tested malformed remote controls, keys, values, URLs, JSON and frame headers; not every possible host snapshot schema |
+| Error handling | Tested malformed URLs/frames/storage, disconnects and stale transport events; real OS disk-full and browser device failures not simulated |
+| Async races | Connection replacement/cancel and existing synchronous admission/retry regressions verified; arbitrary network schedules not exhaustively explored |
+| State transitions | Existing rounds, special enemies, crafting, box, stairs, menus, ending and revival suites pass; not a formal state-space proof |
+| External APIs | No third-party HTTP gameplay API found; WebSocket open timeout/close and server idle timeout handled; browser WebAudio rejection behavior still needs device testing |
+| User data/security | No eval/innerHTML injection sink found in runtime review; canvas/textContent-based UI. Relay input, HTTP exposure and browser Origin improved; trusted host snapshots and debug privileges remain trust boundaries |
+| Resources/cleanup | Transport timers/sockets and input blur fixes verified; short soak and bounded lighting-cache allocations observed; no universal leak-free claim |
+| Configuration | Settings types/enums and server port validation tested; all internal developer constructors were not fuzzed |
+| Load/performance | 500-message burst, fragmented framing, existing 12-player cap checks, 60/120 Hz movement, late-round and native-canvas measurements exercised; no public-internet denial-of-service capacity claim |
+| Logs | Selected tests checked for exceptions/FAIL/THREW; static checks clean. Browser console could not be inspected without an installed browser |
+| Browser compatibility | Native canvas and WebAudio mock only. Real Chromium/Firefox/Safari, iOS suspension/autoplay and multitouch hardware remain unverified |
+| Accessibility | Flagged: canvas-only menus lack semantic screen-reader controls; touch controls are div-based; viewport disables zoom, pointer is hidden and visual/audio cues need accessible alternatives. Not remediated by this bug-fix patch |
+
+Additional retained risks / follow-up:
+
+1. The relay intentionally lacks accounts/passwords and allows room members to use debug actions. Do not expose it directly to the public internet. Origin checks are browser protection, not client authentication. Per-IP/message-rate limiting and authenticated admission require a separate deployment design.
+2. Host migration, long background suspension, sustained slow clients, disconnect during every interaction and hostile host snapshots need additional end-to-end browser testing. Output backlog/socket caps reduce resource risk but are not a full rate limiter.
+3. `tools/genmap.py` explicitly warns that generation overwrites hand-maintained map changes; that existing content/tooling drift was not resolved. Do not run `npm run map` on the live map without reviewing/merging the output.
+4. Residual offscreen cosmetic event/particle/audio floor context and full WebAudio resource disposal deserve dedicated follow-up. This audit fixed demonstrated simulation errors, not every possible presentation ownership issue.
+5. The 48-suite runner intentionally selects executable assertion suites. Historical screenshot/benchmark utilities were not all run, and no claim is made that every source line/file received two complete manual reads.
+
+## Follow-up: doors, supplies and combat readability — 2026-10-17
+
+- Closed doors now face the fixed camera consistently. Open-door leaves park on the adjacent wall tile; the middle of the aperture is left clear. Collision still follows the actual doorway axis.
+- All six upstairs supply caches remain on their original reachable floor tiles. Added case artwork and battery-lit markings above the lighting layer. Taken state now synchronizes to guests, including when the host is downstairs.
+- Preserved throwable shop kinds in map construction; upstairs shops offer Molotovs and gas bombs. Purchases cannot overfill the four-item pocket.
+- Capped throw launch speed at 280 world units/second for local and remote throws. Together with existing friction/fuse this keeps unobstructed frag travel below 180 world units, irrespective of far cursor position.
+- Fixed screen-to-world aim conversion, refreshed target detection for guests and changed target crosshair colors to red. Other-floor, dead and wall-occluded enemies do not light it up.
+- Expanded authored vehicle collision tiles to match the enlarged wreck artwork: car `(28..33,45..47)`, tank `(61..67,42..45)`. These masks affect movement, bullets and navigation.
+- Removed only upstairs TABLE tiles; crates, bunks and lockers remain.
+
+Validation: `npm test` **28/28**, including eight new scene/gameplay tests in `tools/harness/scene.test.mjs`. Historical regression runner **48/48**. The first regression run exposed two harness assumptions: old pre-enlargement wreck bounds and radio crates leaking into an isolated supply test; updated those fixtures. Music assertions passed but its live piano scheduler held the test process open; the fixture now stops that timer on completion. After the final aim-head flag cleanup, reran `npm test` (28/28) and the crosshair harness (pass). `git diff --check` is clean.
+
+Inspected a native headless render of the second floor with generator power off. This verifies the cache markings/render path, not browser/GPU behavior or an end-to-end multiplayer play session. Browser play remains a manual check; the local relay/preview can be started with `npm start`.
+
+## Follow-up: pixel achievement badges — 2026-10-17
+
+- Added 37 distinct hand-pixelled achievement badges in `src/achievementIcons.js`.
+  Artwork uses integer-aligned canvas rectangles, no fonts or external images.
+  Every achievement has its own mapped sprite; round medals use pixel digits.
+- List badges use the same silhouette in a muted locked palette and a coloured
+  unlocked palette. Unlock notifications reuse the sprite at 3x scale, with
+  wrapped descriptions. Achievement IDs, conditions and persistent storage keys
+  are unchanged; existing earned progress is preserved.
+- Added future-only run skills and optional field assignments to `docs/IDEAS.md`.
+  No XP, skill effects, new objectives or reward balance were implemented.
+
+Validation: `npm test` **33/33**, including five new badge tests (coverage and
+unique sprites, pixel bounds/scaling/state, locked colours/fallback, saved progress,
+list/toast rendering and complete description wrapping). Targeted harnesses:
+`ach`, `overlay`, `boot`, `touchctx` — pass. Inspected native renders of all 37
+badges, mixed locked/unlocked list and the longest evacuation unlock toast.
+Full historical regression suite and real-browser/device rendering were not rerun
+for this visual-only follow-up. Native canvas quantizes restored alpha and has a
+stale fillStyle getter; tests verify tolerance and actual restored paint instead.
+
+## Follow-up: music listening room, telemetry and evacuation — 2026-10-17
+
+- Third debug tab MUSIC: 20 original procedural scores, 128 bars / eight sections
+  each, 5:20–8:49 per score, ~2 h 22 min total. Different keys, instrumentation,
+  tempos, rhythms, development and codas; no downloaded/licensed audio assets.
+  Local play/stop, repeat/playlist/once, music volume, minute seeking and a victory
+  preview. Playback continues with debug closed; reset restores adaptive music.
+- Look-ahead AudioContext scheduling avoids long buffers, skips stale backlog,
+  disconnects ended voices and cancels old timers/sources on switches. Short
+  output fades avoid hard track cuts. Music/master/mute controls are respected.
+- Independent team telemetry: 20 wave metrics and cumulative run totals. Frozen
+  completed-wave report, 12-second intermission, Tab/click dismissal, no paused
+  combat time, no range farming. Accuracy counts rays that hit at least one target,
+  not contacts per piercing bullet. Health loss excludes armour and overkill.
+  Both reports and run totals are transmitted by the host; guests use team labels.
+- Major-key ~18-second evacuation melody, bells and warm final chord replace the
+  sad score. Guest and late-snapshot playback is guarded once per run; repeated
+  snapshots do not replay the cue. Auditioning it does not alter evacuation state.
+
+Validation: `npm test` **42/42**, including nine new soundtracks/report tests;
+full historical regression **48/48** before the final small cleanup (counting monkey
+throws, report-hide reset and removing redundant per-frame once-mode restoration).
+After those edits, reran the main suite. New coverage: all 20 complete arrangements,
+valid audio scheduling for every score, one complete ~9-minute simulated score
+with <100 live voices, repeat/playlist/wrap/once, seeking/fast switching/cleanup,
+third-tab geometry/input and guest-local controls, faders/major cue, report/reset/
+intermission isolation, real armour/damage/throws/points and piercing accuracy,
+guest snapshot totals, once-only evacuation and report dismissal without firing.
+Native renders of the music tab, wave report and final evacuation totals inspected.
+`git diff --check` and changed-module syntax checks pass.
+
+Not claimed: real-browser acoustic listening, mobile-speaker mix evaluation,
+background-tab timer behavior across browsers, or a live two-browser audio session.
+The WebAudio stand-in validates scheduling/routing/state, not musical taste or
+real-world loudness. The listening room is deliberately provided for user audition.
+Guide/catalogue: `docs/MUSIC.md`.

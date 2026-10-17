@@ -396,12 +396,8 @@ export class GameMap {
       for (let x = 0; x < MAP_W; x++) {
         const i = idx(x, y);
         if (tiles[i] !== TILE.DOOR) continue;
-        // Which way does the wall this door is cut into run? Walls above and
-        // below mean the WALL stands north-south, so the doorway faces
-        // east-west and the leaf must hang tall; walls left and right mean
-        // the wall runs east-west and the leaf hangs wide. (Getting this
-        // axis back to front laid every door across its own opening -- the
-        // "doorway stuffed with a board" look on half the house.)
+        // Wall axis controls collision/frame geometry and where an open leaf
+        // parks. Closed-door artwork is always front-facing for the fixed camera.
         const walledUD = hardTile(x, y - 1) && hardTile(x, y + 1);
         const walledLR = hardTile(x - 1, y) && hardTile(x + 1, y);
         if (!walledUD && !walledLR) {
@@ -468,7 +464,7 @@ export class GameMap {
         wallCX: (b.wx + 0.5) * T, wallCY: (b.wy + 0.5) * T,
         facing: wallFacing(b),
       }));
-      F.grenadeCrates = GRENADE_CRATES.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T }));
+      F.grenadeCrates = GRENADE_CRATES.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T, kind: g.kind ?? 'frag' }));
       F.boxSpots = BOX_SPOTS.map((b) => ({ x: (b.x + 0.5) * T, y: (b.y + 0.5) * T, tx: b.x, ty: b.y }));
       F.cacheSpots = [];
       F.lamps = null;                     // the ground floor uses the hand-placed LAMPS table
@@ -479,7 +475,7 @@ export class GameMap {
         wallCX: (b.wx + 0.5) * T, wallCY: (b.wy + 0.5) * T,
         facing: wallFacing(b),
       }));
-      F.grenadeCrates = objs.crates.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T }));
+      F.grenadeCrates = objs.crates.map((g) => ({ x: (g.x + 0.5) * T, y: (g.y + 0.5) * T, kind: g.kind ?? 'frag' }));
       F.boxSpots = objs.box.map((b) => ({ x: (b.x + 0.5) * T, y: (b.y + 0.5) * T, tx: b.x, ty: b.y }));
       F.cacheSpots = objs.cache.map((c) => ({
         x: (c.x + 0.5) * T, y: (c.y + 0.5) * T, taken: false,
@@ -546,11 +542,10 @@ export class GameMap {
     }
   }
 
-  blocksBullets(tx, ty) {
+  blocksBullets(tx, ty, floor = this.floor) {
     if (!this.inside(tx, ty)) return true;
-    const i = ty * this.w + tx;
-    if (this.tiles[i] === TILE.FENCE) return false;
-    return this.solidAt(tx, ty);
+    if (this.tileOn(floor, tx, ty) === TILE.FENCE) return false;
+    return this.solidTileOn(floor, tx, ty);
   }
 
   /** Move a circle by (dx,dy), sliding along walls. Mutates pos {x,y}. */
@@ -670,10 +665,10 @@ export class GameMap {
     }
   }
 
-  lineBlocked(x0, y0, x1, y1) { return !!this.rayWall(x0, y0, x1, y1); }
+  lineBlocked(x0, y0, x1, y1, floor = this.floor) { return !!this.rayWall(x0, y0, x1, y1, Infinity, floor); }
 
   /** DDA raycast against bullet-blocking tiles. */
-  rayWall(x0, y0, x1, y1, maxLen = Infinity) {
+  rayWall(x0, y0, x1, y1, maxLen = Infinity, floor = this.floor) {
     let dx = x1 - x0, dy = y1 - y0;
     const len = Math.hypot(dx, dy);
     if (len < 1e-6) return null;
@@ -688,12 +683,12 @@ export class GameMap {
     let tMaxY = Math.abs(dy) < 1e-9 ? Infinity : ((dy > 0 ? (ty + 1) * T - y0 : y0 - ty * T) / Math.abs(dy));
 
     let t = 0, nx = 0, ny = 0, guard = 0;
-    if (this.blocksBullets(tx, ty)) return { t: 0, x: x0, y: y0, nx: -dx, ny: -dy };
+    if (this.blocksBullets(tx, ty, floor)) return { t: 0, x: x0, y: y0, nx: -dx, ny: -dy };
     while (t <= lim && guard++ < 4096) {
       if (tMaxX < tMaxY) { tx += stepX; t = tMaxX; tMaxX += tDeltaX; nx = -stepX; ny = 0; }
       else { ty += stepY; t = tMaxY; tMaxY += tDeltaY; nx = 0; ny = -stepY; }
       if (t > lim) break;
-      if (this.blocksBullets(tx, ty)) return { t, x: x0 + dx * t, y: y0 + dy * t, nx, ny };
+      if (this.blocksBullets(tx, ty, floor)) return { t, x: x0 + dx * t, y: y0 + dy * t, nx, ny };
     }
     return null;
   }
@@ -844,9 +839,9 @@ export class GameMap {
     if (!this.inside(tx, ty)) return false;
     return F.dist[this.idx(tx, ty)] < INF;
   }
-  nearestBarricade(x, y, maxDist = 90, requirePlanks = true) {
+  nearestBarricade(x, y, maxDist = 90, requirePlanks = true, floor = this.floor) {
     let best = null, bd = maxDist * maxDist;
-    for (const b of this.barricades) {
+    for (const b of this.floors[floor]?.barricades ?? []) {
       if (requirePlanks && b.planks <= 0) continue;
       const d = (b.cx - x) ** 2 + (b.cy - y) ** 2;
       if (d < bd) { bd = d; best = b; }

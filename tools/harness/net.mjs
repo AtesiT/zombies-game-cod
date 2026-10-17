@@ -394,6 +394,22 @@ ok(host.net.peers.size === 0, 'the peer list kept a ghost');
   mate.loadout.m1911.owned = true;
   mate.loadout.m1911.mag = 30;
 
+  // The admission spawn is random; 22px east can be a shut door or wall.
+  // This fixture tests hit routing, not whether a bullet can cross that wall.
+  let lane = null;
+  for (let ty = 1; ty < h2.map.h - 1 && !lane; ty++) {
+    for (let tx = 1; tx < h2.map.w - 2; tx++) {
+      const x = (tx + 0.5) * 24, y = (ty + 0.5) * 24;
+      if (!h2.map.blockedAt(x, y, 12) && !h2.map.blockedAt(x + 24, y, 12)
+        && !h2.map.rayWall(x, y, x + 24, y)) { lane = { x, y }; break; }
+    }
+  }
+  ok(!!lane, 'no clear lane for the shot-routing fixture');
+  if (lane) {
+    Object.assign(mate.pos, lane); Object.assign(h2.player.pos, lane);
+    mate.floor = h2.map.floor;
+  }
+
   // a walker, planted right in front of the guest's barrel
   const z = h2.zombies.find((o) => !o.dead && !o.remove);
   ok(!!z, 'no walker left to shoot at');

@@ -224,6 +224,7 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   // the crate is real: it falls, it smokes, it pays
   g3.map.setFloor(0); g3.useFloor(0);
   g3.player.floor = 0;
+  g3.supplies.length = 0; // earlier radio events can already have dropped a crate
   g3.dropSupply();
   ok(g3.supplies.length === 1, 'the radio promised a crate and none fell');
   g3.player.pos.x = 1.5 * 24; g3.player.pos.y = 1.5 * 24;    // out of pickup range
@@ -397,11 +398,11 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   g5.player.pos.x = wb.x; g5.player.pos.y = wb.y + 12;
   ok(g5.interactionFor(g5.player)?.type === 'workbench', 'the attic bench does not offer itself');
 
-  // the wrecks in the fields: solid where the metal is, grass around it
+  // The doubled wreck silhouettes are now solid too, with grass outside their hulls.
   for (const [tx, ty] of [[30, 46], [31, 46], [63, 43], [64, 43], [65, 43], [63, 44], [64, 44], [65, 44]]) {
     ok(g5.map.solidTileOn(0, tx, ty), `the wreck at ${tx},${ty} is not solid`);
   }
-  ok(!g5.map.solidTileOn(0, 29, 46) && !g5.map.solidTileOn(0, 66, 43),
+  ok(!g5.map.solidTileOn(0, 27, 46) && !g5.map.solidTileOn(0, 68, 43),
     'the wrecks spilled solid tiles into the grass');
   g5.map.setFloor(0); g5.useFloor(0); g5.player.floor = 0;
   g5.draw(nc(M.VW, M.VH).getContext('2d'));      // wrecks must paint without a word
