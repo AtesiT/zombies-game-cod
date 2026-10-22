@@ -525,6 +525,16 @@ turning the panels into numbers.
   at 15 pixels each, and the statistics page turns its long column into two
   when the panel is wide and short. The title screen's key list falls back to
   short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The Colonel was the Warden's helm with a cap drawn on top.** Two wardens,
+  a hundred rounds apart, in the same silhouette and the same green -- and
+  because the helm covers the zombie's own head, the cap had nothing to sit on.
+  (This is the "something on its head" complaint about the Knight line, in its
+  last form.) He has a head of his own now: a bare jaw under a peaked cap, a
+  cuirass with its buttons, braid on the shoulder, a sabre. The Warden keeps
+  the helm and the lantern. The README's "35 % heavier per cycle" was checked
+  against the code and pinned by a test: it is 35 % more *health* on round 55
+  and 70 % on round 100, and the wording said "heavier", which reads like
+  damage too.
 - **The achievement card was printed over the corner of the screen.** It was
   a fixed 360 x 72 rectangle whose left edge was `w - 374`: on a phone with 360
   units of drawing space the card *started* outside the glass, and on a laptop
@@ -557,9 +567,10 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **144/144** and the historical regression **48/48**.
-Twenty of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
-line from 10 to 55 and its wrap, escort sizing, every arrival round, four
+Validation: `npm test` **146/146** and the historical regression **48/48**.
+Twenty-two of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
+line from 10 to 55 and its wrap, the second-cycle health bonus, no two wardens
+sharing a sprite set, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
 venom's clock and its place on the HUD, the warden's banner, the banner queue)
 and `tools/harness/menutext.test.mjs` (6 — every label on every panel turned
