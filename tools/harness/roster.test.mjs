@@ -265,3 +265,59 @@ test('the widow\'s venom wears off on its own', () => {
   assert.ok(q.venomT > 0, 'the venom ran out in five seconds');
   clearStorage();
 });
+
+// ---------------------------------------------------------------------------
+//  ...and it says so on the HUD
+// ---------------------------------------------------------------------------
+test('the venom is on the health bar, and the regen holds while it works', () => {
+  clearStorage();
+  const g = fresh();
+  g.setViewport(800, 500);
+  g.startRound(20);
+  const p = g.player;
+  const ctx = nc(g.vw, g.vh).getContext('2d');
+
+  const strip = () => {
+    ctx.clearRect(0, 0, g.vw, g.vh);
+    g.hud._health(ctx, g, g.vw, g.vh);
+    const bw = 168;
+    const x = Math.round(g.vw / 2 - bw / 2);
+    const y = Math.round(g.vh - 58) + 9;      // the 2 px strip under the bar
+    const d = ctx.getImageData(x, y, bw, 2).data;
+    let green = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 40 && d[i + 1] > d[i] + 20) green++;
+    }
+    return green;
+  };
+
+  p.hp = p.maxHp = 100;
+  const clean = strip();
+  p.poison(g);
+  const sick = strip();
+  assert.ok(sick > clean + 40, `the venom strip is not drawn (${clean} -> ${sick} green pixels)`);
+  // the strip is a clock: half the time left is half the strip
+  const full = strip();
+  p.venomT = 4.5;
+  const half = strip();
+  assert.ok(half < full * 0.75 && half > full * 0.35, `the strip does not follow the clock (${full} -> ${half})`);
+
+  // and while it runs, nothing is coming back. A venom with no bite at all,
+  // so the only thing that could move the bar is the regen.
+  p.venomT = 9;
+  p.hp = 60;
+  p.lastHurt = -1e9;
+  let top = p.hp;
+  for (let i = 0; i < 60 * 2; i++) {
+    g.zombies.length = 0;
+    g.update(H);
+    top = Math.max(top, p.hp);
+  }
+  assert.equal(top, 60, `the body regenerated through the venom (60 -> ${top})`);
+  assert.ok(p.hp < 60, 'the venom did not bite at all');
+  // ...and it comes back the moment the venom is gone
+  p.venomT = 0;
+  for (let i = 0; i < 30; i++) { g.zombies.length = 0; g.update(H); }
+  assert.ok(p.hp > 60, 'the body does not recover once the venom is out');
+  clearStorage();
+});

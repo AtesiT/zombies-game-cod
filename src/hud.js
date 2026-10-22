@@ -1096,8 +1096,23 @@ export class HUD {
     // where nobody looked for it in a fight.
     this._dash(ctx, game, w, h, x, y);
     this._armor(ctx, game, x, y);
+    const venom = Math.max(0, p.venomT ?? 0);
     const regenIn = Math.max(0, p.regenDelay - (game.time - p.lastHurt));
-    if (p.hp < p.maxHp) {
+    if (venom > 0) {
+      // The widow's venom holds the regen, so the line that would say
+      // RECOVERING has to say why nothing is coming back. A 2 px strip under
+      // the bar is the clock, because nine seconds is long enough to watch.
+      const vy = y + bh + 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(x, vy, bw, 2);
+      ctx.fillStyle = '#8fd47a';
+      ctx.fillRect(x, vy, bw * Math.min(1, venom / 9), 2);
+    }
+    if (venom > 0) {
+      text(ctx, `VENOM ${Math.ceil(venom)}s`, x + bw, y - 6, {
+        font: 'bold 9px "Courier New", monospace', colour: '#8fd47a', align: 'right',
+      });
+    } else if (p.hp < p.maxHp) {
       // right end of the same line the dash clock sits on
       text(ctx, regenIn > 0.05 ? `+${Math.ceil(regenIn)}s` : 'RECOVERING', x + bw, y - 6, {
         font: 'bold 9px "Courier New", monospace',
