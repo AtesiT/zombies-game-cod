@@ -95,6 +95,14 @@ on. The wheel moves one row a notch (in the settings, the achievements and the
 debug list alike), and every list answers to all four arrows. The debug panel is
 reachable without knowing any shortcut: `PAUSE → DEBUG PANEL`.
 
+Every panel is measured, not assumed: the pause menu's rows are clamped to the
+screen (a fixed 268 × 38 at 1.5× was 402 pixels wide on a 360-pixel phone), the
+controls list never truncates a key — a narrow panel reads the short form of the
+row — and on a small screen at the top picture step the death screen's ledger is
+cut to what fits above the prompt and says how many rows it left for the
+all-time page. `tools/harness/menutext.test.mjs` proves it by turning every
+label on every panel into a box and comparing them all, at seven screen sizes.
+
 The picture is not a fixed 800 × 500 box any more. The canvas takes the shape of
 whatever it is sitting in — a phone held upright, a laptop, an ultrawide — and
 keeps the same *amount* of world on screen by trading width for height, so a tall
