@@ -257,7 +257,15 @@ export class HUD {
       && Date.now() - (audio._lastGestureAt ?? 0) > 600) {
       return { label: 'SOUND PAUSED — TAP', colour: '#c4463a', fix: 'unlock' };
     }
-    if (settings.get('master') === 0) return { label: 'MASTER VOLUME 0 — O', colour: '#e0a040' };
+    if (settings.get('master') === 0) {
+      return { label: 'MASTER VOLUME 0 — TAP TO RESTORE', colour: '#e0a040', fix: 'volume' };
+    }
+    // One fader at zero is enough to lose every sound the game makes, and the
+    // old chip only spoke up when all three were down. An accidental A/D on
+    // the effects row left a silent game with a clean bill of health.
+    if (settings.get('sfx') === 0) {
+      return { label: 'EFFECTS VOLUME 0 — TAP TO RESTORE', colour: '#e0a040', fix: 'volume' };
+    }
     if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
       return { label: 'ALL FADERS AT 0 — O', colour: '#e0a040' };
     }

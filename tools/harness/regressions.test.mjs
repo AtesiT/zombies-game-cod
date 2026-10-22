@@ -257,3 +257,63 @@ test('the warm-up list covers every sprite the art bundle builds', async () => {
     assert.ok(found.length > 0, `${key} has no canvases to warm`);
   }
 });
+
+test('a fader at zero is silent, and the chip fixes it in one press', async () => {
+  const { AudioContext } = await import('./webaudio.mjs');
+  const hadCtx = window.AudioContext;
+  window.AudioContext = AudioContext;
+  const { settings } = await import('../../src/settings.js');
+  const { audio } = await import('../../src/audio.js');
+  const H = await import('../../src/hud.js');
+  audio._teardown();
+  audio.prepare();
+  audio.gesture();
+  const g = await game(800, 500);
+  g.begin(); g.applySettings();
+  const hadSfx = settings.get('sfx'), hadMaster = settings.get('master');
+  try {
+    settings.set('sfx', 0);
+    g.applySettings();
+    // one fader at zero used to have a clean bill of health
+    const info = H.HUD.prototype._soundLabel.call(g.hud);
+    assert.ok(info && /EFFECTS VOLUME 0/.test(info.label), `got ${JSON.stringify(info)}`);
+    assert.equal(info.fix, 'volume', 'and pressing it is the fix');
+    const r = H.HUD.prototype._soundRectFor.call(g.hud, g, 800);
+    assert.equal(H.HUD.prototype.soundChipAt.call(g.hud, g, 800, 500, r.x + 4, r.y + 4), true);
+    g.input.mouse.x = r.x + r.w / 2; g.input.mouse.y = r.y + 9; g.input.mouse.pressed = true;
+    g.update(1 / 60);
+    assert.equal(settings.get('sfx'), 100, 'the press put the effects back');
+    assert.match(g.banner?.title ?? '', /SOUND RESTORED/);
+  } finally {
+    settings.set('sfx', hadSfx); settings.set('master', hadMaster);
+    g.applySettings();
+    audio._pianoWant?.(false);
+    audio._teardown();
+    window.AudioContext = hadCtx;
+  }
+});
+
+test('a frame that blocks the clock says so on the title screen too', async () => {
+  const { audio } = await import('../../src/audio.js');
+  const H = await import('../../src/hud.js');
+  const g = await game(800, 500);
+  const saved = { ctx: audio.ctx, ready: audio.ready, gestures: audio.gestures, at: audio._lastGestureAt };
+  try {
+    audio.ready = true;
+    audio.ctx = { state: 'suspended' };
+    audio.gestures = 1;
+    audio._lastGestureAt = Date.now() - 2000;
+    const chip = H.HUD.prototype._soundRectFor.call(g.hud, g, 800, true);
+    assert.ok(chip, 'the chip exists on the menu');
+    assert.equal(chip.y, 6, 'and it takes the corner, with no minimap to dodge');
+    // the menu copies the painter once: a warning with a button behind it
+    let painted = 0;
+    const real = H.HUD.prototype._sound;
+    H.HUD.prototype._sound = function (...a) { painted++; return real.apply(this, a); };
+    try { H.HUD.prototype._soundOnMenu.call(g.hud, nc(800, 500).getContext('2d'), g, 800, 500); }
+    finally { H.HUD.prototype._sound = real; }
+    assert.equal(painted, 1, 'it is drawn over the title screen');
+  } finally {
+    Object.assign(audio, { ctx: saved.ctx, ready: saved.ready, gestures: saved.gestures, _lastGestureAt: saved.at });
+  }
+});

@@ -4173,6 +4173,14 @@ export class Game {
         this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
         return;
       }
+      if (settings.get('master') === 0 || settings.get('sfx') === 0) {
+        // a fader at zero is silent, and a silent game is a silent game
+        if (settings.get('master') === 0) settings.set('master', 85);
+        if (settings.get('sfx') === 0) settings.set('sfx', 100);
+        this.applySettings();
+        this.bannerShow('SOUND RESTORED', 'volumes back to normal', { dur: 2, colour: '#7fbf5f', local: true });
+        return;
+      }
       const r = audio.manualUnlock();
       if (r === 'running') this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
       else if (r === 'blocked') this.bannerShow('SOUND IS BLOCKED', 'the browser will not start audio here', { dur: 2.4, colour: '#c4463a', local: true });
