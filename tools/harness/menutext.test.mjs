@@ -115,8 +115,11 @@ const offscreen = (items, vw, vh) => items
   .filter((b) => b.x1 < -2 || b.x0 > vw + 2 || b.y1 < -2 || b.y0 > vh + 2)
   .map((b) => `"${b.str}" at ${b.x0.toFixed(0)},${b.y0.toFixed(0)}`);
 
-// A short phone, a tall phone, a small desktop, a big one.
-const SIZES = [[360, 640], [430, 930], [800, 500], [1280, 800], [1920, 1080]];
+// A short phone, a tall phone, a small desktop, a big one -- and the canvases
+// a phone gets when PICTURE SIZE is pushed to its top step on a narrow screen
+// (the world is zoomed, so the same glass ends up with fewer canvas pixels).
+const SIZES = [[360, 640], [430, 930], [800, 500], [1280, 800], [1920, 1080],
+  [360, 704], [360, 560]];
 
 const PANELS = {
   title: (ctx, g, w, h) => HUD.drawTitle(ctx, g, w, h),
@@ -227,6 +230,38 @@ test('the pause menu fits a phone, and stays out of the HUD', () => {
     const hint = items.find((it) => it.str.includes('ARROWS'));
     assert.ok(hint, `${w}x${h}: no hint line`);
     assert.ok(hint.y1 < g.vh - 80, `${w}x${h}: the hint line sits at ${hint.y1.toFixed(0)}, in the HUD band`);
+    clearStorage();
+  }
+});
+
+test('the death screen and the all-time page fit a phone at max picture size', () => {
+  clearStorage();
+  for (const [w, h] of [[360, 560], [360, 640], [430, 930]]) {
+    const g = fresh(w, h);
+    g.startRound(12);
+    g.scene = 'game';
+    g.overT = 2;
+    g.gameOver = true;
+    // a night worth reading, so the numbers are wide and the labels are long
+    Object.assign(g.runMetrics, {
+      kills: 214, headshots: 61, seconds: 1432, points: 18400, rays: 1900, hitRays: 1200,
+      medkits: 4, revives: 3, downs: 2, planks: 88,
+    });
+    const shot = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawGameOver(shot.ctx, g, g.vw, g.vh);
+    const bad = collisions(shot.items);
+    assert.deepEqual(bad, [], `${w}x${h}: the death screen overlaps itself\n  ${bad.join('\n  ')}`);
+    const off = offscreen(shot.items, g.vw, g.vh);
+    assert.deepEqual(off, [], `${w}x${h}: labels off the bottom of the death screen\n  ${off.join('\n  ')}`);
+
+    const stats = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawStats(stats.ctx, g, g.vw, g.vh);
+    const sbad = collisions(stats.items);
+    assert.deepEqual(sbad, [], `${w}x${h}: the all-time page overlaps itself\n  ${sbad.join('\n  ')}`);
+    // a label cut to an ellipsis is an admission, not a label: the page has
+    // short true names for every row it might have to squeeze
+    const cut = stats.items.filter((it) => it.str.endsWith('\u2026'));
+    assert.deepEqual(cut.map((c) => c.str), [], `${w}x${h}: cut labels on the all-time page`);
     clearStorage();
   }
 });

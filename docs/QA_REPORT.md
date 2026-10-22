@@ -514,6 +514,16 @@ turning the panels into numbers.
   has no room for it).
 - **The music tab's second line ran under its own scroll counter** ("1-12 / 26")
   on a phone; the header is taller and the line is cut to the room.
+- **The death screen ran off the bottom of a small phone.** At MAX PICTURE SIZE
+  on a 360 x 560 canvas the one-column ledger (22 rows at a fixed 15) went
+  through the prompt and the last six rows were painted off the glass, and the
+  40 px "YOU DIED" was wider than the screen. The pitch is now measured against
+  the room above the prompt, the ledger is cut rather than spilled (and says how
+  many rows it left for the all-time page), the headline shrinks to fit, and the
+  prompt picks the longest form of itself that fits. The all-time page had the
+  same trouble the other way up -- a short panel squeezed the long column into
+  the footer and "LONGEST RUN" was cut to "LONG..." -- so its rows are measured
+  too, and every label has a ladder of true short names before an ellipsis.
 - **The archer carried a walking stick and the drummer a box.** The bow was a
   straight stick with a gap beside it and the drum hung off the right hip. The
   bow is now a curve with a string across it and a nocked shaft; the drum is
@@ -528,24 +538,28 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **140/140** and the historical regression **48/48**.
-Sixteen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
+Validation: `npm test` **141/141** and the historical regression **48/48**.
+Seventeen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
 line from 10 to 55 and its wrap, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
 venom's clock and its place on the HUD, the warden's banner, the banner queue)
-and `tools/harness/menutext.test.mjs` (4 — every label on every panel turned
+and `tools/harness/menutext.test.mjs` (5 — every label on every panel turned
 into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
-off screen at five screen sizes, plus a state-by-state sweep of the HUD's two
-edge bands). The menutext sweep was written against the bugs above and was
-checked against the old code: restoring the fixed 268-wide pause rows fails it
-with "row 0 is 402 wide on a 360 screen".
+off screen at seven screen sizes including the two a phone gets at MAX PICTURE
+SIZE, plus a state-by-state sweep of the HUD's two edge bands and a check that
+the all-time page never has to cut a label). The menutext sweep was written
+against the bugs above and was checked against the old behaviour twice:
+restoring the fixed 268-wide pause rows fails it with "row 0 is 402 wide on a
+360 screen", and moving the all-time footer up into its own table fails it with
+"TIME over NO NIGHTS YET".
 
-Native renders inspected at 800 × 500, 430 × 930 and 360 × 640: the venom strip
-and label under the health bar, the controls list with its short-form key column
-and its footer, the pause menu fitting inside a phone, the DEBUG zoo list with
-its scroll rail and counter, the boss bar clear of the sound chip and the map,
-the pause chip and the map in their corners, and the new archer and drummer
-sprites at gameplay scale.
+Native renders inspected at 800 × 500, 430 × 930, 360 × 640 and 360 × 560 (the
+last at MAX PICTURE SIZE): the venom strip and label under the health bar, the
+controls list with its short-form key column and its footer, the pause menu
+fitting inside a phone, the DEBUG zoo list with its scroll rail and counter, the
+boss bar clear of the sound chip and the map, the pause chip and the map in
+their corners, the death screen's cut-down ledger, the all-time page with no cut
+labels, and the new archer and drummer sprites at gameplay scale.
 
 Not claimed: a real phone or browser run; drag physics on real glass; audio
 output.

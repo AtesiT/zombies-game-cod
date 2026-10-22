@@ -2006,15 +2006,20 @@ function _drawStats(ctx, game, w, h) {
   // the label gives way -- cut with an ellipsis, never overlapped.
   // Short names for the two-column phone layout: an ellipsis is honest but a
   // shorter true word is better, and there are only a handful of long ones.
+  // ...and on a 240-unit-wide panel even those are too long for the room the
+  // numbers leave, so each label offers a ladder of true names and the narrow
+  // layout takes the first that fits. An ellipsis is the last resort, not the
+  // first: "LONG..." says nothing that "LONGEST" would not say better.
   const SHORT = {
-    'RUNS FINISHED': 'RUNS', 'EVACUATIONS': 'EVACS', 'ROUNDS CLEARED': 'ROUNDS',
-    'BEST RUN KILLS': 'BEST KILLS', 'BEST RUN POINTS': 'BEST POINTS',
-    'LONGEST RUN': 'LONGEST', 'TOTAL KILLS': 'KILLS', 'HEADSHOT KILLS': 'HEADSHOTS',
-    'SPECIAL KILLS': 'SPECIALS', 'KNIFE KILLS': 'KNIFE', 'TRAP KILLS': 'TRAPS',
-    'POINTS EARNED': 'POINTS', 'SCRAP COLLECTED': 'SCRAP', 'HEALTH LOST': 'DAMAGE',
-    'PLANKS REBUILT': 'PLANKS', 'DOORS OPENED': 'DOORS', 'ITEMS CRAFTED': 'CRAFTED',
-    'THROWABLES USED': 'THROWN', 'MEDKITS USED': 'MEDKITS', 'TEAMMATES REVIVED': 'REVIVED',
-    'TIMES DOWNED': 'DOWNED', 'TIME PLAYED': 'TIME',
+    'RUNS FINISHED': ['RUNS'], 'EVACUATIONS': ['EVACS'], 'ROUNDS CLEARED': ['ROUNDS'],
+    'BEST RUN KILLS': ['BEST KILLS', 'BEST K'], 'BEST RUN POINTS': ['BEST POINTS', 'BEST PTS'],
+    'LONGEST RUN': ['LONGEST', 'BEST TIME', 'TIME'], 'TOTAL KILLS': ['KILLS'],
+    'HEADSHOT KILLS': ['HEADSHOTS', 'HEADSHOT', 'HEADS'],
+    'SPECIAL KILLS': ['SPECIALS', 'SPECIAL'], 'KNIFE KILLS': ['KNIFE'], 'TRAP KILLS': ['TRAPS'],
+    'POINTS EARNED': ['POINTS'], 'SCRAP COLLECTED': ['SCRAP'], 'HEALTH LOST': ['DAMAGE'],
+    'PLANKS REBUILT': ['PLANKS'], 'DOORS OPENED': ['DOORS'], 'ITEMS CRAFTED': ['CRAFTED', 'CRAFT'],
+    'THROWABLES USED': ['THROWN'], 'MEDKITS USED': ['MEDKITS', 'MEDKIT'],
+    'TEAMMATES REVIVED': ['REVIVED'], 'TIMES DOWNED': ['DOWNED'], 'TIME PLAYED': ['TIME'],
   };
   const labelFont = `${narrow ? 9 : 10}px "Courier New", monospace`;
   const valueFont = `bold ${narrow ? 9.5 : 11}px "Courier New", monospace`;
@@ -2031,22 +2036,35 @@ function _drawStats(ctx, game, w, h) {
 
   const line = (x, y, label, value, colour = INK) => {
     // whatever room the number leaves is the room the label gets
-    const room = colW - textWidth(value, valueFont) - 8;
-    const short = narrow && SHORT[label] ? SHORT[label] : label;
+    const room = colW - textWidth(value, valueFont) - 7;
+    const names = narrow && SHORT[label] ? SHORT[label] : [label];
+    const short = names.find((n) => textWidth(n, labelFont) <= room) ?? names[names.length - 1];
     text(ctx, clipText(short, room, labelFont), x, y, { font: labelFont, colour: INK_DIM });
     text(ctx, value, x + colW, y, { font: valueFont, colour, align: 'right' });
   };
 
-  let y = cy + head + 26;
-  for (const [label, value] of nights) { line(ax, y, label, value); y += 26; }
-  y = cy + head + 26;
-  for (const [label, value] of deeds) { line(bx, y, label, value); y += 21; }
+  // The two columns are not the same length (eight numbers against sixteen),
+  // and on a short phone -- or at MAX PICTURE SIZE on a small one -- the long
+  // one ran out of the panel and printed through the footer. The pitch is what
+  // gives way: each column is measured against the room it has, down to a floor
+  // that is still two lines of small type apart, and the record book is dropped
+  // rather than drawn on top of the footer when there is no room left for it.
+  const bodyTop = cy + head + 26;
+  const bodyH = Math.max(60, ch - head - 32 - 26);
+  const nPitch = Math.max(11, Math.min(26, bodyH / Math.max(1, nights.length)));
+  const dPitch = Math.max(10.5, Math.min(21, bodyH / Math.max(1, deeds.length)));
+
+  let y = bodyTop;
+  for (const [label, value] of nights) { line(ax, y, label, value); y += nPitch; }
+  const nightsEnd = y;
+  y = bodyTop;
+  for (const [label, value] of deeds) { line(bx, y, label, value); y += dPitch; }
 
   // the record book, under the short column: the numbers above say how much,
   // these say how good the best of it was
   const board = loadBoard();
-  if (board.length) {
-    let by = cy + head + 26 + nights.length * 26 + 26;
+  if (board.length && nightsEnd + 22 + 3 * 15 < cy + ch - 22) {
+    let by = nightsEnd + 20;
     text(ctx, 'BEST NIGHTS', ax, by, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
     ctx.fillStyle = 'rgba(200,190,160,0.18)';
     ctx.fillRect(ax, by + 6, colW, 1);
@@ -3262,8 +3280,13 @@ function _drawGameOver(ctx, game, w, h) {
   const t = Math.min(1, game.overT / 0.7);
   ctx.globalAlpha = t;
 
-  text(ctx, evac ? 'EVACUATED' : 'YOU DIED', w / 2, h * 0.16, {
-    font: 'bold 40px "Courier New", monospace', colour: evac ? '#f0d98a' : '#c2503c', align: 'center',
+  // the headline is measured: 40px of monospace is 8 characters of nothing on a
+  // 360-pixel phone, and the one word on the page ran off both edges of it
+  const headline = evac ? 'EVACUATED' : 'YOU DIED';
+  let headPx = 40;
+  while (headPx > 20 && textWidth(headline, `bold ${headPx}px "Courier New", monospace`) > w - 24) headPx -= 2;
+  text(ctx, headline, w / 2, h * 0.16, {
+    font: `bold ${headPx}px "Courier New", monospace`, colour: evac ? '#f0d98a' : '#c2503c', align: 'center',
   });
   if (evac) {
     text(ctx, 'the bird lifted with you aboard -- the night stays behind', w / 2, h * 0.16 + 26, {
@@ -3289,8 +3312,19 @@ function _drawGameOver(ctx, game, w, h) {
   const perCol = narrow ? rows.length : 11;
   const pairs = narrow ? rows : rows.slice(0, perCol);
   const cols = narrow ? [pairs] : [pairs, rows.slice(perCol)];
-  const ROWH = narrow ? 15 : 16;
   const headY = h * 0.20 + (narrow ? 14 : 24);
+  // The one-column phone layout has twenty-two rows to fit above the prompt,
+  // and at MAX PICTURE SIZE on a small phone that is about 260 units of room:
+  // the pitch is measured against it rather than fixed at 15. The floor keeps
+  // the type legible; if even that does not fit, the ledger is cut, not spilled
+  // -- a row printed off the bottom of the glass is a row nobody reads.
+  const promptY = h * 0.86;
+  const ledgerTop = headY + 20;
+  const ledgerRoom = Math.max(60, promptY - 26 - ledgerTop);
+  const ROWH = narrow
+    ? Math.max(9.5, Math.min(15, ledgerRoom / Math.max(1, rows.length)))
+    : 16;
+  const roomRows = Math.max(1, Math.floor(ledgerRoom / ROWH));
   text(ctx, `${(game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN'}${picked ? `  \u00b7  SKILLS ${picked}` : ''}`,
     w / 2, headY,
     { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
@@ -3299,7 +3333,7 @@ function _drawGameOver(ctx, game, w, h) {
   let bottom = headY;
   cols.forEach((col, ci) => {
     const left = narrow ? w / 2 - colW / 2 : w / 2 - 310 + ci * 320;
-    col.forEach(([label, value], i) => {
+    col.slice(0, narrow ? roomRows : col.length).forEach(([label, value], i) => {
       const y = headY + 20 + i * ROWH;
       const room = colW - textWidth(value, 'bold 11px "Courier New", monospace') - 8;
       text(ctx, clipText(label, room, '10px "Courier New", monospace'), left, y,
@@ -3310,6 +3344,14 @@ function _drawGameOver(ctx, game, w, h) {
     });
   });
   let y = bottom + 22;
+  // if the ledger had to be cut, say so -- a short table that does not admit it
+  // is a lie about the night
+  if (narrow && roomRows < rows.length) {
+    text(ctx, `+ ${rows.length - roomRows} MORE ROWS ON THE ALL-TIME PAGE`, w / 2, bottom + 14, {
+      font: 'bold 9px "Courier New", monospace', colour: 'rgba(200,190,160,0.5)', align: 'center',
+    });
+    y = bottom + 22;
+  }
 
   // three of them at most on a phone: the ledger already fills the page, and
   // the board is the least important table on it
@@ -3319,7 +3361,9 @@ function _drawGameOver(ctx, game, w, h) {
       font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
     });
     y += 17;
-    const show = narrow ? Math.min(3, board.length) : 5;
+    // only the nights that fit above the prompt: the ledger comes first
+    const fits = Math.max(0, Math.floor((promptY - 34 - y) / 15));
+    const show = Math.min(narrow ? 3 : 5, board.length, fits);
     const bLeft = w / 2 - (narrow ? 130 : 150);
     board.slice(0, show).forEach((e, i) => {
       const col = i === (game.rank ?? -1) ? GOLD : INK_DIM;
@@ -3333,10 +3377,22 @@ function _drawGameOver(ctx, game, w, h) {
 
   if (game.overT > 1.1) {
     const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
-    text(ctx, guestWaiting
-      ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
-      : (evac ? 'PRESS R OR TAP FOR A NEW NIGHT' : 'PRESS R OR TAP TO TRY AGAIN'), w / 2, h * 0.86, {
-      font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+    // the prompt is the one line on this screen a thumb has to find, so it is
+    // the last thing that gets cut: longest form that fits, then shorter ones,
+    // then smaller type
+    const asks = guestWaiting
+      ? ['WAITING FOR THE HOST TO START THE NEXT NIGHT', 'WAITING FOR THE HOST', 'WAITING FOR HOST']
+      : (evac ? ['PRESS R OR TAP FOR A NEW NIGHT', 'TAP FOR A NEW NIGHT', 'TAP TO FLY AGAIN']
+        : ['PRESS R OR TAP TO TRY AGAIN', 'PRESS R OR TAP', 'TAP TO TRY AGAIN', 'TAP TO RETRY']);
+    let askPx = 15;
+    const fitsAt = (str, px) => textWidth(str, `bold ${px}px "Courier New", monospace`) <= w - 20;
+    let ask = asks.find((a) => fitsAt(a, askPx));
+    while (!ask && askPx > 10) {
+      askPx -= 1;
+      ask = asks.find((a) => fitsAt(a, askPx));
+    }
+    text(ctx, ask ?? 'TAP TO RETRY', w / 2, h * 0.86, {
+      font: `bold ${askPx}px "Courier New", monospace`, colour: `rgba(240,217,138,${blink})`, align: 'center',
     });
     // the way out that does not cost a new run -- there used to be none, and
     // the line that says so used to name a key a phone does not have
