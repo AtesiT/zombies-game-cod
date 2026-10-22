@@ -88,7 +88,10 @@ test('list and every unlock toast render pixel icons, and descriptions fit withi
     assert.equal(description.map((line) => line.str).join(' '), a.desc, 'no truncated description');
     assert.ok(description.length <= 2);
     assert.ok(description.every((line) => line.width <= line.max));
-    const icon = ctx.getImageData(438, 98, 36, 36).data;
+    // the card moves to stay clear of the map, the sound chip and any banner,
+    // so ask it where it landed rather than remembering where it used to be
+    const box = g.hud._toastRect(g, 800, 500);
+    const icon = ctx.getImageData(box.x + 10, box.y + 18, 36, 36).data;
     const colours = new Set();
     for (let i = 0; i < icon.length; i += 4) colours.add(`${icon[i]},${icon[i + 1]},${icon[i + 2]}`);
     assert.ok(colours.size >= 2, `${a.id} toast has no badge`);

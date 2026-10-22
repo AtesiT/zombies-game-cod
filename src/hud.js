@@ -876,6 +876,35 @@ export class HUD {
   }
 
   // ------------------------------------------------------- achievement toast --
+  /**
+   * Where the achievement card sits while it is up, or null when there is
+   * none. Everything that shares the top of the screen asks this -- the card
+   * is 72 units tall and it used to be printed straight over the minimap,
+   * the sound chip and the floor tag.
+   */
+  _toastRect(game, w, h) {
+    if (!game.achievements?.banner) return null;
+    // measured, not fixed: a 360-unit card on a 360-unit phone started 14 units
+    // outside the glass
+    const bw = Math.max(200, Math.min(360, w - 20));
+    const bh = 72;
+    const x = w - bw - 10;
+    // under whatever already owns the corner: the map, then the sound chip
+    const mini = this._miniRectFor(game, w);
+    const snd = this._soundRectFor(game, w);
+    const over = (x < mini.x + mini.w) ? mini.y + mini.h + 6 : 0;
+    const belowSound = snd && x < snd.x + snd.w ? snd.y + snd.h + 6 : 0;
+    let y = Math.max(h * 0.16, over, belowSound);
+    // the round banner paints a full-width band: step under it rather than
+    // printing one card over the other
+    if (game.banner && game.banner.t > 0) {
+      const band = this._bannerBand(h);
+      if (y < band.y + band.h && y + bh > band.y) y = band.y + band.h + 4;
+    }
+    y = Math.min(y, Math.max(0, h - 74 - bh));
+    return { x, y, w: bw, h: bh };
+  }
+
   _toast(ctx, game, w, h) {
     const a = game.achievements.banner;
     if (!a) return;
@@ -883,8 +912,12 @@ export class HUD {
     const fade = k > 0.85 ? (1 - k) / 0.15 : k < 0.18 ? k / 0.18 : 1;
     ctx.save();
     ctx.globalAlpha = clamp(fade, 0, 1);
-    const bw = 360, bh = 72;
-    const x = w - bw - 14, y = h * 0.16;
+    const r = this._toastRect(game, w, h);
+    const { x, y, w: bw, h: bh } = r;
+    // the card keeps its proportions when the panel is too narrow to hold one:
+    // a phone is 360 units wide, a card of 340 leaves room for neither icon nor
+    // a line of description at the old sizes
+    const tight = bw < 320;
     ctx.fillStyle = 'rgba(10,11,15,0.9)';
     ctx.fillRect(x, y, bw, bh);
     ctx.fillStyle = GOLD;
@@ -892,17 +925,17 @@ export class HUD {
     ctx.strokeStyle = 'rgba(240,217,138,0.5)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, y + 0.5, bw - 1, bh - 1);
-    drawAchievementIcon(ctx, a.icon, x + 12, y + 18, 3);
-    const tx = x + 60, tw = bw - 72;
+    drawAchievementIcon(ctx, a.icon, x + 10, y + (tight ? 20 : 18), tight ? 2 : 3);
+    const tx = x + (tight ? 46 : 60), tw = bw - (tight ? 54 : 72);
     ctx.fillStyle = 'rgba(240,217,138,0.85)';
-    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.font = `bold ${tight ? 8 : 9}px "Courier New", monospace`;
     ctx.textAlign = 'left';
-    ctx.fillText('ACHIEVEMENT UNLOCKED', tx, y + 15);
+    ctx.fillText('ACHIEVEMENT UNLOCKED', tx, y + 15, tw);
     ctx.fillStyle = INK;
-    ctx.font = 'bold 15px "Courier New", monospace';
+    ctx.font = `bold ${tight ? 13 : 15}px "Courier New", monospace`;
     ctx.fillText(a.name.toUpperCase(), tx, y + 33, tw);
     ctx.fillStyle = INK_DIM;
-    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.font = `bold ${tight ? 8 : 9}px "Courier New", monospace`;
     // The longest descriptions need two lines, not text spilling off-screen.
     const lines = [''];
     for (const word of a.desc.split(' ')) {
@@ -912,6 +945,7 @@ export class HUD {
       else lines[i] = next;
     }
     lines.slice(0, 2).forEach((line, i) => ctx.fillText(line, tx, y + 48 + i * 12, tw));
+    ctx.textAlign = 'left';
     ctx.restore();
   }
 
@@ -925,7 +959,18 @@ export class HUD {
     // corner this tag lives in. The tag moves down rather than being printed
     // on: it is a label, and a label you cannot read is not worth its pixels.
     const boss = this._bossRect;
-    const y = boss && boss.y + boss.h > 92 && x < boss.x + boss.w ? boss.y + boss.h + 6 : 96;
+    const toast = this._toastRect(game, w, h);
+    let y = boss && boss.y + boss.h > 92 && x < boss.x + boss.w ? boss.y + boss.h + 6 : 96;
+    // the achievement card is transient, but a floor name you cannot read for
+    // three seconds is still a floor name you cannot read: step under it
+    if (toast && x < toast.x + toast.w && y < toast.y + toast.h && y + 17 > toast.y) {
+      y = toast.y + toast.h + 4;
+    }
+    // and the round banner paints a full-width band across the middle
+    if (game.banner && game.banner.t > 0) {
+      const band = this._bannerBand(h);
+      if (y + 17 > band.y && y < band.y + band.h) y = band.y + band.h + 2;
+    }
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.55)';
     ctx.fillRect(x, y, 96, 17);
@@ -1582,6 +1627,12 @@ export class HUD {
     ctx.restore();
   }
 
+  /** The band a live banner paints in, so the HUD can keep out of it. */
+  _bannerBand(h) {
+    const cy = h * 0.3;
+    return { y: cy - 40, h: 74 };
+  }
+
   _banners(ctx, game, w, h) {
     const b = game.banner;
     if (!b || b.t <= 0) return;
@@ -1595,9 +1646,12 @@ export class HUD {
     ctx.fillStyle = 'rgba(200,60,45,0.85)';
     ctx.fillRect(0, cy - 40, w, 1);
     ctx.fillRect(0, cy + 33, w, 1);
-    text(ctx, b.title, w / 2, cy, {
-      font: `bold ${b.big ? 46 : 28}px "Courier New", monospace`, colour: b.colour || INK, align: 'center',
-    });
+    // ROUND 12 at 46px is 330 units wide, which is most of a phone; a longer
+    // title (THE BELLRINGER) ran off both edges
+    let ts = b.big ? 46 : 28;
+    const tf = () => `bold ${ts}px "Courier New", monospace`;
+    while (ts > 18 && textWidth(b.title, tf()) > w - 24) ts -= 2;
+    text(ctx, b.title, w / 2, cy, { font: tf(), colour: b.colour || INK, align: 'center' });
     if (b.sub) {
       text(ctx, b.sub, w / 2, cy + 24, {
         font: 'bold 13px "Courier New", monospace', colour: INK_DIM, align: 'center',
