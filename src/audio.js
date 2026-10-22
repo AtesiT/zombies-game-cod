@@ -1145,6 +1145,60 @@ export class AudioEngine {
 
   /** Dog round: a howl and a pack of barks. */
   // ------------------------------------------------------- haunt round sfx --
+  /**
+   * The drummer's beat: a tom with the heel of the hand on it, a little
+   * behind the beat on purpose, because it is a dead man playing.
+   */
+  drum(vol = 0.8) {
+    if (!this.ready || this.muted) return;
+    const t = this.t + 0.012;
+    this._tone('sine', 118, 62, t, 0.22, 0.34 * vol, this.sfxBus);
+    this._tone('triangle', 74, 48, t + 0.004, 0.16, 0.2 * vol, this.sfxBus);
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 700;
+    n.connect(f);
+    const g = this._env(f, t, 0.16 * vol, 0.002, 0.1);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.13);
+  }
+
+  /** A bow: the string let go, and the hiss of the arrow away. */
+  bow(vol = 0.7) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this._tone('triangle', 340, 96, t, 0.14, 0.22 * vol, this.sfxBus);
+    this._tone('sine', 720, 180, t, 0.06, 0.1 * vol, this.sfxBus);
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 2600; f.Q.value = 1.2;
+    n.connect(f);
+    const g = this._env(f, t, 0.12 * vol, 0.004, 0.18);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.24);
+  }
+
+  /** Silk: a dry whisper, and nothing else. */
+  silk(vol = 0.6) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'highpass'; f.frequency.value = 3400;
+    n.connect(f);
+    const g = this._env(f, t, 0.09 * vol, 0.03, 0.3);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.36);
+  }
+
+  /** Venom arriving: a wet, rising gurgle under the hurt sound. */
+  venom(vol = 0.7) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this._tone('sawtooth', 64, 132, t, 0.5, 0.14 * vol, this.sfxBus);
+    this._tone('sine', 130, 74, t + 0.06, 0.4, 0.1 * vol, this.sfxBus);
+  }
+
   /** The grave's bell: struck metal that will not hurry. */
   bell(vol = 0.9) {
     if (!this.ready || this.muted) return;

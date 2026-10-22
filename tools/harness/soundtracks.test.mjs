@@ -81,10 +81,17 @@ test('third debug tab is reachable by keyboard/click, every row fits, and guest 
   const p = debugPanel(g, 800, 500), b = debugTabBar(g, 800, 500);
   assert.ok(p.y >= 8 && p.y + p.ch <= 492);
   assert.equal(debugTabHit(g, 800, 500, b.x + (b.w * (DEBUG_MUSIC_TAB + 0.5)) / DEBUG_TABS.length, b.y + 10), DEBUG_MUSIC_TAB);
-  p.rows.forEach((r, i) => {
-    const y = p.y + p.head + (i + 0.5) * p.rowH;
-    assert.ok(y < p.y + p.ch - 40); assert.equal(debugHitTest(g, 800, 500, p.x + 40, y), i);
-  });
+  // The panel scrolls now (47 rows in a panel that shows 17), so the check is
+  // per row: put the cursor on it, and the window follows -- then the row is
+  // on screen, inside the panel, and the hit test lands back on that row.
+  for (let i = 0; i < p.rows.length; i++) {
+    g.debugIndex = i;
+    const q = debugPanel(g, 800, 500);
+    assert.ok(i >= q.top && i < q.top + q.shown, `row ${i} is off the scrolled window`);
+    const y = q.y + q.head + (i - q.top + 0.5) * q.rowH;
+    assert.ok(y < q.y + q.ch - 40, `row ${i} runs under the footer`);
+    assert.equal(debugHitTest(g, 800, 500, q.x + 40, y), i);
+  }
   assert.equal(p.rows.filter((r) => SOUNDTRACKS.some((t) => r.id === `music:${t.id}`)).length, 20);
   const canvas = nc(800, 500); assert.doesNotThrow(() => drawDebug(canvas.getContext('2d'), g, 800, 500));
   g.net.role = 'guest'; g.net.isHost = false; g.net.state = 'open';
@@ -125,7 +132,10 @@ test('wave metrics are independent snapshots; intermission support only affects 
   g.startRound(2); assert.equal(g.roundMetrics.kills, 0); assert.equal(g.runMetrics.kills, 8);
   g.recordRound('kills'); assert.equal(g.roundMetrics.kills, 1); assert.equal(g.runMetrics.kills, 9);
   // the end-of-run ledger reads the same shape the old per-wave panel used
-  assert.equal(roundReportRows({ ...wave, accuracy: 70, headshotRate: 38 }).length, 20);
+  // one row per number the ledger keeps, and it grew a row when the nine
+  // wardens landed -- the count is asserted so that a forgotten field shows up
+  // here rather than as a blank line on the death screen
+  assert.equal(roundReportRows({ ...wave, accuracy: 70, headshotRate: 38 }).length, 21);
   g.rangeMode = true; g.recordRound('kills', 100); assert.equal(g.runMetrics.kills, 9);
   g.reset(); assert.equal(g.runMetrics.kills, 0); assert.equal(g._evacAudioPlayed, false);
   cleanup();

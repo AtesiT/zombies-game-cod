@@ -156,9 +156,13 @@ function click(inp, x, y) {
   const p = debugPanel(g, M.VW, M.VH);
   ok(p.x >= 0 && p.y >= 0 && p.x + p.cw <= M.VW && p.y + p.ch <= M.VH,
     `the panel runs off the screen at ${p.x},${p.y} ${p.cw}x${p.ch}`);
-  // the rows get shorter when there are a lot of them, so ask the panel
+  // The roster outgrew the panel, so it scrolls: put the cursor on a row and
+  // the window follows it, and then the row is on screen and hit-testable.
   for (let i = 0; i < p.rows.length; i++) {
-    const hit = debugHitTest(g, M.VW, M.VH, p.x + p.cw / 2, p.y + p.head + i * p.rowH + 4);
+    g.debugIndex = i;
+    const q = debugPanel(g, M.VW, M.VH);
+    ok(i >= q.top && i < q.top + q.shown, `row ${i} is outside the scrolled window`);
+    const hit = debugHitTest(g, M.VW, M.VH, q.x + q.cw / 2, q.y + q.head + (i - q.top) * q.rowH + 4);
     ok(hit === i, `row ${i} was hit as ${hit}`);
   }
   ok(debugHitTest(g, M.VW, M.VH, 2, 2) === -1, 'clicking outside the panel picked a row');
@@ -173,34 +177,50 @@ function click(inp, x, y) {
   console.log(`  panel: ${p.rows.length} rows, ${p.cw}x${p.ch} at ${p.x},${p.y}`);
 }
 
-// ---- 6. a phone has no backquote key: five taps on the round counter --------
-// Only while paused. Mid-round, that corner is where you aim and click at
-// whatever is climbing in -- five of those used to open the panel by accident.
+// ---- 6. a phone has no backquote key: the pause menu, and five taps ---------
+// The corner of the picture used to be the hidden door, and it is now the
+// pause chip -- so the door moved to the word PAUSED, and the pause menu
+// carries a DEBUG PANEL row that anybody can see.
 {
   const { g, inp } = boot();
-  // firing in the corner of a live round must never open it
-  for (let i = 0; i < 12; i++) { click(inp, 40, 24); g.update(H); inp.endFrame(); }
+  const { backChipAt, PAUSE_ROWS, pauseTitleAt, pauseHitTest } = await import(SRC + '/hud.js');
+  // firing at the top-left corner of a live round must never open it
+  for (let i = 0; i < 12; i++) { click(inp, 20, 20); g.update(H); inp.endFrame(); }
   ok(!g.debugOpen, 'clicking the corner during a round opened the debug panel');
+  // and that corner is the pause chip: one press stops the world
+  ok(g.paused, 'the top-left pause chip did not pause the round');
 
+  ok(PAUSE_ROWS.some((r) => r.label === 'DEBUG PANEL'), 'the pause menu has no debug row');
+  const row = PAUSE_ROWS.findIndex((r) => r.label === 'DEBUG PANEL');
   g.paused = true;
-  for (let i = 0; i < 4; i++) {
-    click(inp, 40, 24);
+  const rr = pauseHitTest(g, M.VW, M.VH, M.VW / 2, M.VH * 0.30) ;  // sanity: title, not a row
+  ok(rr === -1, `the title was read as pause row ${rr}`);
+  g._pauseChoose(row);
+  ok(g.debugOpen, 'the pause menu row did not open the debug panel');
+  g.debugOpen = false; g.paused = true;
+
+  // five taps on the PAUSED title still work as the shortcut
+  const tap = () => {
+    inp.mouse.x = M.VW / 2; inp.mouse.y = M.VH * 0.30; inp.mouse.pressed = true;
     g.update(H); inp.endFrame();
-  }
+  };
+  ok(pauseTitleAt(M.VW, M.VH, M.VW / 2, M.VH * 0.30), 'the PAUSED word is not the tap target');
+  for (let i = 0; i < 4; i++) tap();
   ok(!g.debugOpen, 'four taps opened it -- five were wanted');
-  click(inp, 40, 24);
-  g.update(H); inp.endFrame();
-  ok(g.debugOpen, 'five taps on the round counter did not open it');
-  // a slow tap starts the count again rather than opening it by accident
-  g.debugOpen = false;
-  g.paused = true;
-  click(inp, 40, 24);
-  g.update(H); inp.endFrame();
+  tap();
+  ok(g.debugOpen, 'five taps on PAUSED did not open the debug panel');
+  g.debugOpen = false; g.paused = true;
+  tap();
   for (let i = 0; i < 30; i++) { g.update(H); inp.endFrame(); }
-  click(inp, 40, 24);
-  g.update(H); inp.endFrame();
+  tap();
   ok(!g.debugOpen, 'two taps a second apart opened it');
-  console.log('  phone: five quick taps open it, two slow ones do not');
+  // and every panel can be left with the corner chip, with no keyboard
+  g.paused = true; g.debugOpen = true;
+  const b = { x: M.VW - 20, y: 20 };
+  ok(backChipAt(M.VW, M.VH, b.x, b.y), 'the back chip is not where the corner is');
+  click(inp, b.x, b.y); g.update(H); inp.endFrame();
+  ok(!g.debugOpen, 'the back chip did not close the debug panel');
+  console.log('  phone: pause chip, pause-menu debug row, five taps and the back chip');
 }
 
 // ---- 7. the walls-and-paths overlay draws -----------------------------------

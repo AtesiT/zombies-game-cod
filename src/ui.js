@@ -23,7 +23,11 @@ export function uiScale(w, h) {
   const short = Math.min(w, h * 1.6);
   // 1.5 is the ceiling: 16px of menu text becomes 24px, and the longest
   // headings still fit a 430-pixel-wide phone without wrapping.
-  return clamp(800 / Math.max(1, short), 1, 1.5);
+  const k = clamp(800 / Math.max(1, short), 1, 1.5);
+  // A letterboxed landscape phone is wide and very short. Scaling its menus
+  // up made them big enough to read and too big to fit: the settings panel
+  // had room for two rows. A menu still has to be able to lay out four.
+  return Math.min(k, Math.max(1, h / 210));
 }
 
 /** The scale, and the space a menu has once the scale is taken off it. */

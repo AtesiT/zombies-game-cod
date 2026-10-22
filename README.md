@@ -72,10 +72,13 @@ the wire is not a cosmetic bug, it is a frozen picture.
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
 FIRE / F / R / Q / dash / throw / medkit / knife buttons on the right, plus a
-pause button in the corner — parked off the physical corner of the glass, clear
-of notches and rounded edges, and big enough for a thumb. A tap anywhere else
-reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
-the barrel at the nearest walker while you are not touching the aim stick.
+pause button in the **top left** corner — the map owns the right one — parked off
+the physical corner of the glass, clear of notches and rounded edges, and big
+enough for a thumb. A tap anywhere else reaches the game underneath, so the
+menus work with a thumb; a *flick* that scrolls one of them is a scroll and not
+a press, so nothing is chosen until the finger comes down again. `AIM ASSIST`
+points the barrel at the nearest walker while you are not touching the aim
+stick, and no mouse pointer is drawn on a touch screen at all.
 
 Menus are drawn through a scale that grows as the screen narrows (`src/ui.js`):
 a phone gets the same layout 1.5× bigger, a desktop gets exactly the 800 × 500
@@ -84,6 +87,13 @@ you press is the row you see. The settings list scrolls by dragging it (a drag
 that scrolls does not also flip the toggle it started on), and on a narrow panel
 a row puts its slider on a second line under its label instead of printing the
 two on top of each other.
+
+Every full-screen panel — settings, controls, the debug list, achievements,
+statistics, the wardrobe — carries a **BACK / X** chip in the top-right corner,
+because a phone has no ESC and "O / ESC — back" was a sentence it could not act
+on. The wheel moves one row a notch (in the settings, the achievements and the
+debug list alike), and every list answers to all four arrows. The debug panel is
+reachable without knowing any shortcut: `PAUSE → DEBUG PANEL`.
 
 The picture is not a fixed 800 × 500 box any more. The canvas takes the shape of
 whatever it is sitting in — a phone held upright, a laptop, an ultrawide — and

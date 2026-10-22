@@ -162,11 +162,20 @@ ok(Math.abs(guest.zombies.filter((z) => !z.dead).length - hz.length) <= 2,
   `the guest sees ${guest.zombies.filter((z) => !z.dead).length} walkers, the host has ${hz.length}`);
 
 // ---- the guest's hands have to reach the host -------------------------------
+// Four directions, not one. The body spawns against a wall about as often as
+// not, and a guest who walked into a doorframe moved 6 pixels while the wire
+// was working perfectly -- which made this check a coin toss rather than a
+// test of the network.
 if (mate && px0) {
-  guest.input.keys.add('KeyD');
-  await tick(90);
-  guest.input.keys.delete('KeyD');
-  const walked = Math.hypot(mate.pos.x - px0.x, mate.pos.y - px0.y);
+  let walked = 0;
+  for (const key of ['KeyD', 'KeyW', 'KeyA', 'KeyS']) {
+    const from = { x: mate.pos.x, y: mate.pos.y };
+    guest.input.keys.add(key);
+    await tick(45);
+    guest.input.keys.delete(key);
+    walked = Math.max(walked, Math.hypot(mate.pos.x - from.x, mate.pos.y - from.y));
+    if (walked > 12) break;
+  }
   ok(walked > 12, `a keyboard guest moved its body ${walked.toFixed(1)}px over the real wire`);
 
   // and the body the guest is driving has to be where the host put it

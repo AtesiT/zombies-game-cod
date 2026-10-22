@@ -196,12 +196,17 @@ export class TouchControls {
       place(this.buttons[id], BS, BS,
         pad + F + gap + col * (B + gap) - off, pad + row * (B + gap) - off);
     }
-    // the pause corner: off the physical corner of the glass. On a landscape
-    // PWA phone the very corner is a notch, a rounded edge or nothing at all,
-    // and the button used to live exactly there -- visible, but unpressable
+    // The pause corner, left: the map has the right one and they used to
+    // fight over it -- on a narrow phone the button sat on the minimap. It
+    // still stands off the physical corner of the glass, because on a
+    // landscape PWA phone the very corner is a notch, a rounded edge or
+    // nothing at all, and the button used to live exactly there.
     const safe = this._safeInsets();
-    place(this.buttons.pause, Math.max(56, 48 * k), Math.max(40, 34 * k), pad + safe.r + 6, undefined);
+    place(this.buttons.pause, Math.max(56, 48 * k), Math.max(40, 34 * k), undefined, undefined);
+    this.buttons.pause.style.left = `${pad + safe.l + 6}px`;
+    this.buttons.pause.style.right = 'auto';
     this.buttons.pause.style.top = `${pad + safe.t + 6}px`;
+    this.buttons.pause.style.bottom = 'auto';
     for (const b of BUTTONS) {
       this.buttons[b.id].style.fontSize = `${(b.big ? 13 : 15) * (b.scale ?? 1) * k}px`;
     }
@@ -324,7 +329,9 @@ export class TouchControls {
           this._touches.set(t.identifier, { kind: 'aim' });
           stickAt(this.right, t);
         } else {
-          this._touches.set(t.identifier, { kind: 'tap' });
+          this._touches.set(t.identifier, {
+            kind: 'tap', x: t.clientX, y: t.clientY, moved: false,
+          });
           this._tap(t, 'down');
         }
       }
@@ -336,7 +343,11 @@ export class TouchControls {
         if (!rec) continue;
         if (rec.kind === 'move') stickAt(this.left, t);
         else if (rec.kind === 'aim') stickAt(this.right, t);
-        else if (rec.kind === 'tap') this._tap(t, 'move');
+        else if (rec.kind === 'tap') {
+          if (!rec.moved && Number.isFinite(t.clientX)
+            && Math.hypot(t.clientX - rec.x, t.clientY - rec.y) > TAP_SLOP) rec.moved = true;
+          this._tap(t, 'move');
+        }
       }
       e.preventDefault?.();
     };
@@ -353,7 +364,7 @@ export class TouchControls {
           this.aim.x = 0; this.aim.y = 0;
           this._resetKnob(this.right);
         } else if (rec.kind === 'tap') {
-          this._tap(t, 'up');
+          this._tap(t, 'up', rec);
         } else {
           this._press(rec.id, false);
         }
@@ -440,7 +451,7 @@ export class TouchControls {
    * every menu press on a phone, which makes the front door unusable on the
    * one device that most needs on-screen controls.
    */
-  _tap(t, mode = 'move') {
+  _tap(t, mode = 'move', rec = null) {
     const inp = this.input;
     const box = inp?.canvas?.getBoundingClientRect?.();
     // a lift with no coordinates keeps the last one it was given, rather than
@@ -454,14 +465,17 @@ export class TouchControls {
     if (mode === 'up') {
       inp.mouse.down = false;
       inp.mouse.released = true;
-      // hold, slide, let go: the row you release over is the row you meant,
-      // which is the only way to pick one with a thumb covering the screen
-      if (this._slid) { inp.mouse.pressed = true; this._slid = false; }
+      // A deliberate tap is a press and a lift in the same place. A flick
+      // that scrolled a list is not a choice: it used to count as one, so
+      // flicking down the settings page also ticked whatever the thumb
+      // happened to leave over -- which is how people ended up in the wrong
+      // menu with no idea what they had pressed. Scroll first, then tap:
+      // press, move, press.
+      if (this._menuOpen() && !rec?.moved) inp.mouse.pressed = true;
     } else if (mode === 'down') {
-      if (!inp.mouse.down) {
-        if (this._menuOpen()) this._slid = true;
-        else inp.mouse.pressed = true;
-      }
+      // in the game the press has to act at once, or shooting is a thumb-beat
+      // late; in a list it waits for the lift, so a drag can start anywhere
+      if (!inp.mouse.down && !this._menuOpen()) inp.mouse.pressed = true;
       inp.mouse.down = true;
     }
     inp.anyInput = true;
@@ -641,6 +655,10 @@ export class TouchControls {
     this._built = false;
   }
 }
+
+// How far a finger may drift and still count as a tap rather than a scroll.
+// A thumb is not a mouse: a couple of pixels on the glass is still a tap.
+const TAP_SLOP = 9;
 
 const DEAD = 0.14;   // ignore a thumb just resting on the stick
 

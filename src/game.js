@@ -5,14 +5,14 @@ import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
-  throwPocket,
+  throwPocket, bossForRound, BOSS_ORDER,
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
 import { SKILLS, SKILLS_ENABLED, DRAFT_TIME, DRAFT_EVERY, makeDraft, NO_SKILLS } from './skills.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
-import { Totem, Grave, ZThrow } from './haunts.js';
+import { Totem, Grave, Hive, Thread, Arrow, ZThrow } from './haunts.js';
 import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
 import { Achievements, EasterEgg, submitScore, ACHIEVEMENTS } from './achievements.js';
 import { loadLifetime, bankRun } from './lifetime.js';
@@ -21,7 +21,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout} from './hud.js';
+import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout, backChipAt, drawBackChip, PAUSE_ROWS, pauseChipAt, pauseChipShown, pauseTitleAt} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -40,6 +40,9 @@ const SALVAGE_DROP = 0.16;      // chance a kill drops salvage
 
 const MAX_ALIVE_BASE = 24;
 const DOG_ROUND_EVERY = 5;      // every 5th round is a hellhound round
+// The plain walker must stay the single biggest group at every round, so the
+// specials never take more than this much of the spawn table between them.
+const SPECIAL_CAP = 0.52;
 
 function hslToRgb(h, s, l) {
   if (s <= 0) { const v = Math.round(l * 255); return [v, v, v]; }
@@ -193,6 +196,28 @@ export const VOICE_LINES = {
   shocker: ['Something out there is carrying lightning. Keep moving or keep smoking.', 'Blue one on a rod. Shoot it while it winds up.'],
   bearer: ['Purple one with a bundle. It is going to plant something. Do not let it.', 'That one kneels. When it kneels, the house changes. Interrupt the kneeling.'],
   mourner: ['Grey one with a spade. It digs, and then the bells start.', 'Do not let it finish the hole. Nobody should be buried here tonight.'],
+  // ---- the apiary, the barrow and the web --------------------------------
+  beekeeper: ['It is carrying a box. Whatever is in the box, do not let it open the box.',
+    'A keeper. It wants somewhere quiet to put the hive down. Do not give it one.'],
+  hive: ['That is a hive. The bees are not the problem and they never were.',
+    'Shoot the box. Not the bees. The box.'],
+  archer: ['It has a bow. It draws slowly on purpose -- watch the draw and step off the line.',
+    'Something out there is aiming. When you see the string come back, move.'],
+  bulwark: ['One with a plank for a face. You are not getting through the plank -- go round it.',
+    'Shield. Aim at the hand, not the wood.'],
+  drummer: ['Listen. That is a drum, and everything dead in earshot is keeping time with it.',
+    'Kill the drummer. The room gets slower when you do.'],
+  sapper: ['Crawling with a bundle of charges. Shoot it from a distance and it takes the rest with it.',
+    'If that gets to your boots, the whole bundle is yours. Do not let it get to your boots.'],
+  first: ['That one has a crown of ribs. It has died before. It will die again.',
+    'Bones on bones. Every time you put it down it gets up quicker.'],
+  weaver: ['Spider. Whatever it leaves on the floor takes your legs -- shoot it or cut it.',
+    'Silk on the ground. A dash started outside it tears straight through.'],
+  widow: ['Pale cross on its back. That bite keeps working after it lets go.',
+    'Widow. Nine seconds of it in your blood. A medkit ends it early, nothing else does.'],
+  porter: ['Fat one carrying something. It is not loot, it is brood.'],
+  boss: ['Something bigger than the rest just walked in. Deal with it.',
+    'That is the warden of this round. It is not in the count -- it is the count.'],
 };
 
 // The droplets on the glass after a storm: one baked sheet per frame size,
@@ -366,6 +391,12 @@ export class Game {
     // ---- the haunt round: what the new creatures leave behind and throw ----
     this.totems = [];       // dusk on a stick: shoot it or the house stays bold
     this.graves = [];       // bells, and the wraiths that answer them
+    // ---- the apiary, the barrow and the web --------------------------------
+    this.hives = [];        // the beekeeper's nest, and the bees it keeps
+    this.threads = [];      // a weaver's knots of silk: the floor, made hostile
+    this.arrows = [];       // the archer's fan, still in the air
+    this.arrowSticks = [];  // the ones that stopped in a wall, for a while
+    this.boss = null;       // the warden of this round, if it has one
     this.zThrows = [];      // snowballs, fire bottles, stink potions in flight
     this.bolts = [];        // the Shocker's lightning, purely to look at
     this._hauntId = 0;
@@ -794,6 +825,11 @@ export class Game {
   // ------------------------------------------------------------------ waves
   roundPlan(round) {
     const dog = round > 0 && round % DOG_ROUND_EVERY === 0;
+    // ---- the nine wardens: one on every fifth round from ten -------------
+    // A warden round is shorter than the round it replaces -- the point of it
+    // is the thing in the middle of the room, not the queue outside it -- and
+    // the warden is not part of the tally, so the round ends when it does.
+    const boss = bossForRound(round);
     // more bodies in the room, more of them at the windows: not a straight
     // multiplication, or a four-player round ten becomes a spreadsheet
     const crowd = 1 + 0.32 * Math.max(0, (this.players?.length ?? 1) - 1);
@@ -806,54 +842,115 @@ export class Game {
     const hp = dog ? Math.min(80 + (round - 1) * 30, 1600) : Math.min(120 + (round - 1) * 46, 2600);
     const speed = Math.min(52 + (round - 1) * 1.6, 96);
     const interval = dog ? Math.max(0.22, 0.75 - round * 0.02) : Math.max(0.3, 1.35 - round * 0.05);
-    return { total, maxAlive, hp, speed, interval, dog };
+    if (boss) {
+      // the escort, not the army: about half the bodies, arriving no faster
+      return {
+        total: Math.max(4, Math.round(total * (dog ? 0.55 : 0.5))),
+        maxAlive: Math.min(maxAlive, 22), hp, speed, interval,
+        dog, boss, bossIndex: BOSS_ORDER.indexOf(boss),
+      };
+    }
+    return { total, maxAlive, hp, speed, interval, dog, boss: null };
   }
 
-  /** Roll which enemy archetype the next spawn is. */
+  /**
+   * Roll which enemy archetype the next spawn is.
+   *
+   * One table, five columns: the type, the round it starts arriving on, how
+   * much its share grows per round, the ceiling on that share, and an optional
+   * multiplier for the weather. The plain walker has to stay the single
+   * biggest group at every round -- specials are seasoning -- so the whole
+   * special side of the table is scaled down whenever it would grow past
+   * `SPECIAL_CAP`. That way a new creature can be added here without
+   * arithmetic and without eating the walker alive.
+   */
   rollEnemyType() {
     if (this.dogRound) return 'dog';
     const r = this.round;
-    // The plain walker has to stay the majority all the way to the cap --
-    // specials are seasoning, not the meal. The haunt round made room for
-    // itself by shaving every older cap a little: everything together still
-    // tops out near four walkers in five... no -- near one special in five at
-    // mid rounds, and the walker stays the single biggest group at every one.
-    const runnerChance = Math.min(0.135, Math.max(0, (r - 5) * 0.020));
-    const bruteChance = Math.min(0.070, Math.max(0, (r - 9) * 0.011));
-    const shriekChance = Math.min(0.039, Math.max(0, (r - 11) * 0.007));
-    const helmetChance = Math.min(0.050, Math.max(0, (r - 11) * 0.010));
-    const gasChance = Math.min(0.030, Math.max(0, (r - 13) * 0.006));
-    const napalmChance = Math.min(0.034, Math.max(0, (r - 14) * 0.007));
-    const minerChance = Math.min(0.050, Math.max(0, (r - 11) * 0.009));
-    const medicChance = Math.min(0.043, Math.max(0, (r - 12) * 0.008));
-    const mimicChance = Math.min(0.034, Math.max(0, (r - 14) * 0.006));
-    const boneChance = Math.min(0.043, Math.max(0, (r - 5) * 0.006));
-    const swarmChance = Math.min(0.055, Math.max(0, (r - 17) * 0.009));
-    const jammerChance = Math.min(0.043, Math.max(0, (r - 24) * 0.007));
-    // ---- the haunt round: each arrives on its own round, all of them rare --
-    // the snowman likes a storm and comes twice as often in one
-    const snowChance = Math.min(0.022, Math.max(0, (r - 11) * 0.004)) * (this.wx?.kind === 'storm' ? 2 : 1);
-    const arsonChance = Math.min(0.017, Math.max(0, (r - 12) * 0.004));
-    const witchChance = Math.min(0.015, Math.max(0, (r - 13) * 0.004));
-    const bearerChance = Math.min(0.011, Math.max(0, (r - 14) * 0.003));
-    const mournerChance = Math.min(0.011, Math.max(0, (r - 15) * 0.003));
-    const shockChance = Math.min(0.015, Math.max(0, (r - 17) * 0.0035));
-    const knightChance = Math.min(0.013, Math.max(0, (r - 19) * 0.0035));
+    const storm = this.wx?.kind === 'storm' ? 2 : 1;
+    const SP = [
+      ['runner', 5, 0.020, 0.115],
+      ['brute', 9, 0.011, 0.060],
+      ['shrieker', 11, 0.007, 0.033],
+      ['helmet', 11, 0.010, 0.043],
+      ['gasbag', 13, 0.006, 0.026],
+      ['napalm', 14, 0.007, 0.029],
+      ['miner', 11, 0.009, 0.043],
+      ['medic', 12, 0.008, 0.037],
+      ['mimic', 14, 0.006, 0.029],
+      ['bonewright', 5, 0.006, 0.037],
+      ['swarmling', 17, 0.009, 0.047],
+      ['jammer', 24, 0.007, 0.037],
+      // the haunt round
+      ['snowman', 11, 0.004, 0.019, storm],
+      ['arsonist', 12, 0.004, 0.015],
+      ['witch', 13, 0.004, 0.013],
+      ['bearer', 14, 0.003, 0.010],
+      ['mourner', 15, 0.003, 0.010],
+      ['shocker', 17, 0.0035, 0.013],
+      ['knight', 19, 0.0035, 0.011],
+      // ---- the apiary, the barrow and the web ---------------------------
+      // the spiders are the commonest of the new lot: they are the cheapest
+      // to draw and the most fun to have on the floor
+      ['weaver', 8, 0.006, 0.030],
+      ['beekeeper', 7, 0.003, 0.018],
+      ['archer', 9, 0.005, 0.026],
+      ['bulwark', 11, 0.004, 0.020],
+      ['widow', 12, 0.004, 0.016],
+      ['drummer', 13, 0.003, 0.014],
+      ['sapper', 14, 0.003, 0.018],
+      ['porter', 16, 0.003, 0.013],
+      ['first', 18, 0.002, 0.007],
+    ];
+    const share = ([, from, per, cap, wx = 1]) => Math.min(cap, Math.max(0, (r - from) * per)) * wx;
+    let sum = 0;
+    for (const row of SP) sum += share(row);
+    const k = sum > SPECIAL_CAP ? SPECIAL_CAP / sum : 1;
     const x = Math.random();
     let acc = 0;
-    for (const [type, chance] of [
-      ['shrieker', shriekChance], ['helmet', helmetChance], ['gasbag', gasChance],
-      ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
-      ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
-      ['bonewright', boneChance], ['swarmling', swarmChance], ['jammer', jammerChance],
-      ['snowman', snowChance], ['arsonist', arsonChance], ['witch', witchChance],
-      ['bearer', bearerChance], ['mourner', mournerChance], ['shocker', shockChance],
-      ['knight', knightChance],
-    ]) {
-      acc += chance;
-      if (x < acc) return type;
+    for (const row of SP) {
+      acc += share(row) * k;
+      if (x < acc) return row[0];
     }
     return 'walker';
+  }
+
+  /**
+   * The warden of round n. It arrives on the far side of the house with its
+   * name on the screen, it is not part of the round's tally -- the round ends
+   * when it is dead, not when the counter runs out -- and it leaves a gap of a
+   * second before it starts walking, so you get to see what you are facing.
+   */
+  _spawnBoss(type) {
+    const pick = this.pickSpawn();
+    const sp = pick?.s ?? pick;
+    const floor = pick?.floor ?? this.map.floor;
+    if (!sp || sp.x == null) return null;
+    const z = this.makeZombie({ x: sp.x, y: sp.y, floor }, type);
+    z.boss = true;
+    z.bossName = z.def.name ? z.def.name.toUpperCase() : String(type).toUpperCase();
+    // nine of them in a cycle, and they get heavier every time round it comes
+    const cycle = Math.floor(Math.max(0, this.round - 10) / 45);
+    z.hp = z.maxHp = Math.round(z.maxHp * (1 + cycle * 0.35));
+    z.bossMaxHp = z.maxHp;
+    z.state = ZSTATE.EMERGE;
+    z.emergeT = 0.8;
+    if (type === 'first') z.revivesLeft = 2;
+    this.zombies.push(z);
+    this.boss = z;
+    this.bannerShow(z.bossName, 'it has been waiting for you', {
+      dur: 4, big: true, colour: '#e0705a',
+    });
+    audio.growl(0.45, 1);
+    this.shake(5, 0.5);
+    this.say('boss');
+    return z;
+  }
+
+  /** Is the warden of this round still standing? */
+  get bossAlive() {
+    const b = this.boss;
+    return !!(b && !b.dead && !b.remove);
   }
 
   makeZombie(sp, forceType = null) {
@@ -935,6 +1032,9 @@ export class Game {
     }
     const plan = this.roundPlan(n);
     this.dogRound = plan.dog;
+    this.bossRound = plan.boss ?? null;
+    this.boss = null;
+    if (plan.boss) this._spawnBoss(plan.boss);
     // the range never "finishes" a round: there is nothing to finish
     this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
     this.zombiesSpawned = 0;
@@ -1044,8 +1144,14 @@ export class Game {
     const inp = this.input;
     const n = d.ids.length;
     const idx = Math.min(Math.max(0, d.index ?? 0), n - 1);
-    if (inp.wasPressed('ArrowRight', 'KeyD')) { d.index = (idx + 1) % n; audio.dryFire?.(); }
-    else if (inp.wasPressed('ArrowLeft', 'KeyA')) { d.index = (idx - 1 + n) % n; audio.dryFire?.(); }
+    // the cards are a row, but all four arrows move: a player who reaches for
+    // up and down should not find dead keys in a menu that is asking them to
+    // choose
+    if (inp.wasPressed('ArrowRight', 'KeyD', 'ArrowDown', 'KeyS')) {
+      d.index = (idx + 1) % n; audio.dryFire?.();
+    } else if (inp.wasPressed('ArrowLeft', 'KeyA', 'ArrowUp', 'KeyW')) {
+      d.index = (idx - 1 + n) % n; audio.dryFire?.();
+    }
     const m = inp.mouse;
     const hit = skillCardAt(this.vw, this.vh, m.x, m.y, n);
     if (hit >= 0) d.index = hit;
@@ -1288,28 +1394,43 @@ export class Game {
     const a = Math.min(1, this.voice.left / 0.5);
     // broadcasts are sentences now, not call-signs: wrap them to the box
     // (12px Courier is ~7.2px a character; the box is 440 wide, 420 usable)
+    // The box was a fixed 440 wide, which is wider than a phone held upright
+    // and wider than the picture at MAX PICTURE SIZE: the broadcast ran off
+    // both edges of the glass. It is measured from the view now, and the wrap
+    // is worked out from that -- 12px Courier is about 7.2 a character.
+    const bw = Math.min(440, vw - 16);
+    const cols = Math.max(18, Math.floor((bw - 20) / 7.2));
     const words = String(this.voice.text).split(/\s+/);
     const lines = [];
     let cur = '';
     for (const wd of words) {
       const t = cur ? `${cur} ${wd}` : wd;
-      if (t.length > 58 && cur) { lines.push(cur); cur = wd; } else cur = t;
-      while (cur.length > 58) { lines.push(cur.slice(0, 58)); cur = cur.slice(58); }
+      if (t.length > cols && cur) { lines.push(cur); cur = wd; } else cur = t;
+      while (cur.length > cols) { lines.push(cur.slice(0, cols)); cur = cur.slice(cols); }
     }
     if (cur) lines.push(cur);
-    const shown = lines.slice(0, 3);
-    const y = vh - 96;
+    // The box lives between the boss bar and the bottom of the HUD. On a very
+    // short view there is not room for three lines of it, and a broadcast that
+    // runs over the round counter is worse than a shorter one.
+    const boss = this.hud?._bossRect;
+    const top = (boss ? boss.y + boss.h + 8 : 0) + 18;
+    const bottom = vh - 78;
+    const room = Math.max(0, bottom - top);
+    const maxLines = Math.max(1, Math.min(3, Math.floor((room - 6) / 14)));
+    const shown = lines.slice(0, maxLines);
+    let y = Math.max(top, Math.min(vh - 96, bottom - shown.length * 14 - 6));
     const bh = 20 + shown.length * 14;
+    const bLeft = vw / 2 - bw / 2;
     ctx.save();
     ctx.globalAlpha = a * 0.55;
     ctx.fillStyle = '#0a0c0e';
-    ctx.fillRect(vw / 2 - 220, y - 16, 440, bh);
+    ctx.fillRect(bLeft, y - 16, bw, bh);
     ctx.globalAlpha = a;
     ctx.strokeStyle = 'rgba(150,190,220,0.35)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(vw / 2 - 220, y - 16, 440, bh);
+    ctx.strokeRect(bLeft, y - 16, bw, bh);
     ctx.restore();
-    text(ctx, 'LOUDSPEAKER', vw / 2 - 210, y - 6, {
+    text(ctx, 'LOUDSPEAKER', bLeft + 10, y - 6, {
       font: 'bold 9px "Courier New", monospace', colour: '#7f9cb5', align: 'left', alpha: a,
     });
     shown.forEach((ln, i) => {
@@ -1376,7 +1497,14 @@ export class Game {
     // Skeletons and the pieces that come off a swarm are not part of the
     // round's tally -- they are made during it. They do not bring the round
     // closer to done; they only hold it open until you have killed them too.
-    if (!z.summoned) this.zombiesKilled++;
+    if (z.boss) {
+      // the warden was never in the tally: killing it is what ends the round
+      this.boss = null;
+      this.recordRound('bosses');
+      this.bannerShow('WARDEN DOWN', 'whatever it was holding open is closed',
+        { dur: 3.4, colour: '#f0d98a' });
+      audio.chime?.();
+    } else if (!z.summoned) this.zombiesKilled++;
     const who = z._by ?? this.player;
     // the set goes off the air the moment the thing carrying it does
     if (z.def.jams && this.jamT > 0) { this.jamT = Math.min(this.jamT, 0.45); this.jamSrc = null; }
@@ -1468,6 +1596,22 @@ export class Game {
       this.graves[i].update(dt, this);
       if (this.graves[i].dead) this.graves.splice(i, 1);
     }
+    for (let i = this.hives.length - 1; i >= 0; i--) {
+      this.hives[i].update(dt, this);
+      if (this.hives[i].dead) this.hives.splice(i, 1);
+    }
+    for (let i = this.threads.length - 1; i >= 0; i--) {
+      this.threads[i].update(dt, this);
+      if (this.threads[i].dead) this.threads.splice(i, 1);
+    }
+    for (let i = this.arrows.length - 1; i >= 0; i--) {
+      this.arrows[i].update(dt, this);
+      if (this.arrows[i].dead) this.arrows.splice(i, 1);
+    }
+    for (let i = this.arrowSticks.length - 1; i >= 0; i--) {
+      this.arrowSticks[i].life -= dt;
+      if (this.arrowSticks[i].life <= 0) this.arrowSticks.splice(i, 1);
+    }
     for (let i = this.zThrows.length - 1; i >= 0; i--) {
       this.zThrows[i].update(dt, this);
       if (this.zThrows[i].dead) this.zThrows.splice(i, 1);
@@ -1482,6 +1626,20 @@ export class Game {
   /** A Bearer or a Mourner kneels and leaves something behind. False = house full. */
   placeHaunt(z) {
     const floor = z.floor ?? this.map.floor;
+    if (z.def.places === 'hive') {
+      // two hives at most in the house, and never two from the same keeper
+      if (this.hives.filter((h) => !h.dead).length >= (z.boss ? 2 : 1)) return false;
+      if (this.hives.some((h) => !h.dead && h.ownerId === z.id)) return false;
+      const hv = new Hive(z.pos.x, z.pos.y, floor, ++this._hauntId);
+      hv.ownerId = z.id;
+      this.hives.push(hv);
+      audio.wood(true);
+      this.particles.spark(hv.x, hv.y - 8, -Math.PI / 2, 8, '#e0b04a');
+      this.bannerShow('A HIVE IS SET DOWN', 'the humming starts -- shoot the box, not the bees',
+        { dur: 3, colour: '#e0b04a' });
+      this.say('hive');
+      return true;
+    }
     if (z.def.places === 'totem') {
       if (this.totems.some((t) => !t.dead)) return false;   // one dusk at a time
       const tt = new Totem(z.pos.x, z.pos.y, floor, ++this._hauntId);
@@ -1536,6 +1694,201 @@ export class Game {
     }
   }
 
+  /** A hive lets one out. Small, quick, and worth almost nothing on its own. */
+  spawnBee(hive) {
+    const a = randRange(0, TAU), r = randRange(8, 18);
+    const z = this.makeZombie({
+      x: hive.x + Math.cos(a) * r, y: hive.y + Math.sin(a) * r, floor: hive.f,
+    }, 'bee');
+    z.hiveUid = hive.uid;
+    z.summoned = true;
+    this.zombies.push(z);
+    this.particles.spark(z.pos.x, z.pos.y - 8, a, 3, '#e0c060');
+    audio.silk?.(0.35);
+  }
+
+  /** The archer's fan: three arrows, the middle one where you were standing. */
+  archerVolley(z, p) {
+    const floor = z.floor ?? this.map.floor;
+    const tx = p?.pos.x ?? z.pos.x, ty = p?.pos.y ?? z.pos.y;
+    const base = Math.atan2(ty - 12 - (z.pos.y - 12), tx - z.pos.x);
+    const dmg = (this.roundPlan?.(this.round)?.hp ?? 120) * 0.055;
+    for (const [off, fast, heavy] of [[0, 520, true], [-0.245, 380, false], [0.245, 380, false]]) {
+      const ang = base + off;
+      this.arrows.push(new Arrow(z.pos.x + Math.cos(base) * 10, z.pos.y - 12 + Math.sin(base) * 6,
+        ang, fast, heavy ? dmg : dmg * 0.6, floor, heavy));
+    }
+    audio.bow?.(0.8);
+    this.particles.spark(z.pos.x, z.pos.y - 12, base, 3, '#cfc9b4');
+  }
+
+  /** A weaver sets a knot of silk down. It is not a projectile: it stays. */
+  addThread(x, y, floor) {
+    if (this.threads.length >= 26) return;
+    // do not stack them on top of each other -- a mat of silk is not a wall
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, x, y) < 24 * 24) return;
+    }
+    this.threads.push(new Thread(x, y, floor));
+    audio.silk?.(0.5);
+    this.particles.dust(x, y, randRange(0, TAU), 2);
+  }
+
+  /** An arrow that stopped in a wall. Kept, because it is a nice thing to see. */
+  stickArrow(x, y, ang, f) {
+    if (this.arrowSticks.length > 40) this.arrowSticks.shift();
+    this.arrowSticks.push({ x, y, ang, f, life: 14, max: 14 });
+  }
+
+  /**
+   * The floor under your feet, made hostile. A knot of silk takes a little
+   * over half your legs and refuses the dash; a dash that starts outside one
+   * tears straight through it, which is the move the whole creature is for.
+   */
+  threadTick(dt) {
+    const p = this.player;
+    if (!p || p.dead) return;
+    const floor = p.floor ?? this.map.floor;
+    let inSilk = false;
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, p.pos.x, p.pos.y) < 17 * 17) { inSilk = true; break; }
+    }
+    if (inSilk) {
+      if (!p._silkTold || this.time - p._silkTold > 4) {
+        p._silkTold = this.time;
+        this.popups.add(p.pos.x, p.pos.y - 34, 'SILK', '#e8e4d2', 10);
+      }
+      p.silkT = 0.14;
+    }
+  }
+
+  /** A dash tears every knot it passes through. */
+  tearThreads(p) {
+    if (!this.threads.length) return;
+    const floor = p.floor ?? this.map.floor;
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, p.pos.x, p.pos.y) < 30 * 30) {
+        t.tear(this);
+        this.particles.spark(t.x, t.y - 3, randRange(0, TAU), 5, '#e8e4d2');
+      }
+    }
+  }
+
+  /**
+   * The sapper's bundle. Killing it is the gift: the blast takes everything
+   * dead within ninety units with it and does nothing at all to you. Letting
+   * it reach you is the other case, and that one hurts.
+   */
+  sapperBoom(z, onContact = false) {
+    if (z._boomed) return;
+    z._boomed = true;
+    const floor = z.floor ?? this.map.floor;
+    const R = 96;
+    this.explosionLights.push({ x: z.pos.x, y: z.pos.y - 6, r: 150, life: 0.35, max: 0.35, colour: '#f0a03c', f: floor });
+    this.particles.spark(z.pos.x, z.pos.y - 6, randRange(0, TAU), 26, '#f0c060');
+    this.particles.smoke(z.pos.x, z.pos.y - 4, 10);
+    this.shake(4, 0.3);
+    if (audio.explosion) audio.explosion(); else audio.zombieDie();
+    let killed = 0;
+    for (const o of this.zombies) {
+      if (o === z || o.dead) continue;
+      if ((o.floor ?? 0) !== floor) continue;
+      const d = dist(z.pos.x, z.pos.y, o.pos.x, o.pos.y);
+      if (d > R) continue;
+      const mul = 1 - (d / R) * 0.6;
+      if (o.hurt(260 * mul, false, this, randRange(0, TAU)) === 2) {
+        this.onZombieKilled(o, false, null, 'blast');
+        killed++;
+      }
+    }
+    if (killed) this.addPoints(killed * 40, z.pos.x, z.pos.y - 22, '#f0d98a', this.player);
+    if (onContact) {
+      const p = this.player;
+      if (p && !p.dead && (p.floor ?? 0) === floor && dist(z.pos.x, z.pos.y, p.pos.x, p.pos.y) < R) {
+        if (p.hurt(55, z.pos.x, z.pos.y, this)) {
+          this.popups.add(p.pos.x, p.pos.y - 34, 'SAPPER', '#e0896a', 12);
+        }
+      }
+    }
+    // if it is still standing (it reached you), put it down here; if the
+    // bullet already did that, `die` has been and gone and only the blast
+    // was ever missing
+    if (!z.dead) {
+      z.hp = 0;
+      z.dead = true;
+      z.deadT = 0;
+      z.state = ZSTATE.DEAD;
+      this.particles.chunk(z.pos.x, z.pos.y, randRange(0, TAU), 6);
+    }
+  }
+
+  /** A porter sets its brood down. They belong to it, so they are not counted. */
+  spawnBrood(z, n = 2) {
+    const floor = z.floor ?? this.map.floor;
+    for (let i = 0; i < n; i++) {
+      const a = randRange(0, TAU), r = randRange(12, 26);
+      const b = this.makeZombie({
+        x: z.pos.x + Math.cos(a) * r, y: z.pos.y + Math.sin(a) * r, floor,
+      }, 'porter' === z.type || z.type === 'mother' ? 'swarmlet' : 'swarmlet');
+      b.summoned = true;
+      b.summonedBy = z.id;
+      this.zombies.push(b);
+      this.particles.dust(b.pos.x, b.pos.y, a, 4);
+    }
+    audio.silk?.(0.4);
+  }
+
+  /** The warden blows a whistle; the colonel gets knights. */
+  bossSummon(z) {
+    const floor = z.floor ?? this.map.floor;
+    const type = z.def.summons ?? 'walker';
+    const n = type === 'knight' ? 1 : 2;
+    let made = 0;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + randRange(0, 1);
+      const spot = this.map.blockedAt(z.pos.x + Math.cos(a) * 40, z.pos.y + Math.sin(a) * 40, 8, floor)
+        ? null : { x: z.pos.x + Math.cos(a) * 40, y: z.pos.y + Math.sin(a) * 40 };
+      if (!spot) continue;
+      const o = this.makeZombie({ x: spot.x, y: spot.y, floor }, type);
+      o.summoned = true;
+      o.state = ZSTATE.EMERGE;
+      o.emergeT = 0.5;
+      this.zombies.push(o);
+      this.particles.dust(spot.x, spot.y, a, 8);
+      made++;
+    }
+    if (made) {
+      this.shake(2, 0.2);
+      this.popups?.add?.(z.pos.x, z.pos.y - 40,
+        type === 'knight' ? 'IT WHISTLES' : 'IT CALLS THEM IN', '#e0896a', 11);
+      audio.growl?.(0.6, 0.9);
+    }
+  }
+
+  /** The organist's ring: it staggers you and it is heard across the floor. */
+  bossShock(z, radius = 220) {
+    const floor = z.floor ?? this.map.floor;
+    this.shriekRings.push({
+      x: z.pos.x, y: z.pos.y, r: 10, max: radius, life: 0.9, maxLife: 0.9,
+      f: floor, colour: '#c8a0e8',
+    });
+    audio.shriek();
+    this.shake(4, 0.3);
+    const p = this.player;
+    if (p && !p.dead && (p.floor ?? 0) === floor
+      && dist(z.pos.x, z.pos.y, p.pos.x, p.pos.y) < radius && p.hurt(16, z.pos.x, z.pos.y, this)) {
+      p.stunT = Math.max(p.stunT ?? 0, 0.45);
+      this.popups.add(p.pos.x, p.pos.y - 34, 'STAGGERED', '#c8a0e8', 12);
+    }
+    for (const o of this.zombies) {
+      if (o === z || o.dead) continue;
+      if (dist2(z.pos.x, z.pos.y, o.pos.x, o.pos.y) < radius * radius) o.rally = 5;
+    }
+  }
+
   /** The grave lets one out: half-seen, quick, and not part of the round's tally. */
   spawnWraith(x, y, floor, uid) {
     const a = randRange(0, TAU), r = randRange(26, 52);
@@ -1558,6 +1911,15 @@ export class Game {
       if (gv.dead || (gv.f ?? 0) !== floor) continue;
       const d = dist(x, y, gv.x, gv.y);
       if (d < R) gv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const hv of this.hives) {
+      if (hv.dead || (hv.f ?? 0) !== floor) continue;
+      const d = dist(x, y, hv.x, hv.y);
+      if (d < R) hv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const th of this.threads) {
+      if (th.dead || (th.f ?? 0) !== floor) continue;
+      if (dist(x, y, th.x, th.y) < R) th.tear(this);
     }
   }
 
@@ -1884,7 +2246,9 @@ export class Game {
   _viewFollow() {
     const L = settingsLayout(this, this.vw, this.vh);
     if (!L.over) { this.settingsView = 0; return; }
-    let v = this.settingsView ?? L.top;
+    // a half-scrolled window is snapped to a whole row when the *keyboard*
+    // moves the selection: the finger leaves it wherever it likes
+    let v = Math.round(this.settingsView ?? L.top);
     if (this.settingsIndex < v) v = this.settingsIndex;
     else if (this.settingsIndex >= v + L.shown) v = this.settingsIndex - L.shown + 1;
     this.settingsView = clamp(v, 0, L.over);
@@ -1950,6 +2314,8 @@ export class Game {
     for (const z of this.zombies) { z.dead = true; z.remove = true; }
     this.zombies = [];
     this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
+    this.hives = []; this.threads = []; this.arrows = []; this.arrowSticks = [];
+    this.boss = null;
     this.fires = []; this.gases = []; this.rifts = [];
     this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
     this.supplies = [];
@@ -2196,11 +2562,13 @@ export class Game {
     }
     // the planted haunts take bullets too -- shooting the totem or the
     // headstone is the whole point of them
-    for (const arr of [this.totems, this.graves]) {
+    for (const arr of [this.totems, this.graves, this.hives, this.threads]) {
       for (const st of arr) {
         if (st.dead || (st.f ?? 0) !== floor) continue;
-        const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
-        if (res.d2 > 13 * 13) continue;
+        const lift = st.kind === 'thread' ? 2 : 10;
+        const rad = st.kind === 'thread' ? 11 : 13;
+        const res = pointSegDist2(st.x, st.y - lift, ox, oy, ex, ey);
+        if (res.d2 > rad * rad) continue;
         const t = Math.hypot(res.cx - ox, res.cy - oy);
         if (t > wallT) continue;
         hits.push({ st, t, head: false, x: res.cx, y: res.cy });
@@ -2232,7 +2600,8 @@ export class Game {
         });
         const broke = h.st.hurt(def.dmg * insta * skillMul, this);
         if (broke) {
-          this.addPoints(h.st.kind === 'totem' ? 250 : 200, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
+          const prize = h.st.kind === 'totem' ? 250 : h.st.kind === 'thread' ? 20 : 200;
+          this.addPoints(prize, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
         }
         anyHit = true;
         if (!firstHit) firstHit = { x: h.x, y: h.y, z: null };
@@ -3408,8 +3777,57 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- update
+  /**
+   * The way out of a full-screen panel for a device with no ESC. It is one
+   * press on the chip in the corner, and it is read before every other
+   * handler: the press that closes the panel must not also land on whatever
+   * row was underneath it.
+   */
+  _backChipPressed() {
+    const m = this.input?.mouse;
+    if (!m || !m.pressed) return false;
+    return backChipAt(this.vw, this.vh, m.x, m.y);
+  }
+
+  _closePanel() {
+    if (this.debugOpen) {
+      this.debugOpen = false;
+      this.paused = this._dbgWasPaused || false;
+    } else if (this.settingsOpen) {
+      this.settingsOpen = false;
+      this._resetArmT = 0;
+      this.paused = this._wasPaused || false;
+    } else if (!this.started && (this.scene === 'achievements' || this.scene === 'stats'
+      || this.scene === 'outfits')) {
+      const back = this.scene;
+      this.scene = 'menu';
+      this.menuIndex = this._menuRowIndex(back);
+    }
+    audio.dryFire();
+  }
+
+  /** Run the pause row the player picked. Indices follow PAUSE_ROWS. */
+  _pauseChoose(i) {
+    audio.dryFire();
+    if (i === 0) this.paused = false;
+    else if (i === 1) { this.settingsOpen = true; this._wasPaused = true; }
+    else if (i === 2) { this.controlsOpen = true; this._wasPaused = true; }
+    else if (i === 3) this._restartRun();
+    else if (i === 4) { this.debugOpen = true; this._dbgWasPaused = true; }
+    else if (i === 5) this._quitToMenu();
+  }
+
   update(dt) {
     this.time += dt;
+
+    // the corner chip, before anything else can eat the press
+    if ((this.settingsOpen || this.debugOpen
+      || (!this.started && (this.scene === 'achievements' || this.scene === 'stats' || this.scene === 'outfits')))
+      && this._backChipPressed()) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      this._closePanel();
+    }
 
     // ---- settings overlay (works anywhere, pauses the game behind it) -----
     // `wasPressed` stays true for the whole step, so a single O used to open
@@ -3463,12 +3881,14 @@ export class Game {
       if (m?.down && SL.over > 0) {
         if (this._setDragY === undefined) { this._setDragY = m.y; this._setDragged = false; }
         const dy = m.y - this._setDragY;
-        if (Math.abs(dy) >= 8) {
-          const stepPx = Math.max(6, SL.ROW);
-          this.settingsView = clamp((this.settingsView ?? SL.top)
-            - Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy) / stepPx)), 0, SL.over);
+        if (dy !== 0) {
+          // the list moves exactly as far as the finger did -- one design row
+          // of pitch, whatever the picture's scale -- so a slow drag creeps
+          // and a flick lands where the hand left it, not three rows past it
+          const pitch = Math.max(1, SL.PITCH);
+          this.settingsView = clamp((this.settingsView ?? SL.top) - dy / pitch, 0, SL.over);
           this._setDragY = m.y;
-          this._setDragged = true;
+          if (Math.abs(dy) > 4) this._setDragged = true;
         }
       } else if (!m?.down) {
         this._setDragY = undefined;
@@ -3536,12 +3956,13 @@ export class Game {
       else this.paused = this._dbgWasPaused || false;
     }
     // and on a phone, where there is no backquote key at all: five taps on
-    // the round counter. Only while paused -- during a round, the corner with
-    // the round in it is exactly where you aim and click at whatever is
-    // coming through the window, and five of those must not open a menu.
+    // the word PAUSED. It used to be a corner of the picture -- which is now
+    // the pause chip, and which you are also shooting at during a round. The
+    // PAUSE MENU also carries a DEBUG PANEL row, so this is the shortcut
+    // rather than the only door.
     if (!this.debugOpen && this.paused && this.started && !this.gameOver
       && this.input.mouse.pressed
-      && this.input.mouse.x < 132 && this.input.mouse.y < 46) {
+      && pauseTitleAt(this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
       this._dbgTaps = (this.time - this._dbgTapT < 0.7) ? this._dbgTaps + 1 : 1;
       this._dbgTapT = this.time;
       if (this._dbgTaps >= 5) {
@@ -3570,6 +3991,13 @@ export class Game {
       if (this.input.wasPressed('ArrowRight', 'KeyE')) {
         this.debugTab = (this.debugTab + 1) % tabs;
         this.debugIndex = 0; audio.dryFire();
+      }
+      // a mouse on the list expects the wheel to walk it, exactly as it walks
+      // the settings page
+      const dwheel = this.input.wheel ?? 0;
+      if (dwheel) {
+        this.debugIndex = clamp(this.debugIndex + Math.sign(dwheel), 0, n - 1);
+        audio.dryFire();
       }
       const tabHit = debugTabHit(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
       if (this.input.mouse.pressed && tabHit >= 0 && tabHit !== this.debugTab) {
@@ -3622,8 +4050,16 @@ export class Game {
       this.popups.update(dt);
       if (this.overT > 1.1) {
         // the one screen with no way back to the front door used to be this
-        // one: a player who wanted to stop had to start a run first
+        // one: a player who wanted to stop had to start a run first. A phone
+        // gets the chip in the corner, because a thumb anywhere else means
+        // "again" and there was nothing that meant "enough".
         if (this.input.wasPressed('Escape', 'Backspace')) { this._quitToMenu(); return; }
+        const m = this.input.mouse;
+        if (m.pressed && backChipAt(this.vw, this.vh, m.x, m.y)) {
+          m.pressed = false; m.down = false;
+          this._quitToMenu();
+          return;
+        }
         if (this.input.wasPressed('KeyR') || this.input.mouse.pressed) {
           if (this.net?.playing && !this.net.isHost) this.net.close();
           this._restartRun();
@@ -3652,22 +4088,41 @@ export class Game {
     if (this.input.wasPressed('KeyP')) this.paused = !this.paused;
     else if (this.input.wasPressed('Escape') && !this.craftOpen) this.paused = !this.paused;
     if (this.paused) {
-      // the pause screen is a menu you can click (or thumb) now: the rows and
-      // their geometry live in hud.js, the shortcuts still work as before
+      // The pause screen is a menu you can click, thumb *and* walk with the
+      // arrows: it used to answer only to the mouse and to five shortcut
+      // keys, so a phone had no way to reach the debug panel from a round and
+      // a keyboard could not move the highlight at all.
       const m = this.input.mouse;
-      const hit = pauseHitTest(this, this.vw, this.vh, m.x, m.y);
-      if (m.pressed && hit >= 0) {
+      const n = PAUSE_ROWS.length;
+      const hit = m.pressed ? pauseHitTest(this, this.vw, this.vh, m.x, m.y) : -1;
+      const up = this.input.wasPressed('ArrowUp', 'KeyW', 'Numpad8');
+      const down = this.input.wasPressed('ArrowDown', 'KeyS', 'Numpad2');
+      if (hit >= 0) this.pauseIndex = hit;
+      else if (up || down) {
+        this.pauseIndex = ((this.pauseIndex ?? 0) + (down ? 1 : n - 1)) % n;
         audio.dryFire();
-        if (hit === 0) this.paused = false;
-        else if (hit === 1) { this.settingsOpen = true; this._wasPaused = true; }
-        else if (hit === 2) { this.controlsOpen = true; this._wasPaused = true; }
-        else if (hit === 3) this._restartRun();
-        else if (hit === 4) this._quitToMenu();
       }
+      let chosen = -1;
+      if (hit >= 0) chosen = hit;
+      else if (this.input.wasPressed('Enter', 'Space', 'NumpadEnter')) chosen = this.pauseIndex ?? 0;
+      if (chosen >= 0) this._pauseChoose(chosen);
       if (this.input.wasPressed('KeyR')) this._restartRun();
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
       if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
+      return;
+    }
+
+    // ---- the pause chip, top left ----------------------------------------
+    // Read here, before the body updates: the press that stops the world must
+    // not also put a bullet through the window. (The touch layer has its own
+    // button in the same corner, so this is for the mouse and the pad.)
+    if (pauseChipShown(this) && this.input.mouse.pressed
+      && pauseChipAt(this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      this.paused = true;
+      audio.dryFire();
       return;
     }
 
@@ -3691,6 +4146,10 @@ export class Game {
     if (this.input) this.input.menuLock = this.craftOpen;
     this._fxOn(this.player);
     this.player.update(dt, this, this.input);
+    // the floor is a thing the weavers own: a knot of silk under the boots is
+    // a little over half speed and no dash, and it is checked here because
+    // the player has no idea threads exist
+    this.threadTick(dt);
     // footprints through the openings: whichever window or hatch a living body
     // is standing in goes on the trail the horde reads when it paths to you
     for (const pl of this.players ?? []) {
@@ -4272,6 +4731,11 @@ export class Game {
     this.graves = [];
     this.zThrows = [];
     this.bolts = [];
+    this.hives = [];
+    this.threads = [];
+    this.arrows = [];
+    this.arrowSticks = [];
+    this.boss = null;
     this.hordeThin = false;
     this.setWeatherKind(null);
     this.wx.wet = 0;
@@ -4518,12 +4982,16 @@ export class Game {
       this.outfitIndex = hover;
       audio.dryFire();
     }
-    if (inp.wasPressed('ArrowUp', 'KeyW')) {
+    // all four arrows: this is a column of coats, but a player who tries the
+    // horizontal pair should not find a dead key in a menu about clothes
+    if (inp.wasPressed('ArrowUp', 'KeyW', 'ArrowLeft', 'KeyA')) {
       this.outfitIndex = (this.outfitIndex - 1 + n) % n; audio.dryFire();
     }
-    if (inp.wasPressed('ArrowDown', 'KeyS')) {
+    if (inp.wasPressed('ArrowDown', 'KeyS', 'ArrowRight', 'KeyD')) {
       this.outfitIndex = (this.outfitIndex + 1) % n; audio.dryFire();
     }
+    if (inp.wasPressed('Home')) { this.outfitIndex = 0; audio.dryFire(); }
+    if (inp.wasPressed('End')) { this.outfitIndex = n - 1; audio.dryFire(); }
     const wheel = inp.wheel ?? 0;
     if (wheel) {
       this.outfitIndex = clamp(this.outfitIndex + Math.sign(wheel), 0, n - 1);
@@ -4572,12 +5040,17 @@ export class Game {
     const maxScroll = Math.max(0, total - visible);
     this.achScroll = Math.max(0, Math.min(this.achScroll ?? 0, maxScroll));
     const step = (d) => { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + d)); audio.dryFire(); };
-    if (inp.wasPressed('ArrowUp', 'KeyW')) step(-1);
-    if (inp.wasPressed('ArrowDown', 'KeyS')) step(1);
+    // all four arrows scroll it: the list is a column, so left and right mean
+    // the same as up and down rather than nothing at all
+    if (inp.wasPressed('ArrowUp', 'KeyW', 'ArrowLeft', 'KeyA')) step(-1);
+    if (inp.wasPressed('ArrowDown', 'KeyS', 'ArrowRight', 'KeyD')) step(1);
     if (inp.wasPressed('PageUp')) step(-visible);
     if (inp.wasPressed('PageDown')) step(visible);
     const wheel = inp.wheel ?? 0;
-    if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + Math.sign(wheel) * 2)); }
+    // one row a notch: `input.wheel` is a count of rows now, not the raw
+    // deltaY, so multiplying it again scrolled the list twice as fast as the
+    // hand moved -- which is what "the menus fly past" always meant
+    if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + wheel)); audio.dryFire(); }
 
     // A phone has no wheel and no ESC: a drag scrolls the list, and a tap that
     // did not drag closes it. Without this the page was a trap on the one
@@ -4931,6 +5404,30 @@ export class Game {
       ctx.restore();
     }
     // 2c. the planted haunts, what flies through the air, and the lightning
+    // the silk goes down first: it is on the floor, and everything else is
+    // standing on it
+    for (const th of this.threads) {
+      if (!th.dead && (th.f ?? 0) === this.map.floor) th.draw(ctx, this.art, this.time);
+    }
+    for (const hv of this.hives) {
+      if (!hv.dead && (hv.f ?? 0) === this.map.floor) hv.draw(ctx, this.art, this.time);
+    }
+    for (const ar of this.arrowSticks) {
+      if ((ar.f ?? 0) !== this.map.floor) continue;
+      const k = Math.min(1, ar.life / 3);
+      ctx.save();
+      ctx.globalAlpha = 0.45 * k;
+      ctx.strokeStyle = '#cfc9b4';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(ar.x, ar.y);
+      ctx.lineTo(ar.x - Math.cos(ar.ang) * 8, ar.y - Math.sin(ar.ang) * 8);
+      ctx.stroke();
+      ctx.restore();
+    }
+    for (const ar of this.arrows) {
+      if (!ar.dead && (ar.f ?? 0) === this.map.floor) ar.draw(ctx);
+    }
     for (const gv of this.graves) {
       if (!gv.dead && (gv.f ?? 0) === this.map.floor) gv.draw(ctx, this.art, this.time);
     }
@@ -5190,9 +5687,15 @@ export class Game {
       // used to drift over your walls, plain as day, while they walked about
       // upstairs. The bodies themselves were culled -- the glow was not.
       if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
-      const gx = z.pos.x - camX, gy = z.pos.y - camY - HEAD_OFF_Y;
+      // A glow is the mark of a head that is up and facing you. The hounds
+      // carry their heads level with the floor and the crawlers have theirs
+      // on the tiles -- and a pool of light sat over both of them like a
+      // torch, which read as "something is burning" rather than "a dog".
+      const off = z.def?.headOff ?? 1;
+      if (off < 0.6) continue;
+      const gx = z.pos.x - camX, gy = z.pos.y - camY - HEAD_OFF_Y * off;
       if (gx < -20 || gy < -20 || gx > vw + 20 || gy > vh + 20) continue;
-      ctx.drawImage(glowImg, Math.round(z.pos.x - gr), Math.round(z.pos.y - HEAD_OFF_Y - gr));
+      ctx.drawImage(glowImg, Math.round(z.pos.x - gr), Math.round(z.pos.y - HEAD_OFF_Y * off - gr));
     }
     ctx.restore();
 
@@ -5301,6 +5804,17 @@ export class Game {
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
+    // The way out of every one of those, drawn over it: a phone has no ESC,
+    // and "O / ESC — back" was a sentence it could not act on. The death
+    // screen gets one too -- "tap anywhere to try again" left a phone no way
+    // to say it had had enough.
+    if (this.settingsOpen || this.debugOpen || (this.gameOver && this.started)
+      || (!this.started && (this.scene === 'achievements' || this.scene === 'stats' || this.scene === 'outfits'))) {
+      if (this.gameOver && this.overT <= 1.1) { /* wait for the ledger to land */ } else {
+        drawBackChip(ctx, this, vw, vh,
+          this.debugOpen ? 'CLOSE' : this.gameOver ? 'MENU' : 'BACK');
+      }
+    }
 
     // A menu you cannot see your own pointer in is a menu you cannot use, and
     // a phone has never had one: draw it over everything, wherever the mouse

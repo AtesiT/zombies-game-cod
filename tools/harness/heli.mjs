@@ -428,12 +428,15 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   g5._drawVoice(nc(M.VW, M.VH).getContext('2d'), M.VW, M.VH);
   g5.draw(nc(M.VW, M.VH).getContext('2d'));
 
-  // the pause screen: five clickable rows, and the last one walks you home
+  // the pause screen: clickable rows, and the last one walks you home. The
+  // list grew a DEBUG PANEL row, so the count is asked for, not assumed.
   g5.map.setFloor(0); g5.useFloor(0); g5.player.floor = 0;
   const { pauseHitTest, PAUSE_ROWS, pauseRowRect } = await import(SRC + '/hud.js');
-  ok(PAUSE_ROWS.length === 5, `the pause menu has ${PAUSE_ROWS.length} rows, want 5`);
+  ok(PAUSE_ROWS.length >= 5, `the pause menu has ${PAUSE_ROWS.length} rows, want at least 5`);
+  const quitRow = PAUSE_ROWS.length - 1;
+  ok(PAUSE_ROWS[quitRow].label === 'RETURN TO MENU', 'the last pause row is not RETURN TO MENU');
   g5.paused = true;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < PAUSE_ROWS.length; i++) {
     const r = pauseRowRect(i, M.VW, M.VH);
     ok(pauseHitTest(g5, M.VW, M.VH, r.x + 20, r.y + 15) === i, `row ${i} is not where it is drawn`);
   }
@@ -444,7 +447,7 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
   ok(!g5.paused, 'clicking RESUME did not resume');
   // click RETURN TO MENU
   g5.paused = true;
-  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = pauseRowRect(4, M.VW, M.VH).y + 15;
+  g5.input.mouse.x = M.VW / 2; g5.input.mouse.y = pauseRowRect(quitRow, M.VW, M.VH).y + 15;
   g5.input.mouse.pressed = true;
   g5.update(H); g5.input.endFrame();
   ok(!g5.started && g5.scene === 'menu' && !g5.paused,

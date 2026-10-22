@@ -17,7 +17,7 @@ import { MAX_PLAYERS } from './net.js';
 import { isPortrait, isTouchDevice } from './touch.js';
 import { SKINS, SKIN_ORDER, skinOwned } from './skins.js';
 import { buildArt } from './art.js';
-import { uiView } from './ui.js';
+import { uiView, uiScale } from './ui.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
@@ -34,7 +34,7 @@ function menuSpace(ctx, w, h, fn) {
   const U = uiView(w, h);
   ctx.save();
   ctx.scale(U.k, U.k);
-  try { fn(U.w, U.h); } finally { ctx.restore(); }
+  try { fn(U.w, U.h, U.k); } finally { ctx.restore(); }
 }
 
 function menuPoint(w, h, mx, my) {
@@ -228,19 +228,38 @@ export class HUD {
    * with no explanation is indistinguishable from a bug -- and the last time
    * the engine failed to start, nothing on screen said so.
    */
-  _sound(ctx, game, w, h) {
-    let label = null, colour = '#e0a040';
-    if (audio.muted) { label = 'MUTED — M'; colour = '#c4463a'; }
-    else if (!audio.ready) { label = 'SOUND IS OFF — CLICK'; colour = '#c4463a'; }
-    else if (audio.ctx && audio.ctx.state !== 'running') { label = 'SOUND PAUSED — CLICK'; }
-    else if (settings.get('master') === 0) { label = 'MASTER VOLUME 0 — O'; }
-    else if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
-      label = 'ALL FADERS AT 0 — O';
+  /** The sound warning, if there is one to give. */
+  _soundLabel() {
+    if (audio.muted) return { label: 'MUTED — M', colour: '#c4463a' };
+    if (!audio.ready) return { label: 'SOUND IS OFF — CLICK', colour: '#c4463a' };
+    if (audio.ctx && audio.ctx.state !== 'running') return { label: 'SOUND PAUSED — CLICK', colour: '#c4463a' };
+    if (settings.get('master') === 0) return { label: 'MASTER VOLUME 0 — O', colour: '#e0a040' };
+    if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
+      return { label: 'ALL FADERS AT 0 — O', colour: '#e0a040' };
     }
-    if (!label) return;
-    const tw = Math.ceil(label.length * 6.6) + 16;
-    const x = w - tw - 8;
-    const y = settings.get('fps') ? 28 : 6;
+    return null;
+  }
+
+  /**
+   * Where the sound chip sits. It lives in the map's corner, so at MAX PICTURE
+   * SIZE -- where the map is small but the chip is not -- it stands under it.
+   * Everything else that wants the top of the screen asks this.
+   */
+  _soundRectFor(game, w) {
+    const info = this._soundLabel();
+    if (!info) return null;
+    const mini = this._miniRectFor(game, w);
+    const tw = Math.ceil(info.label.length * 6.6) + 16;
+    const x = Math.max(4, w - tw - 8);
+    const below = mini && x < mini.x + mini.w ? mini.y + mini.h + 6 : 0;
+    const y = Math.max(below, settings.get('fps') ? 28 : 6);
+    return { x, y, w: tw, h: 18, colour: info.colour, label: info.label };
+  }
+
+  _sound(ctx, game, w, h) {
+    const r = this._soundRectFor(game, w);
+    if (!r) return;
+    const { label, colour, x, y, w: tw } = r;
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.72)';
     ctx.fillRect(x, y, tw, 18);
@@ -275,6 +294,7 @@ export class HUD {
     ctx.restore();
 
     this._round(ctx, game, w, h);
+    this._bossBar(ctx, game, w, h);
     this._points(ctx, game, w, h);
     this._weapon(ctx, game, w, h);
     this._health(ctx, game, w, h);
@@ -289,6 +309,7 @@ export class HUD {
       this._prompt(ctx, game, w, h);
       this._minimap(ctx, game, w, h);
     }
+    this._pauseChip(ctx, game, w, h);
     this._jam(ctx, game, w, h);
     this._net(ctx, game, w, h);
     this._squad(ctx, game, w, h);
@@ -302,6 +323,31 @@ export class HUD {
     // the draft sits over everything: while it is open the hand belongs to it
     this._skillDraft(ctx, game, w, h);
     this._toast(ctx, game, w, h);
+  }
+
+  /**
+   * The pause chip, top left, with the map on the other side of the glass.
+   *
+   * It was only ever a key: a mouse player had to know that P or ESC stops
+   * the world, and the little menu corner on a phone sat over the map. One
+   * chip, one press, and the map keeps the corner it earned.
+   */
+  _pauseChip(ctx, game, w, h) {
+    if (!pauseChipShown(game)) return;
+    const r = pauseChipRect(w, h);
+    const m = game.input?.mouse;
+    const hot = m && m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h;
+    ctx.save();
+    ctx.fillStyle = hot ? 'rgba(240,217,138,0.22)' : 'rgba(14,16,21,0.55)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = hot ? GOLD : 'rgba(200,190,160,0.4)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    ctx.fillStyle = hot ? GOLD : 'rgba(230,220,194,0.85)';
+    const bx = r.x + r.w / 2 - 5, by = r.y + r.h / 2 - 6;
+    ctx.fillRect(bx, by, 3, 12);
+    ctx.fillRect(bx + 7, by, 3, 12);
+    ctx.restore();
   }
 
   /**
@@ -868,7 +914,12 @@ export class HUD {
     if (!game.started) return;
     const m = game.map;
     if (!m.floorShort) return;
-    const x = 10, y = 96;
+    const x = 10;
+    // A boss bar is the widest thing the HUD draws and it sits under the
+    // corner this tag lives in. The tag moves down rather than being printed
+    // on: it is a label, and a label you cannot read is not worth its pixels.
+    const boss = this._bossRect;
+    const y = boss && boss.y + boss.h > 92 && x < boss.x + boss.w ? boss.y + boss.h + 6 : 96;
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.55)';
     ctx.fillRect(x, y, 96, 17);
@@ -1295,6 +1346,23 @@ export class HUD {
   }
 
   // -------------------------------------------------------------- minimap --
+  /**
+   * Where the minimap will be, worked out from the sizes alone. The boss bar
+   * is drawn *before* the map and has to keep out of its way, and asking the
+   * map's own painter for that would mean painting it twice (or reading the
+   * answer off the previous frame, which is how the two of them ended up on
+   * top of each other for the whole of the first boss fight).
+   */
+  _miniRectFor(game, w) {
+    const map = game?.map;
+    if (!map || !w) return null;
+    const vw = game.vw ?? 800;
+    const k = Math.max(0.55, Math.min(1, vw / 640));
+    const s = Math.min((130 * k) / map.w, (92 * k) / map.h);
+    const mw = Math.ceil(map.w * s), mh = Math.ceil(map.h * s);
+    return { x: w - mw - 10 - 3, y: 7, w: mw + 6, h: mh + 6 };
+  }
+
   /** Rebuild the terrain layer of the minimap, but only when fog changes. */
   _miniTerrain(game) {
     const map = game.map;
@@ -1349,6 +1417,7 @@ export class HUD {
     const s = this._miniScale;
     const mw = terrain.width, mh = terrain.height;
     const x0 = w - mw - pad, y0 = pad;
+    this._miniRect = { x: x0 - 3, y: y0 - 3, w: mw + 6, h: mh + 6 };
 
     ctx.save();
     ctx.globalAlpha = 0.82;
@@ -1423,6 +1492,75 @@ export class HUD {
   }
 
   // -------------------------------------------------------------- banners --
+  /**
+   * The warden of the round, if there is one: a name, a bar, and the round's
+   * own number underneath it. It sits at the top of the picture where the eye
+   * goes when something arrives, and it goes away the moment it is dead --
+   * except for the last few seconds, when the bar drains in white and you can
+   * see exactly how much of it is left.
+   */
+  /**
+   * Where the boss bar goes. Pure geometry, because two other things -- the
+   * radio's voice box and the floor tag -- have to keep out of its way and
+   * neither of them can paint it first to find out.
+   */
+  _bossRectFor(game, w, h) {
+    const b = game.boss;
+    if (!b || b.dead || b.remove) return null;
+    const narrow = w < 560;
+    const bw = Math.min(narrow ? w - 48 : 380, w - 32);
+    const bx = Math.round((w - bw) / 2);
+    let by = Math.round(h * 0.075);
+    if (bx - 6 < (w < 420 ? 42 : 46)) by = Math.max(by, 48);
+    const overlaps = (r) => r && bx - 6 < r.x + r.w && bx + bw + 6 > r.x
+      && by - 15 < r.y + r.h + 4 && by + 19 > r.y - 4;
+    const mini = this._miniRectFor(game, w);
+    if (overlaps(mini)) by = Math.round(mini.y + mini.h + 22);
+    const snd = this._soundRectFor(game, w);
+    if (overlaps(snd)) by = Math.round(snd.y + snd.h + 22);
+    return { x: bx, y: by, w: bw, h: 7, box: { x: bx - 6, y: by - 15, w: bw + 12, h: 34 } };
+  }
+
+  _bossBar(ctx, game, w, h) {
+    const b = game.boss;
+    if (!b || b.dead || b.remove) return;
+    const R = this._bossRectFor(game, w, h);
+    if (!R) return;
+    const max = b.bossMaxHp || b.maxHp || 1;
+    const k = clamp((b.hp ?? 0) / max, 0, 1);
+    const narrow = w < 560;
+    const bw = R.w;
+    const bx = R.x;
+    const by = R.y;
+    // the floor tag is drawn after this, so leave it the answer
+    this._bossRect = R.box;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,7,10,0.62)';
+    ctx.fillRect(bx - 6, by - 15, bw + 12, 34);
+    ctx.strokeStyle = 'rgba(224,112,90,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx - 5.5, by - 14.5, bw + 11, 33);
+    text(ctx, b.bossName ?? 'WARDEN', w / 2, by - 4, {
+      font: `bold ${narrow ? 10 : 11}px "Courier New", monospace`, colour: '#e8a48a', align: 'center',
+    });
+    // the bar itself: a dark trough, the remainder in red, a pale edge
+    ctx.fillStyle = '#22181a';
+    ctx.fillRect(bx, by + 3, bw, 7);
+    ctx.fillStyle = k > 0.3 ? '#c2503c' : '#f0d98a';
+    ctx.fillRect(bx, by + 3, Math.round(bw * k), 7);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.fillRect(bx, by + 3, Math.round(bw * k), 2);
+    // and a second, thinner bar for the lives it has left
+    const lives = b.revivesLeft ?? 0;
+    if (lives > 0) {
+      for (let i = 0; i < lives; i++) {
+        ctx.fillStyle = '#e8e4d2';
+        ctx.fillRect(bx + bw - 6 - i * 7, by + 12, 4, 3);
+      }
+    }
+    ctx.restore();
+  }
+
   _banners(ctx, game, w, h) {
     const b = game.banner;
     if (!b || b.t <= 0) return;
@@ -1561,8 +1699,8 @@ export const CONTROL_ROWS = [
   ['SETTINGS', 'O'],
   ['CONTROLS LIST', 'C   CONTROLS ON THE MENU'],
   ['MUTE', 'M'],
-  ['DEBUG MENU', '`   FIVE TAPS ON THE ROUND (PAUSED)'],
-  ['PICK A MENU ROW', 'CLICK   TAP   HOLD AND SLIDE'],
+  ['DEBUG MENU', '`   PAUSE MENU ROW   FIVE TAPS ON PAUSED'],
+  ['PICK A MENU ROW', 'CLICK   OR TAP (A DRAG ONLY SCROLLS)'],
 ];
 
 /**
@@ -1583,8 +1721,11 @@ export const TOUCH_CONTROL_ROWS = [
   ['PICK A SKILL', 'TAP A CARD'],
   ['MEDKIT', 'H'],
   ['KNIFE', 'V'],
-  ['PAUSE  SETTINGS  MENU', 'II'],
-  ['DEBUG MENU', 'FIVE TAPS ON THE ROUND (PAUSED)'],
+  ['PAUSE  SETTINGS  MENU', 'II — TOP LEFT'],
+  ['CLOSE A MENU', 'BACK / X IN THE TOP RIGHT'],
+  ['SCROLL A LIST', 'DRAG IT, THEN TAP'],
+  // the phone has a visible way in now, so say where it is
+  ['DEBUG MENU', 'PAUSE MENU → DEBUG PANEL'],
 ];
 
 export function drawControls(ctx, game, w, h) {
@@ -1891,12 +2032,17 @@ export function ownedOutfitCount(game) {
 function _outfitsLayout(game, w, h) {
   const cw = Math.min(w - 20, 560);
   const ch = Math.min(h - 20, 480);
-  const head = 56, foot = 34;
+  // A short screen (a landscape phone, or MAX PICTURE SIZE on a small one)
+  // used to squeeze eleven two-line rows into about two hundred units, which
+  // printed every coat's note on top of the next coat's name. Below the
+  // height a two-line row needs, the list goes to one line a row instead.
+  const head = ch < 300 ? 38 : 56, foot = ch < 300 ? 24 : 34;
   const rows = SKIN_ORDER.length + 1;          // + the standard kit
   const room = Math.max(60, ch - head - foot);
-  const rowH = Math.min(OUTFIT_ROW, Math.max(22, room / rows));
+  const rowH = Math.min(OUTFIT_ROW, Math.max(18, room / rows));
+  const tight = rowH < 30;                     // one line a row
   return {
-    cw, ch, head, foot, rowH, rows,
+    cw, ch, head, foot, rowH, rows, tight,
     x: Math.round((w - cw) / 2),
     y: Math.round((h - ch) / 2),
   };
@@ -1909,7 +2055,7 @@ export function outfitsLayout(game, w, h) {
   return {
     cw: L.cw * k, ch: L.ch * k, x: L.x * k, y: L.y * k,
     head: L.head * k, foot: L.foot * k, rowH: L.rowH * k,
-    rows: L.rows,
+    rows: L.rows, tight: L.tight,
   };
 }
 
@@ -1948,7 +2094,7 @@ function _drawOutfits(ctx, game, w, h) {
   ctx.fillRect(0, 0, w, h);
 
   const L = _outfitsLayout(game, w, h);
-  const { x: cx, y: cy, cw, ch, head, rowH } = L;
+  const { x: cx, y: cy, cw, ch, head, rowH, tight } = L;
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
   ctx.strokeStyle = '#3a3f4a';
@@ -1973,7 +2119,9 @@ function _drawOutfits(ctx, game, w, h) {
   // coat does; this says what it looks like. Only when the margin exists: on
   // a phone the list is the whole panel and a doll on top of it is a row you
   // cannot read.
-  const wide = cw >= 470;
+  // ...and it does not fit at all on a one-line-a-row list, where it would
+  // sit on top of the last three coats
+  const wide = cw >= 470 && !tight;
   const art = buildArt();
   const set = art.playerSets?.[wearing ?? ''] ?? null;
   if (wide && set) {
@@ -2008,18 +2156,19 @@ function _drawOutfits(ctx, game, w, h) {
     // greyed out, so the list reads as a wardrobe and not as a teaser
     const colour = id ? SKINS[id].colour : '#5a6142';
     const own = !id || skinOwned(id, game.achievements);
+    const swY = tight ? row.y + Math.round(rowH / 2) - 5 : row.y + 9;
     ctx.save();
     ctx.globalAlpha = own ? 1 : 0.35;
     ctx.fillStyle = colour;
-    ctx.fillRect(cx + 16, row.y + 9, 10, 12);
+    ctx.fillRect(cx + 16, swY, 10, 12);
     ctx.strokeStyle = 'rgba(0,0,0,0.6)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(cx + 16.5, row.y + 9.5, 9, 11);
+    ctx.strokeRect(cx + 16.5, swY + 0.5, 9, 11);
     ctx.restore();
 
     const name = id ? SKINS[id].name : 'STANDARD KIT';
-    text(ctx, name, cx + 34, row.y + 14, {
-      font: 'bold 12px "Courier New", monospace',
+    text(ctx, name, cx + 34, tight ? row.y + Math.round(rowH / 2) + 4 : row.y + 14, {
+      font: `bold ${tight ? 11 : 12}px "Courier New", monospace`,
       colour: own ? (on ? GOLD : INK) : 'rgba(154,145,124,0.7)',
     });
     // On a wide panel the state sits at the foot of the row and the note runs
@@ -2027,15 +2176,19 @@ function _drawOutfits(ctx, game, w, h) {
     // so the state moves up beside the name -- which leaves the note the whole
     // width of the panel, and stops the two printing over each other.
     const state = isOn ? 'WEARING' : own ? 'OWNED' : 'LOCKED';
-    const stateY = wide ? row.y + 20 : row.y + 13;
+    const stateY = tight ? row.y + Math.round(rowH / 2) + 4 : wide ? row.y + 20 : row.y + 13;
     const stateX = wide ? cx + cw - 86 : cx + cw - 16;
     const noteFont = '9px "Courier New", monospace';
     const noteRoom = wide ? cw - 100 - 34 : cw - 34 - 22;
     const note = outfitNote(id, game.achievements);
-    text(ctx, clipText(note, noteRoom, noteFont), cx + 34, row.y + 26, {
-      font: noteFont,
-      colour: own ? 'rgba(154,145,124,0.95)' : 'rgba(120,112,96,0.75)',
-    });
+    // one line a row means the note is what goes, not the name: a coat you
+    // cannot identify is worse than a coat without its sales pitch
+    if (!tight) {
+      text(ctx, clipText(note, noteRoom, noteFont), cx + 34, row.y + 26, {
+        font: noteFont,
+        colour: own ? 'rgba(154,145,124,0.95)' : 'rgba(120,112,96,0.75)',
+      });
+    }
     text(ctx, state, stateX, stateY, {
       font: 'bold 9px "Courier New", monospace',
       colour: isOn ? '#8fdc6a' : own ? INK_DIM : 'rgba(120,112,96,0.7)',
@@ -2048,8 +2201,8 @@ function _drawOutfits(ctx, game, w, h) {
   }
 
   const foot = wide
-    ? 'W S  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK'
-    : 'TAP A ROW TO WEAR IT   ·   ESC BACK';
+    ? 'ARROWS  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK'
+    : 'TAP A ROW TO WEAR IT   ·   ESC OR THE X BACK';
   text(ctx, foot, cx + cw / 2, cy + ch - 18, {
     font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
@@ -2248,12 +2401,51 @@ export const PAUSE_ROWS = [
   { label: 'SETTINGS', hint: 'O' },
   { label: 'CONTROLS', hint: 'C' },
   { label: 'RESTART RUN', hint: 'R' },
+  // A phone has no backquote key, and the five-tap gesture in the corner was
+  // a secret rather than a door: the debug panel is a row here now, for
+  // everybody, and the tap still works for anybody who remembers it.
+  { label: 'DEBUG PANEL', hint: '`' },
   { label: 'RETURN TO MENU', hint: '' },
 ];
 
+/**
+ * Is the pause chip on screen?
+ *
+ * On a phone the touch layer owns this corner: its II is a real <div>, so it
+ * is pressable through the canvas, and drawing a second sticker under it
+ * would just be a shadow of the button -- while *reading* a press there would
+ * pause the game every time a thumb tapped the corner to shoot. A laptop that
+ * happens to have a touchscreen with the on-screen controls switched off still
+ * gets the chip, because nothing else is in that corner for it.
+ */
+export function pauseChipShown(game) {
+  if (!game?.started || game.gameOver || game.craftOpen) return false;
+  return !(game.touch?.enabled && game.touch?.panel);
+}
+
+/** The in-round pause chip, screen units. Top left: the map is top right. */
+export function pauseChipRect(w, h) {
+  const cw = w < 420 ? 30 : 34, ch = w < 420 ? 26 : 30;
+  return { x: 10, y: 10, w: cw, h: ch };
+}
+
+export function pauseChipAt(w, h, mx, my) {
+  const r = pauseChipRect(w, h);
+  return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+}
+
 function _pauseRowRect(i, w, h) {
-  const rw = 268, rh = 30;
-  return { x: w / 2 - rw / 2, y: h * 0.30 + 30 + i * 38, w: rw, h: rh };
+  // the rows breathe a little on a short panel: six of them at the old pitch
+  // and the last one landed in the "shortcuts still work" line
+  const rows = PAUSE_ROWS.length;
+  const top = h * 0.30 + 26;
+  // the pitch leaves room for the hint under the last row: on a short
+  // landscape phone the list used to run down to the very edge of the glass
+  // and the line that says how to use it was half off the screen
+  const room = Math.max(120, h - top - 46);
+  const pitch = Math.min(38, Math.max(24, room / rows));
+  const rw = 268, rh = Math.min(30, pitch - 6);
+  return { x: w / 2 - rw / 2, y: top + i * pitch, w: rw, h: rh };
 }
 
 /** A pause row in screen units. */
@@ -2276,6 +2468,17 @@ export function pauseHitTest(game, w, h, mx, my) {
   return _pauseHitTest(game, P.w, P.h, P.x, P.y);
 }
 
+/**
+ * Five taps on the word PAUSED open the debug panel. It used to be five taps
+ * in the top-left corner of the picture, which is now where the pause chip
+ * lives -- and a menu title is a much better hidden door than a piece of the
+ * world you are also shooting at.
+ */
+export function pauseTitleAt(w, h, mx, my) {
+  const P = menuPoint(w, h, mx, my);
+  return Math.abs(P.x - P.w / 2) < 70 && Math.abs(P.y - P.h * 0.30) < 22;
+}
+
 export function drawPause(ctx, game, w, h) {
   menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh));
 }
@@ -2291,7 +2494,9 @@ function _drawPause(ctx, game, w, h) {
   const hover = m ? _pauseHitTest(game, w, h, m.x, m.y) : -1;
   PAUSE_ROWS.forEach((r, i) => {
     const rc = _pauseRowRect(i, w, h);
-    const hot = i === hover;
+    // the pointer lights a row, and so does the keyboard: a menu you can only
+    // walk with a mouse is the complaint this whole pass is about
+    const hot = i === hover || (hover < 0 && i === (game.pauseIndex ?? 0));
     ctx.fillStyle = hot ? 'rgba(240,217,138,0.14)' : 'rgba(18,22,28,0.66)';
     ctx.fillRect(rc.x, rc.y, rc.w, rc.h);
     ctx.strokeStyle = hot ? GOLD : 'rgba(140,150,165,0.35)';
@@ -2307,7 +2512,9 @@ function _drawPause(ctx, game, w, h) {
     }
   });
   const last = _pauseRowRect(PAUSE_ROWS.length - 1, w, h);
-  text(ctx, 'the shortcuts still work', w / 2, last.y + last.h + 24, {
+  // short enough for the narrowest panel: 12px monospace at 1.5x did not fit
+  // a phone, and a line that runs off the glass is worse than no line
+  text(ctx, 'ARROWS + ENTER WORK HERE', w / 2, last.y + last.h + 20, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
   ctx.restore();
@@ -2370,15 +2577,22 @@ function _debugPanel(game, w, h) {
   // whole screen rather than the 380-unit default
   const cw = w < 400 ? w - 12 : Math.min(music ? 540 : 380, w - 16);
   const HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
-  // rows keep arriving (the round picker, and whatever comes next): squeeze
-  // them so the LAST one always lands inside the panel -- a row you cannot
-  // see is a row you cannot click
-  const room = h - 16 - HEAD - FOOT;
-  const rowH = Math.max(12, Math.min(rows.length > 13 ? 18 : DEBUG_ROW,
-    Math.floor(room / Math.max(1, rows.length))));
-  const ch = Math.min(h - 16, HEAD + rows.length * rowH + FOOT);
+  // The zoo tab now has one row per creature and there are more than forty of
+  // them. Squeezing the pitch until they all fit gave rows of twelve pixels
+  // and, past that, a list that ran out of the bottom of the panel. So the
+  // list scrolls instead: the pitch stays legible and the window follows the
+  // cursor. `debugTop` is the first row drawn.
+  const rowH = DEBUG_ROW;
+  const room = Math.max(rowH, h - 16 - HEAD - FOOT);
+  const shown = Math.max(1, Math.floor(room / rowH));
+  const over = Math.max(0, rows.length - shown);
+  const margin = shown < 8 ? 3 : 2;
+  const top = over > 0
+    ? clamp(game.debugTop ?? Math.max(0, (game.debugIndex ?? 0) - shown + margin), 0, over)
+    : 0;
+  const ch = Math.min(h - 16, HEAD + Math.min(rows.length, shown) * rowH + FOOT);
   return {
-    rows, cw, ch, rowH,
+    rows, cw, ch, rowH, shown, over, top,
     x: Math.round((w - cw) / 2),
     y: Math.round((h - ch) / 2),
     head: HEAD,
@@ -2391,6 +2605,7 @@ export function debugPanel(game, w, h) {
   const p = _debugPanel(game, w / k, h / k);
   return {
     rows: p.rows, cw: p.cw * k, ch: p.ch * k, rowH: p.rowH * k,
+    shown: p.shown, over: p.over, top: p.top,
     x: p.x * k, y: p.y * k, head: p.head * k,
   };
 }
@@ -2400,8 +2615,10 @@ export function debugHitTest(game, w, h, mx, my) {
   const P = menuPoint(w, h, mx, my);
   const p = _debugPanel(game, P.w, P.h);
   if (P.x < p.x || P.x > p.x + p.cw) return -1;
-  const i = Math.floor((P.y - (p.y + p.head)) / p.rowH);
-  return (i >= 0 && i < p.rows.length) ? i : -1;
+  const row = Math.floor((P.y - (p.y + p.head)) / p.rowH);
+  if (row < 0 || row >= p.shown) return -1;
+  const i = p.top + row;
+  return i < p.rows.length ? i : -1;
 }
 
 export function drawDebug(ctx, game, w, h) {
@@ -2454,7 +2671,14 @@ function _drawDebug(ctx, game, w, h) {
   }
 
   let y = cy + p.head;
-  rows.forEach((r, i) => {
+  // the rows are clipped to the panel: a window that scrolls must not paint
+  // half a row into the footer
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx + 2, cy + p.head - 2, cw - 4, Math.min(rows.length, p.shown) * p.rowH + 4);
+  ctx.clip();
+  rows.slice(p.top, p.top + p.shown).forEach((r, k) => {
+    const i = p.top + k;
     const sel = i === game.debugIndex;
     if (sel) {
       // the highlight owns exactly the stripe the hit test reports, so the
@@ -2483,6 +2707,21 @@ function _drawDebug(ctx, game, w, h) {
     });
     y += p.rowH;
   });
+  ctx.restore();
+  if (p.over > 0) {
+    // a track and a thumb, and the count, so it is obvious there is more
+    const tx = cx + cw - 6, th = Math.min(rows.length, p.shown) * p.rowH;
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    ctx.fillRect(tx, cy + p.head - 2, 3, th + 4);
+    const kh = Math.max(10, Math.round((th + 4) * (Math.min(rows.length, p.shown) / rows.length)));
+    const ky = cy + p.head - 2 + Math.round((th + 4 - kh) * (p.top / p.over));
+    ctx.fillStyle = 'rgba(240,217,138,0.45)';
+    ctx.fillRect(tx, ky, 3, kh);
+    text(ctx, `${p.top + 1}-${Math.min(rows.length, p.top + p.shown)} / ${rows.length}`,
+      cx + cw - 14, cy + p.head - 8, {
+        font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'right',
+      });
+  }
 
   const dbgFoot = cw >= 380
     ? 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO'
@@ -2550,26 +2789,50 @@ export function craftRowAt(game, w, h, mx, my) {
  * The settings panel geometry, shared by the painter and the mouse. Keeping
  * them on one function is what lets a click land on exactly the row you see.
  */
-function _settingsLayout(game, w, h) {
+function _settingsLayout(game, w, h, k = 1) {
   // A phone draws the panel in ~290 design units, which is not enough for a
   // label and a slider on one line: they used to be laid on top of each other.
   // Narrow panels therefore put the control on its own line under its label,
   // which is also the only shape a thumb can hit without aiming.
   const narrow = w < 430;
-  const ROW = narrow ? 40 : 24, HEAD = narrow ? 64 : 52, FOOT = narrow ? 54 : 46;
   const rows = SETTING_DEFS.length;
-  const maxRows = Math.max(4, Math.floor((h - 32 - HEAD - FOOT) / ROW));
+  // The BACK chip sits in the top-right corner of the *screen* -- it is drawn
+  // in screen units, this panel is laid out in the menu's own -- so the panel
+  // starts under it, never behind it, on every screen there is.
+  const inset = 44 / Math.max(0.01, k);
+  const room = Math.max(120, h - inset - 8);
+  let ROW = narrow ? 40 : 24, HEAD = narrow ? 64 : 52, FOOT = narrow ? 54 : 46;
+  // A short panel used to run off both ends: the furniture was ~100 units of
+  // fixed title and footer, and with a floor of four rows that simply does not
+  // fit a 240-pixel screen -- so the title slid off the top and the last rows
+  // painted over the footer. Trim in that order: title, footer, then pitch,
+  // and never below what the text itself needs.
+  const minHead = narrow ? 46 : 36, minFoot = narrow ? 40 : 34;
+  if (room < HEAD + FOOT + 4 * ROW) {
+    HEAD = Math.max(minHead, Math.min(HEAD, Math.round(room * 0.24)));
+    FOOT = Math.max(minFoot, Math.min(FOOT, Math.round(room * 0.23)));
+    ROW = Math.max(20, Math.min(ROW, Math.floor((room - HEAD - FOOT) / 3)));
+  }
+  // two lines per row (label above control) needs the height for it
+  const stacked = narrow && ROW >= 34;
+  const maxRows = Math.max(2, Math.floor((room - HEAD - FOOT) / ROW));
   const shown = Math.min(rows, maxRows);
   const over = rows - shown;
   // the wheel and the finger own the window; the selection only drags it along
   // when it walks out of sight
-  const top = over > 0
-    ? Math.max(0, Math.min(over, game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2))))
-    : 0;
+  // `top` is fractional while a finger is on the list: the rows then move with
+  // the finger instead of jumping a row at a time, which is what "too fast"
+  // always meant. Everything that reads it (the painter and the hit test)
+  // does the same arithmetic, so what you see is still what you press.
+  const want = game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2));
+  const top = over > 0 ? Math.max(0, Math.min(over, want)) : 0;
   // the panel is 420 wide on a normal screen and shrinks with a narrow one
   const cw = Math.min(420, w - 16), ch = HEAD + shown * ROW + FOOT;
-  const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
-  return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow };
+  const cx = Math.round((w - cw) / 2);
+  // under the BACK chip, and inside the bottom of the screen: whatever room
+  // is left, the panel takes no more than that
+  const cy = Math.round(inset + Math.max(0, (room - ch) / 2));
+  return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow, stacked };
 }
 
 /**
@@ -2580,22 +2843,24 @@ function _settingsLayout(game, w, h) {
  */
 export function settingsLayout(game, w, h) {
   const U = uiView(w, h);
-  const L = _settingsLayout(game, U.w, U.h);
+  const L = _settingsLayout(game, U.w, U.h, U.k);
   return {
     ...L,
     ROW: L.ROW * U.k, HEAD: L.HEAD * U.k, FOOT: L.FOOT * U.k,
     cw: L.cw * U.k, ch: L.ch * U.k, cx: L.cx * U.k, cy: L.cy * U.k,
+    // the pitch in the game's own units, which is what a finger's dy is in
+    PITCH: L.ROW,
   };
 }
 
 /** Which settings row (index into SETTING_DEFS) is under the pointer, or -1. */
 export function settingsRowAt(game, w, h, mx, my) {
   const P = menuPoint(w, h, mx, my);
-  const L = _settingsLayout(game, P.w, P.h);
+  const L = _settingsLayout(game, P.w, P.h, uiScale(w, h));
   const rel = P.y - (L.cy + L.HEAD - 12);
   if (rel < 0 || rel >= L.shown * L.ROW) return -1;
   if (P.x < L.cx || P.x > L.cx + L.cw) return -1;
-  return Math.min(L.rows - 1, L.top + Math.floor(rel / L.ROW));
+  return Math.max(0, Math.min(L.rows - 1, Math.floor(L.top + rel / L.ROW)));
 }
 
 /**
@@ -2605,8 +2870,8 @@ export function settingsRowAt(game, w, h, mx, my) {
  */
 export function settingsSliderRect(game, w, h) {
   const U = uiView(w, h);
-  const L = _settingsLayout(game, U.w, U.h);
-  if (L.narrow) {
+  const L = _settingsLayout(game, U.w, U.h, U.k);
+  if (L.stacked) {
     return { bx: (L.cx + 16) * U.k, bw: (L.cw - 32 - 58) * U.k };
   }
   return { bx: (L.cx + L.cw - 148) * U.k, bw: 84 * U.k };
@@ -2627,18 +2892,18 @@ function wrapLine(str, cols) {
 }
 
 export function drawSettings(ctx, game, w, h) {
-  menuSpace(ctx, w, h, (ww, hh) => _drawSettings(ctx, game, ww, hh));
+  menuSpace(ctx, w, h, (ww, hh, kk) => _drawSettings(ctx, game, ww, hh, kk));
 }
 
-function _drawSettings(ctx, game, w, h) {
+function _drawSettings(ctx, game, w, h, k = 1) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.86)';
   ctx.fillRect(0, 0, w, h);
 
   // the list scrolls: there are more knobs than there is screen, and a panel
   // that runs off the top is a setting you cannot reach
-  const { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow }
-    = _settingsLayout(game, w, h);
+  const { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow, stacked }
+    = _settingsLayout(game, w, h, k);
 
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
@@ -2648,19 +2913,22 @@ function _drawSettings(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, 'SETTINGS', cx + 14, cy + 20, {
-    font: 'bold 16px "Courier New", monospace', colour: GOLD,
+  const titleY = cy + Math.min(20, HEAD - 8);
+  text(ctx, 'SETTINGS', cx + 14, titleY, {
+    font: `bold ${HEAD < 40 ? 13 : 16}px "Courier New", monospace`, colour: GOLD,
   });
   if (narrow) {
     // one line is not enough for both: the title row carries the count, the
     // line under it says how to move, and the rows start below both
     const seen = over > 0 ? `${top + 1}–${Math.min(rows, top + shown)} OF ${rows}` : `${rows} ROWS`;
-    text(ctx, seen, cx + cw - 14, cy + 20, {
+    text(ctx, seen, cx + cw - 14, titleY, {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
     });
-    text(ctx, 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE', cx + cw / 2, cy + 44, {
-      font: 'bold 9px "Courier New", monospace', colour: 'rgba(159,208,224,0.8)', align: 'center',
-    });
+    if (HEAD >= 56) {
+      text(ctx, 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE', cx + cw / 2, cy + 44, {
+        font: 'bold 9px "Courier New", monospace', colour: 'rgba(159,208,224,0.8)', align: 'center',
+      });
+    }
   } else {
     text(ctx, 'MOUSE / WHEEL or W S A D — pick, change', cx + cw - 14, cy + 20, {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
@@ -2672,18 +2940,24 @@ function _drawSettings(ctx, game, w, h) {
   ctx.rect(cx + 2, cy + HEAD - 14, cw - 4, shown * ROW + 12);
   ctx.clip();
 
-  let y = cy + HEAD;
-  for (let i = top; i < top + shown; i++) {
+  const first = Math.floor(top);
+  let y = cy + HEAD - (top - first) * ROW;
+  // The extra row below the window only exists to make a half-scrolled window
+  // look like one. When the window is on a whole row, painting it would leave
+  // a chopped label sitting on the footer.
+  const clipBottom = cy + HEAD + shown * ROW;
+  for (let i = first; i < Math.min(rows, first + shown + 1); i++) {
+    if (y > clipBottom - 6) break;
     const d = SETTING_DEFS[i];
     const sel = i === game.settingsIndex;
-    const labelY = narrow ? y + 9 : y + 2;
-    const controlY = narrow ? y + 28 : y + 2;
+    const labelY = stacked ? y + Math.round(ROW * 0.28) : y + 2;
+    const controlY = stacked ? y + ROW - 12 : y + 2;
     if (sel) {
-      const bh = narrow ? ROW - 4 : 22;
+      const bh = stacked ? ROW - 4 : 22;
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
-      ctx.fillRect(cx + 6, y - (narrow ? 9 : 12), cw - 12, bh);
+      ctx.fillRect(cx + 6, y - (stacked ? 9 : 12), cw - 12, bh);
       ctx.fillStyle = GOLD;
-      ctx.fillRect(cx + 6, y - (narrow ? 9 : 12), 2, bh);
+      ctx.fillRect(cx + 6, y - (stacked ? 9 : 12), 2, bh);
     }
     text(ctx, d.label, cx + 18, labelY, {
       font: 'bold 12px "Courier New", monospace',
@@ -2692,9 +2966,9 @@ function _drawSettings(ctx, game, w, h) {
 
     if (d.type === 'range') {
       const v = settings.get(d.id);
-      const bx = narrow ? cx + 16 : cx + cw - 148;
-      const bw = narrow ? cw - 32 - 58 : 84;
-      const by = controlY - (narrow ? 4 : 5);
+      const bx = stacked ? cx + 16 : cx + cw - 148;
+      const bw = stacked ? cw - 32 - 58 : 84;
+      const by = controlY - (stacked ? 4 : 5);
       ctx.fillStyle = '#0c0e13';
       ctx.fillRect(bx, by, bw, 8);
       const k = (v - d.min) / (d.max - d.min);
@@ -2705,19 +2979,19 @@ function _drawSettings(ctx, game, w, h) {
         ctx.fillStyle = sel ? '#fff3c8' : '#cdbfa0';
         ctx.fillRect(bx + Math.round(bw * k) - 2, by - 3, 4, 14);
       }
-      text(ctx, d.fmt(v), cx + cw - 18, controlY + (narrow ? 2 : 0), {
+      text(ctx, d.fmt(v), cx + cw - 18, controlY + (stacked ? 2 : 0), {
         font: 'bold 12px "Courier New", monospace',
         colour: sel ? INK : INK_DIM, align: 'right',
       });
     } else if (d.type === 'toggle') {
       const v = settings.get(d.id);
-      const bx = narrow ? cx + 16 : cx + cw - 108;
-      const by = controlY - (narrow ? 10 : 11);
+      const bx = stacked ? cx + 16 : cx + cw - 108;
+      const by = controlY - (stacked ? 10 : 11);
       ctx.fillStyle = v ? '#3d6b3a' : '#2a2d35';
       ctx.fillRect(bx, by, 46, 20);
       ctx.fillStyle = v ? '#8fdc6a' : '#6a6a6a';
       ctx.fillRect(v ? bx + 26 : bx + 4, by + 4, 16, 12);
-      text(ctx, v ? 'ON' : 'OFF', cx + cw - 18, controlY + (narrow ? 2 : 0), {
+      text(ctx, v ? 'ON' : 'OFF', cx + cw - 18, controlY + (stacked ? 2 : 0), {
         font: 'bold 12px "Courier New", monospace',
         colour: v ? '#8fdc6a' : INK_DIM, align: 'right',
       });
@@ -2725,7 +2999,7 @@ function _drawSettings(ctx, game, w, h) {
       // the destructive row asks twice (src/game.js `_settingsReset`), and
       // says so where the first press happened
       const armed = d.id === 'reset' && (game._resetArmT ?? 0) > 0;
-      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, narrow ? controlY + 2 : labelY, {
+      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, stacked ? controlY + 2 : labelY, {
         font: 'bold 12px "Courier New", monospace',
         colour: armed ? '#e0896a' : sel ? GOLD : INK_DIM, align: 'right',
       });
@@ -2750,11 +3024,15 @@ function _drawSettings(ctx, game, w, h) {
   const chosen = SETTING_DEFS[game.settingsIndex];
   const armed = chosen?.id === 'reset' && (game._resetArmT ?? 0) > 0;
   const hint = armed ? 'PRESS AGAIN TO PUT EVERYTHING BACK' : chosen?.hint;
-  if (hint) {
+  // A short footer gets no hint at all: one line of explanation is worth less
+  // than the rows it would cover, and on a squeezed panel it covered them.
+  const footTop = cy + ch - FOOT;
+  const roomLines = Math.max(0, Math.floor((FOOT - 20) / 11));
+  if (hint && roomLines > 0) {
     const cols = Math.max(18, Math.floor((cw - 24) / 5.7));
-    const lines = narrow ? wrapLine(hint, cols) : [hint];
-    // the last line sits clear of the footer, and the block grows upwards
-    let hy = cy + ch - (narrow ? 26 : 30) - (lines.length - 1) * 11;
+    let lines = narrow ? wrapLine(hint, cols) : [hint];
+    if (lines.length > roomLines) lines = lines.slice(0, roomLines);
+    let hy = footTop + 13;
     for (const line of lines) {
       text(ctx, line, w / 2, hy, {
         font: `bold ${narrow ? 10 : 11}px "Courier New", monospace`,
@@ -2763,8 +3041,54 @@ function _drawSettings(ctx, game, w, h) {
       hy += 11;
     }
   }
-  text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 8, {
-    font: 'bold 10px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
+  text(ctx, narrow ? 'X IN THE CORNER TAKES YOU BACK' : 'O / ESC or the X — back to the game',
+    w / 2, cy + ch - 8, {
+      font: 'bold 10px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
+    });
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+//  The way out.
+//
+//  Every full-screen panel used to say "O / ESC — back" at the bottom, which
+//  is a sentence a phone cannot act on: it has no O and no ESC. So every one
+//  of them gets a visible chip in the corner, drawn in the game's own units
+//  so it scales with the picture, and a press on it closes the panel. ESC and
+//  O still work -- this is the second door, not a replacement.
+// ---------------------------------------------------------------------------
+export function backChipRect(w, h) {
+  const cw = w < 420 ? 62 : 76, ch = w < 420 ? 24 : 26;
+  return { x: w - cw - 10, y: 10, w: cw, h: ch };
+}
+
+/** Is this point on the way-out chip? Screen units, like the pointer. */
+export function backChipAt(w, h, mx, my) {
+  const r = backChipRect(w, h);
+  return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+}
+
+export function drawBackChip(ctx, game, w, h, label = 'BACK') {
+  const r = backChipRect(w, h);
+  const hot = game?.input?.pointer !== 'touch'
+    && backChipAt(w, h, game?.input?.mouse?.x ?? -99, game?.input?.mouse?.y ?? -99);
+  ctx.save();
+  ctx.fillStyle = hot ? 'rgba(240,217,138,0.22)' : 'rgba(14,16,21,0.82)';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = hot ? GOLD : 'rgba(200,190,160,0.45)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+  // a cross, because a cross is a cross in every language
+  const x0 = r.x + 9, y0 = r.y + r.h / 2;
+  ctx.strokeStyle = hot ? GOLD : 'rgba(220,214,196,0.75)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x0 - 3, y0 - 3); ctx.lineTo(x0 + 3, y0 + 3);
+  ctx.moveTo(x0 + 3, y0 - 3); ctx.lineTo(x0 - 3, y0 + 3);
+  ctx.stroke();
+  text(ctx, label, r.x + 17, r.y + r.h / 2 + 4, {
+    font: `bold ${w < 420 ? 9 : 10}px "Courier New", monospace`,
+    colour: hot ? GOLD : 'rgba(220,214,196,0.9)',
   });
   ctx.restore();
 }
@@ -2783,6 +3107,11 @@ function standalone() {
 }
 
 export function drawCursor(ctx, game) {
+  // No mouse, no mouse pointer. A phone draws this arrow wherever the last
+  // thumb was, so menus came with a cursor stuck in the middle of the glass
+  // that nobody could move. The touch layer is a set of real buttons; it
+  // does not need a pointer, and the game's crosshair still marks the aim.
+  if (isTouchDevice()) return;
   const m = game?.input?.mouse;
   if (!m) return;
   const x = Math.round(m.x ?? 0), y = Math.round(m.y ?? 0);
@@ -2843,7 +3172,8 @@ export function roundReportRows(r) {
   return [
     ['COMBAT TIME', musicTime(r.seconds)], ['KILLS', String(r.kills)],
     ['HEADSHOT KILLS', `${r.headshots} (${r.headshotRate ?? 0}%)`], ['SPECIAL KILLS', String(r.specialKills)],
-    ['SUMMONED KILLS', String(r.summonedKills)], ['KNIFE KILLS', String(r.knifeKills)],
+    ['SUMMONED KILLS', String(r.summonedKills)], ['WARDENS KILLED', String(r.bosses ?? 0)],
+    ['KNIFE KILLS', String(r.knifeKills)],
     ['TRAP KILLS', String(r.trapKills)], ['BULLETS / PELLETS', String(r.rays)],
     ['RAYS ON TARGET', `${r.hitRays} (${r.accuracy ?? 0}%)`], ['POINTS EARNED', String(r.points)],
     ['SCRAP FROM KILLS', String(r.salvage)], ['HEALTH LOST', String(Math.round(r.damage))],
@@ -2946,11 +3276,12 @@ function _drawGameOver(ctx, game, w, h) {
     const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
     text(ctx, guestWaiting
       ? 'WAITING FOR THE HOST TO START THE NEXT NIGHT'
-      : (evac ? 'PRESS R OR CLICK FOR A NEW NIGHT' : 'PRESS R OR CLICK TO TRY AGAIN'), w / 2, h * 0.86, {
+      : (evac ? 'PRESS R OR TAP FOR A NEW NIGHT' : 'PRESS R OR TAP TO TRY AGAIN'), w / 2, h * 0.86, {
       font: 'bold 15px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
     });
-    // the way out that does not cost a new run -- there used to be none
-    text(ctx, 'ESC — FRONT DOOR', w / 2, h * 0.86 + 16, {
+    // the way out that does not cost a new run -- there used to be none, and
+    // the line that says so used to name a key a phone does not have
+    text(ctx, narrow ? 'MENU IN THE CORNER — OR ESC' : 'ESC — FRONT DOOR', w / 2, h * 0.86 + 16, {
       font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   }

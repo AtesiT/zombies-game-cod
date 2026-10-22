@@ -308,6 +308,10 @@ export class Player {
     this.reloadStage = 0;
     this.chillT = 0;          // snowman: legs in slush, 62 % speed
     this.stunT = 0;           // shocker: hands forget how to work
+    this.silkT = 0;           // weaver: silk on the boots, and no dash
+    this.venomT = 0;          // widow: the bite keeps working after it lets go
+    this.venomRate = 0;       // ...at this many hit points a second
+    this._venomTick = 0;
     this.triggerHeld = false;
     this.recoil = 0;
     this.kickVis = 0;          // visual kick: 1 is a pistol shove, 1.7 a shotgun
@@ -561,10 +565,25 @@ export class Player {
   }
 
   useMedkit() {
-    if ((this.medkits ?? 0) <= 0 || this.hp >= this.maxHp) return false;
+    // a medkit is also the way to stop the venom early -- but it is not the
+    // only way, because the venom stops by itself
+    if ((this.medkits ?? 0) <= 0 || (this.hp >= this.maxHp && this.venomT <= 0)) return false;
     this.medkits--;
     this.heal(Math.round(55 * (this.skillFx?.medkitMul ?? 1)));
+    if (this.venomT > 0) {
+      this.venomT = 0;
+      this._venomTick = 0;
+    }
     return true;
+  }
+
+  /** A widow's bite: nine seconds of bleed that nothing has to be spent on. */
+  poison(game) {
+    this.venomT = Math.max(this.venomT ?? 0, 9);
+    this.venomRate = 4;
+    this._venomTick = 0;
+    audio.venom?.(0.7);
+    game?.popups?.add?.(this.pos.x, this.pos.y - 34, 'VENOM', '#8fd47a', 11);
   }
 
   // ------------------------------------------------------ the throwing hand --
@@ -735,6 +754,15 @@ export class Player {
   _dashTick(game, input, mv, moving) {
     if (this.dashT > 0 || this.dashCd > 0) return;
     if (game.paused || this.dead || this.downed || this.stunT > 0 || this.evac) return;
+    // silk on the floor is stronger than silk on the boots: you cannot start
+    // a dash from inside a knot, but one that began outside tears it apart
+    if (this.silkT > 0) {
+      if (!this._silkDeny || game.time - this._silkDeny > 1.2) {
+        this._silkDeny = game.time;
+        game.popups?.add?.(this.pos.x, this.pos.y - 30, 'STUCK FAST', '#e8e4d2', 10);
+      }
+      return;
+    }
     if (!input?.wasPressed('ShiftLeft', 'ShiftRight')) return;
     const dir = moving ? { x: mv.x, y: mv.y } : { x: Math.cos(this.aim), y: Math.sin(this.aim) };
     const len = Math.hypot(dir.x, dir.y) || 1;
@@ -746,6 +774,8 @@ export class Player {
     this.dashCd = this.dashMax;
     this.walkPhase += 1.2;
     game.particles?.dust(this.pos.x, this.pos.y, Math.atan2(-this.dashDir.y, -this.dashDir.x), 9);
+    // a dash that starts outside a knot of silk goes through it, not into it
+    game.tearThreads?.(this);
     audio.dash();
   }
 
@@ -787,6 +817,35 @@ export class Player {
     this.dashT = Math.max(0, this.dashT - dt);
     this.portalCd = Math.max(0, this.portalCd - dt);
     this.chillT = Math.max(0, (this.chillT ?? 0) - dt);
+    this.silkT = Math.max(0, (this.silkT ?? 0) - dt);
+
+    // ---- the widow's venom ------------------------------------------------
+    // It runs its own clock and it runs out by itself: nine seconds of a slow
+    // bleed that a medkit will cut short and that nothing else in the game
+    // has to be spent on. Standing in it is the whole cost.
+    if (this.venomT > 0 && !this.dead) {
+      this.venomT = Math.max(0, this.venomT - dt);
+      this._venomTick += dt;
+      if (Math.random() < dt * 5) {
+        game.particles.spark(this.pos.x + randRange(-8, 8), this.pos.y - randRange(2, 18),
+          -Math.PI / 2, 1, '#8fd47a');
+      }
+      if (this._venomTick >= 0.5) {
+        this._venomTick = 0;
+        const tick = Math.max(1, (this.venomRate || 4) * 0.5);
+        this.hp = Math.max(0, this.hp - tick);
+        game.roundDamageTaken = (game.roundDamageTaken ?? 0) + tick;
+        this.hurtFlash = Math.max(this.hurtFlash, 0.25);
+        if (this.hp <= 0) {
+          if ((game.players?.length ?? 1) > 1 && !this.downed) {
+            this.downed = true;
+            this.bleedT = 60;
+            this.invuln = 1.2;
+            game.popups?.add?.(this.pos.x, this.pos.y - 34, 'DOWN', '#c4463a', 13);
+          } else this.dead = true;
+        }
+      }
+    }
 
     // A Shocker's bolt: for most of a second nothing works -- no legs, no
     // trigger, no reload, no knife. It is short on purpose: long enough to be
@@ -839,7 +898,8 @@ export class Player {
     if (this.skillFx?.coolhead && this._stillT >= 0.6) this._coolReady = true;
     this.speed = this.baseSpeed
       * (this.windT > 0 ? (this.skillFx?.secondwindSpeed ?? 1) : 1)
-      * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1);
+      * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1)
+      * (this.silkT > 0 ? 0.55 : 1);
     if (this.dashT > 0) {
       // a dash is not steering: all of it goes where it started, and the last
       // third of it eases out so the stop does not read as a wall
@@ -1308,7 +1368,170 @@ export const ENEMY_TYPES = {
     scale: 1.42, chew: 3.2, points: 3.6, set: 'knight', headOff: 1.2,
     plate: true,
   },
+
+  // ------------------------------------------------------------------------
+  //  The apiary, the barrow and the web.
+  //
+  //  Nine bodies, each one a role the roster did not have: something that
+  //  leaves a nest behind, something that shoots, something you cannot shoot
+  //  from the front, something that makes the others faster, something that
+  //  is a bomb with legs, a king with three lives -- and three spiders that
+  //  change the floor you are standing on.
+  // ------------------------------------------------------------------------
+  beekeeper: {
+    // Stands off, kneels once, and leaves a hive. The hive is not scenery: it
+    // hums bees out of it every few seconds until somebody shoots it, and the
+    // bees are tiny, fast and worth almost nothing. The point of the beekeeper
+    // is that killing the bees is losing: kill the hive.
+    id: 'beekeeper', name: 'Beekeeper', hp: 1.05, speed: 0.74, dmg: 0.85, r: 7.0,
+    scale: 1.04, chew: 1.1, points: 3.0, set: 'beekeeper', headOff: 1,
+    places: 'hive', standoff: 290,
+  },
+  bee: {
+    // never rolled: the hive makes them. Fourteen hit points, quick, and they
+    // do not count towards the round -- so a hive you ignore adds up.
+    id: 'bee', name: 'Bee', hp: 0.12, speed: 1.4, dmg: 0.35, r: 3.4,
+    scale: 1.0, chew: 0.3, points: 0.2, set: 'bee', headOff: 1,
+    summoned: true, flatHp: 14, noBlood: true, sprinty: true,
+  },
+  archer: {
+    // A bow, three arrows at a time and a long, visible draw. It does not
+    // come to you; it stands at 300 and makes you move. The middle arrow is
+    // fastest and goes where you were, so a step sideways is the answer.
+    id: 'archer', name: 'Bone Archer', hp: 0.5, speed: 0.9, dmg: 0.6, r: 6.2,
+    scale: 0.98, chew: 0.5, points: 2.0, set: 'archer', headOff: 1.0,
+    bows: true, standoff: 300, flatHp: 95, noBlood: true,
+  },
+  bulwark: {
+    // Carries a plank shield turned towards you. Shots that land on it do a
+    // fifth of their damage and ring; it turns with a lag of a third of a
+    // second, so the way through is round the side, not more bullets.
+    id: 'bulwark', name: 'Bulwark', hp: 1.5, speed: 0.5, dmg: 1.1, r: 7.6,
+    scale: 1.08, chew: 1.4, points: 2.6, set: 'bulwark', headOff: 1,
+    shield: true, noBlood: true, flatHp: 230,
+  },
+  drummer: {
+    // No attack worth the name. Beats a drum, and everything dead within
+    // three hundred units walks and bites a fifth faster. Kill it and the
+    // room slows down; the aura is drawn, so you can see where it comes from.
+    id: 'drummer', name: 'Drummer', hp: 0.7, speed: 0.55, dmg: 0.4, r: 6.4,
+    scale: 1.04, chew: 0.5, points: 2.4, set: 'drummer', headOff: 1,
+    drums: true, noBlood: true, flatHp: 110,
+  },
+  sapper: {
+    // A crawler with a bundle of charges roped to its back. Shoot it early
+    // and the blast takes the skeletons around it with it -- that is the gift.
+    // Let it reach you and the gift is yours.
+    id: 'sapper', name: 'Sapper', hp: 0.4, speed: 0.66, dmg: 0.5, r: 5.6,
+    scale: 0.95, chew: 0.4, points: 0.9, set: 'sapper', headOff: 0.5,
+    low: true, sapper: true, noBlood: true, flatHp: 60,
+  },
+  first: {
+    // The first of them: a rib crown, a red tabard, and it does not stay
+    // dead. Every time it goes down it gathers itself out of the nearest
+    // bones and stands back up, quicker and angrier, twice.
+    id: 'first', name: 'The First', hp: 2.2, speed: 0.62, dmg: 2.1, r: 9.5,
+    scale: 1.3, chew: 2.2, points: 5.0, set: 'first', headOff: 1.05,
+    reassembles: 2, noBlood: true,
+  },
+  weaver: {
+    // Fast, cheap, and it does not so much attack you as change the floor.
+    // Every second or so it leaves a knot of silk; stand in one and your legs
+    // are half yours. The knots can be shot, cut with the knife, or torn by a
+    // dash -- the point is that standing still next to one is a decision.
+    id: 'weaver', name: 'Weaver', hp: 0.55, speed: 1.16, dmg: 0.55, r: 7.2,
+    scale: 1.0, chew: 0.7, points: 2.2, set: 'weaver', headOff: 0.25,
+    spins: true, noBlood: true,
+  },
+  widow: {
+    // A pale cross on its back and a bite that keeps working. The venom runs
+    // out by itself in nine seconds -- a medkit takes it off sooner, but you
+    // are not carrying one for this.
+    id: 'widow', name: 'Widow', hp: 0.95, speed: 0.92, dmg: 0.8, r: 8.4,
+    scale: 1.22, chew: 1.0, points: 3.0, set: 'widow', headOff: 0.25,
+    venom: true, noBlood: true,
+  },
+  porter: {
+    // Slow, fat, and carrying a sac of brood. Every few seconds it sets a
+    // handful down; killing it is worth more than anything it can hatch, and
+    // the sac bursts when it dies. A room with a porter in it fills up.
+    id: 'porter', name: 'Porter', hp: 1.9, speed: 0.5, dmg: 0.85, r: 10.5,
+    scale: 1.45, chew: 1.2, points: 3.4, set: 'porter', headOff: 0.25,
+    broods: true, noBlood: true,
+  },
+
+  // ------------------------------------------------------------------------
+  //  The nine wardens: one on every fifth round from ten, and then the whole
+  //  list again. Each is a body you have already met, wearing the job it had
+  //  before it died -- that is where the mechanic comes from.
+  // ------------------------------------------------------------------------
+  warden: {
+    // Holds the lantern and the keys: plate from the neck down, and it calls
+    // the others in. Standing behind it is a mistake, standing next to it is
+    // a worse one.
+    id: 'warden', name: 'The Warden', hp: 1.9, speed: 0.58, dmg: 1.9, r: 10.5,
+    scale: 1.45, chew: 2.6, points: 9, set: 'warden', headOff: 1.2,
+    plate: true, summons: 'walker', boss: true,
+  },
+  organist: {
+    // The organ is gone but the rope is not. Keeps its distance and screams:
+    // the ring staggers you and hastes everything else.
+    id: 'organist', name: 'The Organist', hp: 1.7, speed: 0.66, dmg: 1.4, r: 9.5,
+    scale: 1.35, chew: 1.8, points: 9, set: 'organist', headOff: 1.05,
+    ranged: true, shrieksHard: true, standoff: 240, boss: true,
+  },
+  butcher: {
+    // Chooses you, plants its feet, and comes at you in a straight line with
+    // a cleaver. The line is the telegraph: step off it.
+    id: 'butcher', name: 'The Butcher', hp: 2.1, speed: 0.66, dmg: 2.4, r: 10,
+    scale: 1.4, chew: 2.6, points: 9, set: 'butcher', headOff: 1.1,
+    charges: true, boss: true,
+  },
+  mother: {
+    // A porter grown enormous, with a sac that never empties. The spiders she
+    // sets down are the same ones the ordinary porter carries.
+    id: 'mother', name: 'The Mother', hp: 2.0, speed: 0.46, dmg: 1.6, r: 12,
+    scale: 2.0, chew: 2.0, points: 9, set: 'porter', headOff: 0.25,
+    broods: true, boss: true, noBlood: true,
+  },
+  queen: {
+    // The hive is behind her and the hive is not the point: the bees come out
+    // of her hands. Two hives at once, and she does not kneel for long.
+    id: 'queen', name: 'The Queen', hp: 1.9, speed: 0.7, dmg: 1.5, r: 9.5,
+    scale: 1.4, chew: 1.6, points: 9, set: 'queen', headOff: 1,
+    places: 'hive', standoff: 240, boss: true,
+  },
+  gravedigger: {
+    // Two graves at a time, and the bells do not stop while he stands.
+    id: 'gravedigger', name: 'The Gravedigger', hp: 1.9, speed: 0.62, dmg: 1.8, r: 10,
+    scale: 1.4, chew: 2.0, points: 9, set: 'gravedigger', headOff: 1.05,
+    places: 'grave', standoff: 260, boss: true,
+  },
+  bellringer: {
+    // The bell in its hand is the bolt. Same gather, longer reach, and every
+    // ring brings a handful of the horde with it.
+    id: 'bellringer', name: 'The Bellringer', hp: 1.9, speed: 0.62, dmg: 1.7, r: 9.5,
+    scale: 1.4, chew: 1.8, points: 9, set: 'bellringer', headOff: 1,
+    zaps: true, summons: 'walker', standoff: 330, boss: true,
+  },
+  colonel: {
+    // The last of the staff. Plate, a cap that used to mean something, and a
+    // whistle: the knights come when it blows.
+    id: 'colonel', name: 'The Colonel', hp: 2.2, speed: 0.6, dmg: 2.2, r: 10.5,
+    scale: 1.45, chew: 2.6, points: 9, set: 'colonel', headOff: 1.15,
+    plate: true, summons: 'knight', boss: true,
+  },
 };
+
+/** The order the wardens arrive in, from round ten, one every five rounds. */
+export const BOSS_ORDER = ['warden', 'organist', 'butcher', 'first', 'mother',
+  'queen', 'gravedigger', 'bellringer', 'colonel'];
+
+/** Which warden owns a round, or null. Ten, fifteen, ... fifty, then again. */
+export function bossForRound(round) {
+  if (!(round >= 10) || round % 5 !== 0) return null;
+  return BOSS_ORDER[((round / 5) - 2) % BOSS_ORDER.length];
+}
 
 export class Zombie {
   constructor(map, x, y, opts = {}) {
@@ -1393,6 +1616,23 @@ export class Zombie {
     this.dyingT = 0;                                      // wraith: its grave died, fade out
     this.graveUid = opts.graveUid ?? 0;                   // wraith: whose bell rang it out
     this._clangCd = 0;                                    // knight: how often the steel may ring
+    // ---- the apiary, the barrow and the web --------------------------------
+    this.bowT = d.bows ? randRange(1.8, 3.4) : 0;         // archer: seconds until it draws
+    this.drawT = 0;                                        // archer: the draw itself
+    this.shieldAng = 0;                                    // bulwark: where the plank points
+    this.shieldT = 0;                                      // ...and when it will look again
+    this.drumT = d.drums ? randRange(0.6, 1.6) : 0;        // drummer: the next beat
+    this.broodT = d.broods ? randRange(2.6, 4.4) : 0;      // porter/mother: the next cluster
+    this.spinT = d.spins ? randRange(0.6, 1.2) : 0;        // weaver: the next knot of silk
+    this.chargeT = d.charges ? randRange(3.2, 5.2) : 0;    // butcher: the next rush
+    this.chargeWind = 0;                                   // butcher: planted, about to go
+    this.chargeT2 = 0;                                     // butcher: the rush itself
+    this.chargeDir = { x: 1, y: 0 };
+    this.summonT = d.summons ? randRange(6, 11) : 0;       // warden/colonel: the next call
+    this.revivesLeft = d.reassembles ?? 0;                 // the First: lives after this one
+    this.gatherT = 0;                                      // the First: pulling itself back
+    this.boss = false;                                     // set by the round, not the type
+    this.bossPower = 1;
     if (this.hidden) this.state = ZSTATE.HIDDEN;   // a mimic starts out on the floor
   }
 
@@ -1405,6 +1645,27 @@ export class Zombie {
     if (this.state === ZSTATE.BURIED) {
       game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 2);
       return 0;
+    }
+    // A bulwark holds a plank between you and it. The plank turns, slowly,
+    // and a shot that lands on it is a fifth of a shot: the answer is to move
+    // round it, not to feed it bullets.
+    if (this.def.shield) {
+      const to = by ? Math.atan2(by.pos.y - this.pos.y, by.pos.x - this.pos.x)
+        : (dirAngle ?? 0) + Math.PI;
+      const off = Math.abs(Math.atan2(Math.sin(to - this.shieldAng), Math.cos(to - this.shieldAng)));
+      if (off < 0.95) {
+        amount *= 0.2;
+        if ((this._clangCd ?? 0) <= 0) {
+          this._clangCd = 0.22;
+          audio.clang();
+          game.particles.spark(this.pos.x + Math.cos(this.shieldAng) * 8,
+            this.pos.y - 8 + Math.sin(this.shieldAng) * 4, this.shieldAng, 6, '#c8d2da');
+        }
+        this.hp -= amount;
+        this.hurtFlash = 0.1;
+        if (this.hp <= 0) { this.hp = 0; this.die(game, dirAngle ?? 0); return this.dead ? 2 : 0; }
+        return 1;
+      }
     }
     // A knight is a wall of plate from the neck down: body shots ring and do
     // half. The head is the only honest way in.
@@ -1435,7 +1696,7 @@ export class Zombie {
       }
       // half damage, no head multiplier, and it does not flinch
       this.hp -= amount * 0.5;
-      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return 2; }
+      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return this.dead ? 2 : 0; }
       return 1;
     }
     // a skeleton has no head to shoot at: the shot lands on the ribs instead
@@ -1453,7 +1714,7 @@ export class Zombie {
       game.particles.dust(this.pos.x, this.pos.y, ang, 6);
       game.particles.chunk(this.pos.x, this.pos.y - 3, ang, 2);
       audio.impact(false, false);
-      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return 2; }
+      if (this.hp <= 0) { this.hp = 0; this.die(game, ang); return this.dead ? 2 : 0; }
       this.vel.x += Math.cos(ang) * 26;
       this.vel.y += Math.sin(ang) * 26;
       return 1;
@@ -1469,7 +1730,7 @@ export class Zombie {
     if (this.hp <= 0) {
       this.hp = 0;
       this.die(game, ang);
-      return 2;
+      return this.dead ? 2 : 0;
     }
     // flinch
     this.vel.x += Math.cos(ang) * 26;
@@ -1478,7 +1739,23 @@ export class Zombie {
   }
 
   die(game, ang) {
-    if (this.dead) return;
+    if (this.dead || this.gatherT > 0) return;
+    // The First has been dying since before the house was built. It comes
+    // apart, gathers itself, and stands back up -- twice -- and every time it
+    // is quicker and it hits harder.
+    if (this.revivesLeft > 0 && this.hp <= 0 && !game.__noRevive) {
+      this.revivesLeft--;
+      this.gatherT = 2.2;
+      this.hp = 0;
+      this.vel.x = 0; this.vel.y = 0;
+      game.particles.dust(this.pos.x, this.pos.y, ang, 16);
+      game.particles.chunk(this.pos.x, this.pos.y, ang, 12);
+      game.particles.spark(this.pos.x, this.pos.y - 6, randRange(0, TAU), 14, '#efe9d2');
+      game.shake?.(3, 0.3);
+      audio.zombieDie();
+      game.popups?.add?.(this.pos.x, this.pos.y - 34, this.revivesLeft ? 'IT IS NOT DONE' : 'LAST TIME', '#efe9d2', 11);
+      return;
+    }
     this.dead = true;
     this.state = ZSTATE.DEAD;
     this.deadT = 0;
@@ -1501,6 +1778,11 @@ export class Zombie {
       game.addGas(this.pos.x, this.pos.y, 74, 6.5);
       audio.ignite();
     }
+    // the sapper's bundle: it kills what is standing next to it, which is
+    // usually the rest of the round, and it is why you shoot it early
+    if (this.def.sapper) game.sapperBoom?.(this, false);
+    // the porter's sac bursts on the way down
+    if (this.def.broods) game.spawnBrood?.(this, this.boss ? 3 : 2);
   }
 
   /** Is there a floor between me and the player who is listening? */
@@ -1520,6 +1802,7 @@ export class Zombie {
     this.lunge = Math.max(0, this.lunge - dt * 3);
     this.portalCd = Math.max(0, this.portalCd - dt);
     this.rally = Math.max(0, (this.rally ?? 0) - dt);
+    this.drummedBy = Math.max(0, (this.drummedBy ?? 0) - dt);
     this.frozen = Math.max(0, this.frozen - dt);
     this.webbed = Math.max(0, this.webbed - dt);
     if (this.burning > 0) {
@@ -1719,36 +2002,16 @@ export class Zombie {
       // Keep its distance properly: back away when you crowd it, come in when
       // you have run off, and sidle round you in between so it is never a
       // statue.
-      //
-      // It picks a vantage and holds it for the better part of a second. That
-      // matters: choosing fresh every frame flips it between "back off" and
-      // the horde's own route in the same breath, and the two cancel out into
-      // a thing vibrating against a wall. A straight line through a partition
-      // is given up in favour of the next idea, and if none of them are open
-      // the horde's route takes over -- the trick the field medic uses.
-      this._vantageT = (this._vantageT ?? 0) - dt;
-      if (this._vantageT <= 0 || this.stuck > 1) {
-        this._vantageT = 0.7;
-        this._vantage = null;
-        if (sameFloor && pd < 640) {
-          const away = Math.atan2(this.pos.y - p.pos.y, this.pos.x - p.pos.x);
-          const clear = (x, y) => !this.map.rayWall(this.pos.x, this.pos.y, x, y, Infinity, this.floor);
-          if (pd < this.standoff - 40) {
-            for (const r of [140, 90, 60]) {
-              const c = { x: this.pos.x + Math.cos(away) * r, y: this.pos.y + Math.sin(away) * r };
-              if (clear(c.x, c.y)) { this._vantage = c; break; }
-            }
-          } else if (pd < this.standoff + 90) {
-            // circle rather than stand and grin: try one side, then the other
-            for (const side of [0.85, -0.85, 1.7, -1.7]) {
-              const a = away + side;
-              const c = { x: p.pos.x + Math.cos(a) * this.standoff, y: p.pos.y + Math.sin(a) * this.standoff };
-              if (clear(c.x, c.y)) { this._vantage = c; break; }
-            }
-          }
-        }
-      }
-      this._goto = this._vantage ?? null;
+      this._vantageTick(dt, game, p, pd, sameFloor);
+    }
+
+    // Everything else that wants to stay out of arm's reach: the archer at
+    // three hundred, the organist, the beekeeper, the bearer, the mourner.
+    // They used to walk straight into your face and then stand there doing
+    // their one trick -- a thing that only works at range -- into your chest.
+    if (!this.def.raises && (this.def.places && !this.placed || this.def.bows || this.def.shrieksHard)
+      && this.channelT <= 0 && this.drawT <= 0) {
+      this._vantageTick(dt, game, p, pd, sameFloor);
     }
 
     // ------------------------------------------------- jammer behaviour -----
@@ -1780,7 +2043,8 @@ export class Zombie {
         this.vel.x = 0; this.vel.y = 0;
         if (Math.random() < dt * 10) {
           game.particles.spark(this.pos.x + randRange(-9, 9), this.pos.y - 2,
-            -Math.PI / 2, 1, this.def.places === 'totem' ? '#b07ae0' : '#8a8371');
+            -Math.PI / 2, 1, this.def.places === 'totem' ? '#b07ae0'
+            : this.def.places === 'hive' ? '#e0b04a' : '#8a8371');
         }
         if (this.channelT <= 0) {
           // placeHaunt says false when the house already has one of these:
@@ -1791,11 +2055,18 @@ export class Zombie {
         return;
       }
       this.placeT -= dt;
-      if (this.placeT <= 0 && sameFloor && pd > 150 && pd < 480 && this.state === ZSTATE.HUNT) {
+      // A hive goes down close: a keeper that walked all the way to you and
+      // then put a box at your feet was leaving it where it would be shot
+      // before it hummed once. Sixty is close enough to matter and far enough
+      // to see.
+      const near = this.def.places === 'hive' ? 60 : 150;
+      if (this.placeT <= 0 && sameFloor && pd > near && pd < 520 && this.state === ZSTATE.HUNT) {
         this.channelT = 1.5;
         audio.growl(0.58, this._muffled(game) ? 0.3 : 0.9);
-        game.popups?.add?.(this.pos.x, this.pos.y - 36,
-          this.def.places === 'totem' ? 'IT KNEELS' : 'IT DIGS', '#b07ae0', 11);
+        const verb = this.def.places === 'totem' ? 'IT KNEELS'
+          : this.def.places === 'hive' ? 'IT SETS THE BOX DOWN' : 'IT DIGS';
+        game.popups?.add?.(this.pos.x, this.pos.y - 36, verb,
+          this.def.places === 'hive' ? '#e0b04a' : '#b07ae0', 11);
         return;
       }
     }
@@ -1831,6 +2102,145 @@ export class Zombie {
       }
     }
 
+    // ------------------------------------------------- the apiary and the web
+    // ---- the First, between lives: it is a heap of bones until it stands up
+    if (this.gatherT > 0) {
+      this.gatherT -= dt;
+      this.vel.x *= 0.7; this.vel.y *= 0.7;
+      if (Math.random() < dt * 12) {
+        game.particles.spark(this.pos.x + randRange(-8, 8), this.pos.y - randRange(0, 14),
+          -Math.PI / 2, 1, '#e8e4d2');
+      }
+      if (this.gatherT <= 0) {
+        this.hp = this.maxHp * 0.8;
+        this.hurtFlash = 0;
+        this.bossPower *= 1.25;
+        this.baseSpeed *= 1.18;
+        this.dmgMul = (this.dmgMul ?? 1) * 1.1;
+        game.particles.dust(this.pos.x, this.pos.y, randRange(0, TAU), 12);
+        game.particles.chunk(this.pos.x, this.pos.y - 6, randRange(0, TAU), 8);
+        game.shake?.(4, 0.3);
+        audio.growl?.(0.6, 0.9);
+        game.popups?.add?.(this.pos.x, this.pos.y - 34, 'IT STANDS', '#efe9d2', 11);
+      }
+      return;
+    }
+
+    // ---- the archer: a long, visible draw, then three arrows --------------
+    if (this.def.bows) {
+      if (this.drawT > 0) {
+        this.drawT -= dt;
+        this.vel.x = 0; this.vel.y = 0;
+        this.stuck = 0;
+        if (this.drawT <= 0) game.archerVolley?.(this, p);
+        return;
+      }
+      this.bowT -= dt;
+      if (this.bowT <= 0 && sameFloor && pd > 120 && pd < 520 && this.state === ZSTATE.HUNT) {
+        this.drawT = 1.1;
+        game.popups?.add?.(this.pos.x, this.pos.y - 34, 'DRAW', '#cfc9b4', 9);
+      }
+      return;
+    }
+
+    // ---- the bulwark: the plank follows you, but it is heavy --------------
+    if (this.def.shield) {
+      this.shieldT -= dt;
+      if (sameFloor && this.shieldT <= 0) {
+        this.shieldT = 0.34;
+        this.shieldAng = Math.atan2(p.pos.y - this.pos.y, p.pos.x - this.pos.x);
+      }
+    }
+
+    // ---- the drummer: everything dead in earshot walks to its beat --------
+    if (this.def.drums) {
+      this.drumT -= dt;
+      if (this.drumT <= 0) {
+        this.drumT = 2;
+        game.shriekRings.push({
+          x: this.pos.x, y: this.pos.y, r: 10, max: 300, life: 0.6, maxLife: 0.6,
+          f: this.floor ?? game.map.floor, colour: '#d08a5a',
+        });
+        audio.drum?.(0.7);
+        let n = 0;
+        for (const z of game.zombies) {
+          if (z === this || z.dead) continue;
+          if (dist2(this.pos.x, this.pos.y, z.pos.x, z.pos.y) > 300 * 300) continue;
+          z.drummedBy = 2.4;
+          n++;
+        }
+        if (n && !this._muffled(game)) game.popups?.add?.(this.pos.x, this.pos.y - 30, `BEAT x${n}`, '#d08a5a', 9);
+      }
+    }
+
+    // ---- the weaver: knots of silk on the floor behind it ------------------
+    if (this.def.spins) {
+      this.spinT -= dt;
+      if (this.spinT <= 0) {
+        this.spinT = randRange(0.9, 1.5);
+        const moved = this.vel.x * this.vel.x + this.vel.y * this.vel.y > 220;
+        if (moved) game.addThread?.(this.pos.x, this.pos.y, this.floor ?? game.map.floor);
+      }
+    }
+
+    // ---- the sapper: it wants to be next to you ---------------------------
+    if (this.def.sapper && sameFloor && pd < 30) {
+      game.sapperBoom?.(this, true);
+      return;
+    }
+
+    // ---- a porter sets its brood down every few seconds -------------------
+    if (this.def.broods) {
+      this.broodT -= dt;
+      if (this.broodT <= 0) {
+        this.broodT = this.boss ? randRange(3.4, 5) : randRange(5.5, 8);
+        const live = game.zombies.reduce((n, z) => n + (!z.dead && z.summonedBy === this.id ? 1 : 0), 0);
+        if (live < (this.boss ? 8 : 5)) game.spawnBrood?.(this, this.boss ? 3 : 2);
+      }
+    }
+
+    // ---- the butcher: plant the feet, then cross the room in a line --------
+    if (this.def.charges) {
+      if (this.chargeT2 > 0) {
+        this.chargeT2 -= dt;
+        if (this.chargeT2 <= 0) this.chargeT = randRange(5, 7);
+      } else if (this.chargeWind > 0) {
+        this.chargeWind -= dt;
+        this.vel.x = 0; this.vel.y = 0;
+        this.chargeDir = { x: p.pos.x - this.pos.x, y: p.pos.y - this.pos.y };
+        const l = Math.hypot(this.chargeDir.x, this.chargeDir.y) || 1;
+        this.chargeDir.x /= l; this.chargeDir.y /= l;
+        if (this.chargeWind <= 0) { this.chargeT2 = 0.85; audio.growl?.(0.5, 0.9); }
+        return;
+      } else {
+        this.chargeT -= dt;
+        if (this.chargeT <= 0 && sameFloor && pd > 70 && pd < 420) {
+          this.chargeWind = 0.7;
+          game.popups?.add?.(this.pos.x, this.pos.y - 38, 'IT PLANTS ITS FEET', '#e0896a', 10);
+          audio.drum?.(0.5);
+          return;
+        }
+      }
+    }
+
+    // ---- the organist sings: a ring that staggers you and hastes the rest --
+    if (this.def.shrieksHard) {
+      this.shriekCd -= dt;
+      if (this.shriekCd <= 0 && sameFloor && pd < 430) {
+        this.shriekCd = randRange(6.5, 8.5);
+        game.bossShock?.(this, 230);
+      }
+    }
+
+    // ---- the warden and the colonel call the others in --------------------
+    if (this.def.summons) {
+      this.summonT -= dt;
+      if (this.summonT <= 0) {
+        this.summonT = this.boss ? randRange(11, 15) : randRange(16, 22);
+        game.bossSummon?.(this);
+      }
+    }
+
     // ------------------------------------------------- attack the player ---
     if (pd < 20 && !p.dead) {
       this.state = ZSTATE.ATTACK;
@@ -1839,6 +2249,8 @@ export class Zombie {
         this.lunge = 1;
         if (p.hurt(this.dmg * (this.dmgMul ?? 1), this.pos.x, this.pos.y, game)) {
           game.particles.blood(p.pos.x, p.pos.y, Math.atan2(p.pos.y - this.pos.y, p.pos.x - this.pos.x), 6, 0.8);
+          // the widow's bite keeps working after it has let go
+          if (this.def.venom) p.poison?.(game);
         }
       }
     } else if (this.state === ZSTATE.ATTACK && pd >= 24) {
@@ -1935,6 +2347,11 @@ export class Zombie {
 
     // a medic with somebody to fix walks at them instead of at the horde's route
     if (this._goto) { tx = this._goto.x; ty = this._goto.y; }
+    // a charge is a straight line and the walls are the brake
+    if (this.chargeT2 > 0) {
+      tx = this.pos.x + this.chargeDir.x * 260;
+      ty = this.pos.y + this.chargeDir.y * 260;
+    }
 
     // -------------------------------------------------------- movement ----
     if (this.state === ZSTATE.ATTACK) {
@@ -1954,6 +2371,10 @@ export class Zombie {
     }
     if (this.webbed > 0) speed *= 0.45;
     if (this.rally > 0) { speed *= 1.35; this.dmgMul = 1.25; } else this.dmgMul = 1;
+    // the drummer's beat: a fifth more legs, for everybody but the drummer
+    if (this.drummedBy > 0) speed *= 1.2;
+    // and the butcher does not walk, it arrives
+    if (this.chargeT2 > 0) speed = this.baseSpeed * 3.2;
     // while a totem hums, the whole horde's hair stands up: faster, bolder,
     // and the windows come apart a third quicker
     if (game.totemPower) { speed *= 1.18; this.dmgMul *= 1.15; }
@@ -2052,6 +2473,42 @@ export class Zombie {
       else this.stuck = Math.max(0, this.stuck - 1);
     }
     if (this.stuck > 7) this.despawn(game);
+  }
+
+  /**
+   * Pick a spot at arm's length and hold it.
+   *
+   * It picks a vantage and holds it for the better part of a second. That
+   * matters: choosing fresh every frame flips between "back off" and the
+   * horde's own route in the same breath, and the two cancel out into a thing
+   * vibrating against a wall. A straight line through a partition is given up
+   * in favour of the next idea, and if none of them are open the horde's route
+   * takes over -- the trick the field medic uses.
+   */
+  _vantageTick(dt, game, p, pd, sameFloor) {
+    this._vantageT = (this._vantageT ?? 0) - dt;
+    if (this._vantageT <= 0 || this.stuck > 1) {
+      this._vantageT = 0.7;
+      this._vantage = null;
+      if (sameFloor && pd < 640) {
+        const away = Math.atan2(this.pos.y - p.pos.y, this.pos.x - p.pos.x);
+        const clear = (x, y) => !this.map.rayWall(this.pos.x, this.pos.y, x, y, Infinity, this.floor);
+        if (pd < this.standoff - 40) {
+          for (const r of [140, 90, 60]) {
+            const c = { x: this.pos.x + Math.cos(away) * r, y: this.pos.y + Math.sin(away) * r };
+            if (clear(c.x, c.y)) { this._vantage = c; break; }
+          }
+        } else if (pd < this.standoff + 90) {
+          // circle rather than stand and grin: try one side, then the other
+          for (const side of [0.85, -0.85, 1.7, -1.7]) {
+            const a = away + side;
+            const c = { x: p.pos.x + Math.cos(a) * this.standoff, y: p.pos.y + Math.sin(a) * this.standoff };
+            if (clear(c.x, c.y)) { this._vantage = c; break; }
+          }
+        }
+      }
+    }
+    this._goto = this._vantage ?? null;
   }
 
   /** A scream that hastes and hardens every zombie in earshot. */
@@ -2160,6 +2617,18 @@ export class Zombie {
       const img = frames?.[trot] ?? (flip ? art.dogFlip : art.dog);
       return { img, framed: false };
     }
+    if (s === 'bee') {
+      // two wing beats, and it hangs above the floor like the insect it is
+      const beat = Math.floor(this.walkPhase * 4) % 2;
+      const frames = flip ? art.beeFlip : art.bee;
+      return { img: frames?.[beat] ?? art.bee?.[0], framed: false };
+    }
+    if (s === 'weaver' || s === 'widow' || s === 'porter') {
+      // the spiders trot: two leg poses, and nothing else about them animates
+      const trot = Math.floor(this.walkPhase * 2) % 2;
+      const frames = flip ? art[`${s}Flip`] : art[s];
+      return { img: frames?.[trot] ?? frames?.[0], framed: false };
+    }
     if (s === 'crawler') {
       return { img: (flip ? art.crawlerFlip : art.crawler)[this._frame(false)], framed: true };
     }
@@ -2175,7 +2644,11 @@ export class Zombie {
       || s === 'miner' || s === 'medic' || s === 'fusion'
       || s === 'bonewright' || s === 'skeleton' || s === 'jammer' || s === 'swarmlet'
       || s === 'bearer' || s === 'mourner' || s === 'wraith' || s === 'snowman'
-      || s === 'arsonist' || s === 'witch' || s === 'shocker' || s === 'knight') {
+      || s === 'arsonist' || s === 'witch' || s === 'shocker' || s === 'knight'
+      || s === 'beekeeper' || s === 'archer' || s === 'bulwark' || s === 'drummer'
+      || s === 'sapper' || s === 'first' || s === 'warden' || s === 'organist'
+      || s === 'butcher' || s === 'queen' || s === 'gravedigger'
+      || s === 'bellringer' || s === 'colonel') {
       const set = attacking
         ? (flip ? art[`${s}AtkFlip`] : art[`${s}Atk`])
         : (flip ? art[`${s}Flip`] : art[s]);

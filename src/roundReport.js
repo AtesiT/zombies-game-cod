@@ -1,7 +1,7 @@
 // Host-authoritative, per-wave TEAM totals, independent of legacy lifetime stats.
 export const ROUND_METRICS = Object.freeze([
   'seconds', 'kills', 'headshots', 'specialKills', 'summonedKills', 'knifeKills',
-  'trapKills', 'rays', 'hitRays', 'points', 'salvage', 'damage', 'armor',
+  'trapKills', 'bosses', 'rays', 'hitRays', 'points', 'salvage', 'damage', 'armor',
   'planks', 'doors', 'crafted', 'throws', 'medkits', 'revives', 'downs',
 ]);
 export const newRoundMetrics = () => Object.fromEntries(ROUND_METRICS.map((key) => [key, 0]));

@@ -153,6 +153,9 @@ applyBacking();
 //  screen). Mounted on the stage wrapper above, so they scale with the game.
 // ---------------------------------------------------------------------------
 function syncTouch() {
+  // the HUD asks the game which controls page to print, and the game had no
+  // handle on this panel at all -- so a phone was shown the keyboard page
+  game.touch = touch;
   const mode = settings.get('touch');
   touch.setSize(SIZE_MULTS[settings.get('touchSize') ?? 1]);
   touch.show(mode === 2 || (mode === 0 && isTouchDevice()));

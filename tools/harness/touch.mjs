@@ -169,10 +169,12 @@ ok(input.mouse.x === frozen.x && input.mouse.y === frozen.y, 'assist ran while s
 canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 500 });
 input.endFrame();
 
-// ---- in a menu: hold, slide to the row you want, let go -------------------
+// ---- in a menu: a tap chooses, a flick scrolls ----------------------------
+// This used to choose the row under the finger on release, wherever the drag
+// had ended -- so flicking the settings page also ticked whatever the thumb
+// came to rest on. The rule now: press and lift in the same place is a tap;
+// press, move, then press again is a scroll followed by a tap.
 game.started = false;
-// A thumb covers the row it is about to press, so the choice is made on
-// release, wherever the finger ended up -- not where it landed.
 start(touch.panel, 400, 100, 50);
 ok(input.mouse.down === true, 'a press in a menu did not register at all');
 ok(input.mouse.pressed === false, 'a menu chose the row before the finger lifted');
@@ -181,9 +183,22 @@ ok(Math.abs(input.mouse.x - 400) < 0.01 && Math.abs(input.mouse.y - 100) < 0.01,
 moveTo(250, 200, 50);
 ok(Math.abs(input.mouse.x - 250) < 0.01 && Math.abs(input.mouse.y - 200) < 0.01, 'dragging a press did not track');
 end(50, 250, 200);
-ok(input.mouse.pressed === true, 'letting go in a menu did not choose the row');
-ok(Math.abs(input.mouse.x - 250) < 0.01, 'the row it chose is not the row under the finger');
+ok(input.mouse.pressed === false, 'a flick that scrolled chose a row on release');
 ok(input.mouse.down === false && input.mouse.released === true, 'a press never lifted');
+input.endFrame();
+
+// a thumb that wobbles a couple of pixels is still a tap
+start(touch.panel, 400, 100, 52);
+moveTo(404, 103, 52);
+end(52, 404, 103);
+ok(input.mouse.pressed === true, 'a two-pixel wobble stopped a tap from counting');
+input.endFrame();
+
+// and the deliberate tap, after the scroll, lands where it is made
+start(touch.panel, 250, 200, 53);
+end(53, 250, 200);
+ok(input.mouse.pressed === true, 'a plain tap in a menu did nothing');
+ok(Math.abs(input.mouse.x - 250) < 0.01, 'the row it chose is not the row under the finger');
 input.endFrame();
 
 // ---- in the game: the trigger answers at once ------------------------------

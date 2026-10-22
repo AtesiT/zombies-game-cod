@@ -29,7 +29,7 @@ test('a tap is a click in a menu and a trigger in a round', () => {
       stick: { x: 0, y: 0 }, pressed: new Set(), keys: new Set(), released: new Set(),
     };
     const t = {
-      input, game: { started: true, player: {} }, _slid: false,
+      input, game: { started: true, player: {} },
       _menuOpen: () => false,
     };
     return { t, input };
@@ -43,21 +43,32 @@ test('a tap is a click in a menu and a trigger in a round', () => {
     assert.equal(input.mouse.pressed, true);
   }
 
-  // in a menu: the row lights up under the finger and the click lands on
-  // release, so a thumb can slide off a row it did not mean
+  // in a menu: a tap chooses on release, so nothing happens on the way down
   {
     const { t, input } = mk();
     t._menuOpen = () => true;
-    proto._tap.call(t, { clientX: 400, clientY: 250 }, 'down');
+    const rec = { kind: 'tap', x: 400, y: 250, moved: false };
+    proto._tap.call(t, { clientX: 400, clientY: 250 }, 'down', rec);
     assert.equal(input.mouse.pressed, false, 'nothing is chosen yet');
-    assert.equal(t._slid, true);
-    proto._tap.call(t, { clientX: 400, clientY: 300 }, 'move');
-    assert.equal(input.mouse.pressed, false, 'sliding does not click');
-    proto._tap.call(t, { clientX: 400, clientY: 300 }, 'up');
+    proto._tap.call(t, { clientX: 400, clientY: 250 }, 'up', rec);
     assert.equal(input.mouse.pressed, true, 'letting go is the choice');
     assert.equal(input.mouse.down, false);
-    assert.equal(input.mouse.y, 300, 'the click lands where the finger ended');
-    assert.equal(t._slid, false);
+  }
+
+  // ...but a flick that scrolled the list is not a choice. This is the bug
+  // that made a thumb tick a row it had only scrolled past.
+  {
+    const { t, input } = mk();
+    t._menuOpen = () => true;
+    const rec = { kind: 'tap', x: 400, y: 250, moved: false };
+    proto._tap.call(t, { clientX: 400, clientY: 250 }, 'down', rec);
+    rec.moved = true;                       // the touch layer saw it travel
+    proto._tap.call(t, { clientX: 400, clientY: 340 }, 'move', rec);
+    assert.equal(input.mouse.pressed, false, 'sliding does not click');
+    proto._tap.call(t, { clientX: 400, clientY: 340 }, 'up', rec);
+    assert.equal(input.mouse.pressed, false, 'a scroll chose the row it ended on');
+    assert.equal(input.mouse.down, false);
+    assert.equal(input.mouse.y, 340, 'the pointer still tracks the finger');
   }
 });
 
