@@ -159,14 +159,19 @@ applyBacking();
 // painted tile by tile the first time it is built, and that one frame is worth
 // more than a hundred of the ones around it. Do it while the menu is on the
 // screen and nobody is timing anything, and only ever once.
-(function warmUp() {
+(function warmUp(tries = 0) {
   const idle = window.requestIdleCallback
     ? (fn) => window.requestIdleCallback(fn, { timeout: 2500 })
-    : (fn) => setTimeout(fn, 1200);
+    : (fn) => setTimeout(fn, 700);
   idle(() => {
-    // never during a run: a warm-up that drops a frame mid-wave is worse than
-    // a warm-up that happens later
-    if (game.started) return;
+    // Never during a run: a warm-up that drops a frame mid-wave is worse than
+    // a warm-up that happens later. But "later" means later -- giving up for
+    // good because the player happened to be shooting at the time put the
+    // hitch back the next time they opened the range.
+    if (game.started || game.settingsOpen || game.debugOpen) {
+      if (tries < 40) setTimeout(() => warmUp(tries + 1), 4000);
+      return;
+    }
     game._prewarmRange?.();
   });
 })();

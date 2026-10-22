@@ -135,3 +135,25 @@ test('a laptop with a touchscreen is still a laptop', async () => {
     try { Object.defineProperty(globalThis, 'navigator', { value: { maxTouchPoints: points ?? 0 }, configurable: true }); } catch { /* ignore */ }
   }
 });
+
+test('a hound carries no pool of light, a walker still does', async () => {
+  const M = await load();
+  const mk = (type) => {
+    const g = new M.Game(new M.Input(nc(800, 500)));
+    g.setViewport(800, 500); g.begin(); g.startRound(8);
+    g.banner = null; g.zombies.length = 0;
+    const z = g.makeZombie({ x: g.player.pos.x + 30, y: g.player.pos.y + 8, floor: g.player.floor }, type);
+    z.state = 0; z.emergeT = 0; g.zombies.push(z);
+    for (let i = 0; i < 4; i++) g.update(1 / 60);
+    const glow = g._eyeGlow();
+    const ctx = nc(g.vw, g.vh).getContext('2d');
+    let hits = 0;
+    const real = ctx.drawImage.bind(ctx);
+    ctx.drawImage = (img, ...a) => { if (img === glow) hits++; return real(img, ...a); };
+    g.draw(ctx, 1 / 60);
+    return hits;
+  };
+  assert.equal(mk('dog'), 0, 'the hounds are low, and low heads get no light');
+  assert.equal(mk('crawler'), 0, 'nor do the crawlers');
+  assert.ok(mk('walker') >= 1, 'a standing body still carries its eyes');
+});
