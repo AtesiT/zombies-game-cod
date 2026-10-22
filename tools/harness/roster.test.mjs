@@ -249,5 +249,19 @@ test('the widow\'s venom wears off on its own', () => {
   assert.ok(low < 100, 'the venom did no damage at all');
   assert.ok(low >= 20, `the venom took the body down to ${low} -- that is a medkit, not a poison`);
   assert.equal(Math.round(p.hp), p.maxHp, 'the body does not recover after the venom runs out');
+
+  // a bar already under the floor is not topped up by the floor: a poison
+  // that healed a dying body would be the worst bug in the game
+  clearStorage();
+  const g2 = fresh();
+  g2.startRound(20);
+  const q = g2.player;
+  q.hp = q.maxHp = 100;
+  q.hp = 5;
+  q.poison(g2);
+  let top = q.hp;
+  for (let i = 0; i < 60 * 5; i++) { g2.zombies.length = 0; g2.update(H); top = Math.max(top, q.hp); }
+  assert.ok(top <= 5, `the venom healed a body at ${5} hp up to ${top}`);
+  assert.ok(q.venomT > 0, 'the venom ran out in five seconds');
   clearStorage();
 });

@@ -837,24 +837,18 @@ export class Player {
       if (this._venomTick >= 0.5) {
         this._venomTick = 0;
         const tick = Math.max(1, (this.venomRate || 4) * 0.5);
-        // It takes you down to a fifth of your health and then stops: the
-        // price of the bite is the next nine seconds and the risk of a second
-        // one, never a medkit. (A wound that can finish you on its own would
-        // be a wound you have to carry a medkit for, which is the thing the
-        // widow was asked *not* to be.)
-        const floor = Math.max(Math.min(this.hp, 8), Math.round((this.maxHp ?? 100) * 0.2));
-        const dealt = Math.max(0, this.hp - Math.max(floor, this.hp - tick));
-        this.hp = Math.max(floor, this.hp - tick);
-        game.roundDamageTaken = (game.roundDamageTaken ?? 0) + dealt;
-        this.hurtFlash = Math.max(this.hurtFlash, 0.25);
-        if (this.hp <= 0) {
-          if ((game.players?.length ?? 1) > 1 && !this.downed) {
-            this.downed = true;
-            this.bleedT = 60;
-            this.invuln = 1.2;
-            game.popups?.add?.(this.pos.x, this.pos.y - 34, 'DOWN', '#c4463a', 13);
-          } else this.dead = true;
+        // It bleeds you down to a fifth of the bar and then stops. The price of
+        // the bite is the next nine seconds and the risk of a second one --
+        // never a medkit, and never a death you had already walked away from.
+        // `hp > floor` rather than a clamp: a clamp on a bar below the floor
+        // would have healed you, which is the one thing a poison may not do.
+        const floor = Math.max(1, Math.round((this.maxHp ?? 100) * 0.2));
+        if (this.hp > floor) {
+          const dealt = Math.min(tick, this.hp - floor);
+          this.hp = Math.max(floor, this.hp - tick);
+          game.roundDamageTaken = (game.roundDamageTaken ?? 0) + dealt;
         }
+        this.hurtFlash = Math.max(this.hurtFlash, 0.25);
       }
     }
 
