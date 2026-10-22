@@ -596,8 +596,47 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **149/149** and the historical regression **48/48**.
-Twenty-five of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
+### The four things a player found in one evening
+
+Reported in the same breath as the roster work, all four with a root cause that
+was nobody's guess:
+
+- **The skeletons did not look like skeletons.** Four white bodies under a black
+  outline read, at three pixels per sprite pixel, as men in dark caps. They are
+  drawn from bone now: a skull with two deep sockets and a tooth row in shadow,
+  a spine, four ribs with gaps between them, a pelvis, and one-pixel limbs. The
+  old versions are gone; there is no white walker with a skull printed on it.
+- **The debug list could not be scrolled or used with the mouse.** It was not
+  the layout: hover re-picked the row under the pointer on *every* frame, so an
+  arrow key moved the selection and the pointer put it back before the frame
+  ended. Hover now picks only while the pointer moves, and a press always lands
+  on the row under it.
+- **SETTINGS and TEST RANGE were slow the first time and off centre.** Two
+  separate defects. The panel was inset 44 px to dodge the BACK chip and so sat
+  18 px low on every screen there is -- it is centred now, and the panel's
+  height already lives inside the chip's band. The slowness was the first
+  `new GameMap('range')` of a page: 3 800 tiles painted by hand, 124 ms, once.
+  The map is built during menu idle now: the first press costs 7 ms instead of
+  124, and nothing else in the panel was ever slow (opening SETTINGS costs a
+  11 ms worst frame).
+- **The sound went missing.** Two real ways to silence an engine that looks
+  healthy: a context that is built but never starts (the old code waited for a
+  *second* gesture, which is indistinguishable from no sound at all -- the clock
+  is now asked to start again for two seconds), and a reverb send that was open
+  with a null impulse for the whole menu, because the convolver was filled
+  before the engine claimed to be ready.
+- Along the way: the range HUD printed `SCRAP undefined` (a fresh body now
+  starts with scrap and medkits), and the arrow keys lost to a resting mouse in
+  the front door, the wardrobe and the skill cards, exactly as they had in the
+  debug list.
+
+Validation: `npm test` **156/156** and the historical regression **48/48**.
+Thirty-two of the tests are new, including
+`tools/harness/regressions.test.mjs` (4 -- the settings panel centred within a
+pixel at eight screen sizes, the arrows moving the front door, the wardrobe and
+the debug list with a mouse parked on them, the range HUD printing numbers and
+never `undefined`, and the prewarmed range being handed over rather than built
+on the press), and `tools/harness/roster.test.mjs` (14 — the warden
 line from 10 to 55 and its wrap, the second-cycle health bonus, no two wardens
 sharing a sprite set, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
