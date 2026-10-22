@@ -2849,12 +2849,35 @@ export function pauseHoverRow(game, w, h) {
   return m ? pauseHitTest(game, w, h, m.x, m.y) : -1;
 }
 
-export function drawPause(ctx, game, w, h) {
-  const hover = pauseHoverRow(game, w, h);
-  menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh, hover));
+/**
+ * Is the pointer anywhere over the block of plates -- including the gutters
+ * between them?
+ *
+ * This is what stops the highlight from *falling back* to the keyboard's row
+ * while the mouse is in the middle of the menu: passing from one plate to the
+ * next means passing through a gap, and a gap that lit the first plate made
+ * the selection look like it was flying away and coming back.
+ */
+export function pauseInsideBlock(game, w, h) {
+  const m = game?.input?.mouse;
+  if (!m) return false;
+  const P = menuPoint(w, h, m.x, m.y);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < PAUSE_ROWS.length; i++) {
+    const r = _pauseRowRect(i, P.w, P.h);
+    x0 = Math.min(x0, r.x); x1 = Math.max(x1, r.x + r.w);
+    y0 = Math.min(y0, r.y); y1 = Math.max(y1, r.y + r.h);
+  }
+  return P.x >= x0 - 6 && P.x <= x1 + 6 && P.y >= y0 - 6 && P.y <= y1 + 6;
 }
 
-function _drawPause(ctx, game, w, h, hover = -1) {
+export function drawPause(ctx, game, w, h) {
+  const hover = pauseHoverRow(game, w, h);
+  const inside = pauseInsideBlock(game, w, h);
+  menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh, hover, inside));
+}
+
+function _drawPause(ctx, game, w, h, hover = -1, inside = false) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
@@ -2869,7 +2892,9 @@ function _drawPause(ctx, game, w, h, hover = -1) {
     const rc = _pauseRowRect(i, w, h);
     // the pointer lights a row, and so does the keyboard: a menu you can only
     // walk with a mouse is the complaint this whole pass is about
-    const hot = i === hover || (hover < 0 && i === (game.pauseIndex ?? 0));
+    // the pointer owns the highlight while it is over the menu; the keyboard's
+    // row is what you see when it is not
+    const hot = i === hover || (hover < 0 && !inside && i === (game.pauseIndex ?? 0));
     ctx.fillStyle = hot ? 'rgba(240,217,138,0.14)' : 'rgba(18,22,28,0.66)';
     ctx.fillRect(rc.x, rc.y, rc.w, rc.h);
     ctx.strokeStyle = hot ? GOLD : 'rgba(140,150,165,0.35)';
@@ -3276,6 +3301,24 @@ export function settingsLayout(game, w, h) {
   };
 }
 
+/**
+ * The sound line's box, in screen units.
+ *
+ * It is painted in the panel's footer and it is a button, so the painter and
+ * the pointer have to agree on where it is. The geometry is derived from the
+ * same layout the painter uses -- and it is deliberately placed *above* the
+ * way-out line, which is the one thing in that corner that is not a target.
+ */
+export function soundSlotAt(w, h, mx, my) {
+  const P = menuPoint(w, h, mx, my);
+  const U = uiView(w, h);
+  const L = _settingsLayout({ settingsIndex: 0 }, U.w, U.h, U.k);
+  if (L.FOOT < 30) return false;              // no room for the line
+  const y = L.cy + L.ch - 20;                 // the same baseline the painter uses
+  // a generous box: this is a line of small text and a thumb on a phone
+  return P.y >= y - 9 && P.y <= y + 5 && P.x >= L.cx + 8 && P.x <= L.cx + L.cw - 8;
+}
+
 /** Which settings row (index into SETTING_DEFS) is under the pointer, or -1. */
 export function settingsRowAt(game, w, h, mx, my) {
   const P = menuPoint(w, h, mx, my);
@@ -3459,7 +3502,11 @@ function _drawSettings(ctx, game, w, h, k = 1) {
   // A short footer gets no hint at all: one line of explanation is worth less
   // than the rows it would cover, and on a squeezed panel it covered them.
   const footTop = cy + ch - FOOT;
-  const roomLines = Math.max(0, Math.floor((FOOT - 20) / 11));
+  // The footer carries three things now -- the hint for the selected row, the
+  // sound line (a button) and the way out -- so the hint gets what is left
+  // after the other two, not the whole footer.
+  const soundY = cy + ch - 20;
+  const roomLines = Math.max(0, Math.floor((FOOT - 34) / 11));
   if (hint && roomLines > 0) {
     const cols = Math.max(18, Math.floor((cw - 24) / 5.7));
     let lines = narrow ? wrapLine(hint, cols) : [hint];
@@ -3473,11 +3520,61 @@ function _drawSettings(ctx, game, w, h, k = 1) {
       hy += 11;
     }
   }
+  // ---- the sound line ----------------------------------------------------
+  // "The sound is missing" is the one report that cannot be answered from a
+  // screenshot, so the panel says out loud what the engine is doing: whether
+  // the clock is running, what the master fader is, and -- if it is silent --
+  // which of the three it is. Tapping it makes a shot, so the player can hear
+  // the answer instead of reading it.
+  const font = 'bold 9px "Courier New", monospace';
+  let engine = soundState(false);
+  if (textWidth(engine.text, font) > cw - 12) engine = soundState(true);
+  const slotY = cy + ch - 7;
+  if (FOOT >= 30) {
+    // the line names what is wrong and is the button that fixes it: a tap
+    // here puts the faders back and plays three sounds to prove it
+    if (textWidth(engine.text, font) <= cw - 12) {
+      text(ctx, engine.text, w / 2, soundY, {
+        font, colour: engine.ok ? 'rgba(143,220,106,0.85)' : engine.warn, align: 'center',
+      });
+    }
+  }
   text(ctx, narrow ? 'X IN THE CORNER TAKES YOU BACK' : 'O / ESC or the X — back to the game',
-    w / 2, cy + ch - 8, {
+    w / 2, slotY, {
       font: 'bold 10px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
     });
   ctx.restore();
+}
+
+/**
+ * The sound engine in a sentence: `{ ok, text, warn }`.
+ *
+ * The settings panel is where a player goes when the game has gone quiet, so
+ * it is the right place for the honest answer. It reads the engine's own state
+ * rather than assuming, and it names the *first* reason in order of likelihood.
+ */
+export function soundState(narrow = false) {
+  const master = settings.get('master');
+  const vol = settings.get('sfx');
+  const pick = (long, short) => (narrow ? short : long);
+  if (!audio.ctx) return { ok: false, text: pick('SOUND: NOT STARTED YET — PRESS THIS LINE', 'SOUND: TAP TO START'), warn: '#e0a040' };
+  if (audio.muted) return { ok: false, text: pick('SOUND: MUTED — M OR THIS LINE', 'SOUND: MUTED — TAP'), warn: '#c4463a' };
+  if (audio.blocked) {
+    return AudioEngineFramed()
+      ? { ok: false, text: pick('SOUND: BLOCKED BY THIS FRAME — OPEN IN A TAB', 'SOUND BLOCKED — TAP'), warn: '#c4463a' }
+      : { ok: false, text: pick('SOUND: BLOCKED BY THE BROWSER — TAP THIS LINE', 'SOUND BLOCKED — TAP'), warn: '#c4463a' };
+  }
+  if (audio.ctx.state !== 'running' && audio.ctx.state !== 'suspended') {
+    return { ok: false, text: pick(`SOUND: ${String(audio.ctx.state).toUpperCase()} — TAP THIS LINE`, 'SOUND: TAP TO START'), warn: '#c4463a' };
+  }
+  if (master === 0) return { ok: false, text: pick('SOUND: MASTER AT 0 — TAP THIS LINE', 'MASTER 0 — TAP TO FIX'), warn: '#e0a040' };
+  if (vol === 0) return { ok: false, text: pick('SOUND: EFFECTS AT 0 — TAP THIS LINE', 'EFFECTS 0 — TAP TO FIX'), warn: '#e0a040' };
+  if (audio.ctx.state === 'suspended') return { ok: false, text: pick('SOUND: PAUSED — TAP THIS LINE', 'SOUND PAUSED — TAP'), warn: '#e0a040' };
+  return {
+    ok: true,
+    text: pick(`SOUND: RUNNING — MASTER ${master}% · EFFECTS ${vol}% — TAP TO TEST`, 'SOUND OK — TAP TO TEST'),
+    warn: INK_DIM,
+  };
 }
 
 // ---------------------------------------------------------------------------

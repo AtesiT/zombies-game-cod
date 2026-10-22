@@ -21,7 +21,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout, backChipAt, drawBackChip, PAUSE_ROWS, pauseChipAt, pauseChipShown, pauseTitleAt} from './hud.js';
+import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, soundSlotAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout, backChipAt, drawBackChip, PAUSE_ROWS, pauseChipAt, pauseChipShown, pauseTitleAt} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -3889,6 +3889,17 @@ export class Game {
 
     if (this.settingsOpen) {
       const S = settings;
+      // ---- the sound line, in the footer -----------------------------------
+      // It says what the engine is doing and it is a button: the answer to
+      // "there is no sound" is a shot the player can hear, made from inside a
+      // real press (which is the only moment a browser lets audio start).
+      const sm = this.input.mouse;
+      if (sm.pressed && soundSlotAt(this.vw, this.vh, sm.x, sm.y)) {
+        sm.pressed = false; sm.down = false;
+        this._soundTest();
+        this.hud.update(dt, this);
+        return;
+      }
       // the second press of RESTORE DEFAULTS has a few seconds to arrive
       this._resetArmT = Math.max(0, (this._resetArmT ?? 0) - dt);
       // the mouse and the wheel are first-class citizens here too: hover
@@ -4692,6 +4703,33 @@ export class Game {
       const next = this.bannerQueue.shift();
       this.banner = next;
       if (next.net) this.net?.emit('banner', { title: next.title, sub: next.sub, colour: next.colour, dur: next.max });
+    }
+  }
+
+  /**
+   * The sound line's test: put the engine back in order as far as it can be,
+   * then make a noise. Whatever is still wrong after that, the line says.
+   */
+  _soundTest() {
+    if (settings.get('master') === 0) settings.set('master', 85);
+    if (settings.get('sfx') === 0) settings.set('sfx', 100);
+    if (audio.muted) audio.setMuted(false);
+    this.applySettings();
+    const state = audio.gesture();
+    if (state) {
+      // three sounds, one after another, so a shot that is drowned by the
+      // wind is still recognisable as sound
+      audio.shot('m1911');
+      setTimeout(() => audio.reload(0), 260);
+      setTimeout(() => audio.buy(), 620);
+      this.bannerShow('SOUND TEST', 'a shot, a reload, a purchase', { dur: 2, colour: '#7fbf5f', local: true });
+    } else {
+      audio.manualUnlock();
+      let framed = false;
+      try { framed = !!window.top && window.top !== window.self; } catch { framed = true; }
+      this.bannerShow('SOUND IS BLOCKED', framed
+        ? 'the frame will not allow audio — opening a tab'
+        : 'the browser will not start audio here', { dur: 2.6, colour: '#c4463a', local: true });
     }
   }
 

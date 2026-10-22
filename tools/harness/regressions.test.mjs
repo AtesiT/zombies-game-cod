@@ -177,9 +177,12 @@ test('a pointer in the gap between plates lights nothing, on every screen', asyn
       g.input.mouse.x = a.x + a.w / 2;
       g.input.mouse.y = (a.y + a.h + b.y) / 2;
       assert.equal(H.pauseHoverRow(g, w, h), -1, `${w}x${h}: the gap between ${i} and ${i + 1} is not a plate`);
+      assert.equal(H.pauseInsideBlock(g, w, h), true,
+        `${w}x${h}: a gap inside the menu must not fall back to the keyboard's row`);
     }
     g.input.mouse.x = 3; g.input.mouse.y = h - 3;
     assert.equal(H.pauseHoverRow(g, w, h), -1, `${w}x${h}: the corner is not a plate`);
+    assert.equal(H.pauseInsideBlock(g, w, h), false, `${w}x${h}: ...and it is outside the menu`);
   }
 });
 
@@ -315,5 +318,53 @@ test('a frame that blocks the clock says so on the title screen too', async () =
     assert.equal(painted, 1, 'it is drawn over the title screen');
   } finally {
     Object.assign(audio, { ctx: saved.ctx, ready: saved.ready, gestures: saved.gestures, _lastGestureAt: saved.at });
+  }
+});
+
+test('the settings panel says what the sound is doing, and the line is a button', async () => {
+  const { AudioContext } = await import('./webaudio.mjs');
+  const hadCtx = window.AudioContext;
+  window.AudioContext = AudioContext;
+  const { settings } = await import('../../src/settings.js');
+  const { audio } = await import('../../src/audio.js');
+  const H = await import('../../src/hud.js');
+  audio._teardown(); audio.prepare(); audio.gesture();
+  const hadSfx = settings.get('sfx'), hadMaster = settings.get('master');
+  const g = await game(800, 500);
+  g.begin(); g.applySettings(); g.settingsOpen = true;
+  try {
+    assert.match(H.soundState().text, /RUNNING — MASTER 85%/);
+
+    // the line and the pointer agree about where it is
+    const L = H.settingsLayout(g, g.vw, g.vh);
+    const lineY = L.cy + L.ch - 20;
+    assert.equal(H.soundSlotAt(g.vw, g.vh, g.vw / 2, lineY - 2), true, 'the line is a target');
+    assert.equal(H.soundSlotAt(g.vw, g.vh, g.vw / 2, lineY - 40), false, 'the footer is not');
+
+    // a dead effects fader is named...
+    settings.set('sfx', 0); g.applySettings();
+    assert.match(H.soundState().text, /EFFECTS/);
+
+    // ...and the press fixes it and plays the test sounds
+    const shots = [];
+    const realShot = audio.shot;
+    audio.shot = (kind) => { shots.push(kind); return realShot.call(audio, kind); };
+    try {
+      g.input.mouse.x = g.vw / 2; g.input.mouse.y = lineY - 2; g.input.mouse.pressed = true;
+      g.update(1 / 60);
+    } finally { audio.shot = realShot; }
+    assert.equal(settings.get('sfx'), 100, 'one press put the effects back');
+    assert.match(g.banner?.title ?? '', /SOUND TEST/);
+    assert.ok(shots.length > 0, 'and it made a noise to prove it');
+
+    // a phone-sized panel has to say it in fewer characters
+    const short = H.soundState(true).text;
+    assert.ok(short.length < H.soundState(false).text.length);
+    const narrow = await game(360, 640);
+    narrow.settingsOpen = true;
+    assert.doesNotThrow(() => H.drawSettings(nc(360, 640).getContext('2d'), narrow, 360, 640));
+  } finally {
+    settings.set('sfx', hadSfx); settings.set('master', hadMaster);
+    g.applySettings(); audio._teardown(); window.AudioContext = hadCtx;
   }
 });
