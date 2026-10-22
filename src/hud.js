@@ -38,7 +38,13 @@ function menuSpace(ctx, w, h, fn) {
 }
 
 function AudioEngineFramed() {
-  try { return !!window.top && window.top !== window.self; } catch { return true; }
+  try {
+    const w = window;
+    // a preview is an iframe: `top` exists and is not this window. (A bare
+    // `{ top: 2, self: 1 }` stand-in in a test answers the same question.)
+    if (!w || w.top === undefined) return false;
+    return w.top !== w.self;
+  } catch { return true; }                            // cross-origin frame: yes
 }
 
 function menuPoint(w, h, mx, my) {
@@ -310,6 +316,23 @@ export class HUD {
     const info = this._soundLabel();
     if (!info || !info.fix) return;
     this._sound(ctx, game, w, h, true);
+    // A frame that blocks autoplay is the one silence the player cannot fix by
+    // pressing anything in the game, and the corner chip is easy to miss on a
+    // title screen. Say it in a line across the menu, with the one instruction
+    // that works.
+    const notice = menuSoundNotice();
+    if (notice) {
+      const y = 30;
+      ctx.save();
+      ctx.fillStyle = 'rgba(60,16,14,0.92)';
+      ctx.fillRect(0, y, w, 22);
+      ctx.fillStyle = 'rgba(224,112,90,0.55)';
+      ctx.fillRect(0, y + 21, w, 1);
+      ctx.restore();
+      text(ctx, notice, w / 2, y + 15, {
+        font: 'bold 9px "Courier New", monospace', colour: '#f0c0a8', align: 'center',
+      });
+    }
   }
 
   soundChipAt(game, w, h, mx, my) {
@@ -3553,6 +3576,17 @@ function _drawSettings(ctx, game, w, h, k = 1) {
  * it is the right place for the honest answer. It reads the engine's own state
  * rather than assuming, and it names the *first* reason in order of likelihood.
  */
+/**
+ * The line across the title screen when the page cannot make a sound because
+ * of the frame it is in, or null. Exported so the painter and the tests agree
+ * on it -- "the menu tells you" is a promise worth a test.
+ */
+export function menuSoundNotice() {
+  const info = audio.blocked ? { fix: 'unlock' } : null;
+  if (!info || !AudioEngineFramed()) return null;
+  return 'THIS PREVIEW BLOCKS AUDIO — PRESS "OPEN IN TAB" ABOVE, OR OPEN THE LINK IN A NEW TAB';
+}
+
 export function soundState(narrow = false) {
   const master = settings.get('master');
   const vol = settings.get('sfx');

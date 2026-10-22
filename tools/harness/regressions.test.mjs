@@ -368,3 +368,31 @@ test('the settings panel says what the sound is doing, and the line is a button'
     g.applySettings(); audio._teardown(); window.AudioContext = hadCtx;
   }
 });
+
+test('a preview frame that blocks audio says so across the title screen', async () => {
+  const { audio } = await import('../../src/audio.js');
+  const H = await import('../../src/hud.js');
+  const g = await game(800, 500);
+  const saved = { ctx: audio.ctx, ready: audio.ready, gestures: audio.gestures, at: audio._lastGestureAt };
+  const hadTop = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  try {
+    audio.ready = true;
+    audio.ctx = { state: 'suspended' };
+    audio.gestures = 1;
+    audio._lastGestureAt = Date.now() - 2000;
+    // a tab: no notice
+    assert.equal(H.menuSoundNotice(), null, 'nothing to say outside a frame');
+    // ...and inside somebody else's frame
+    globalThis.window = Object.assign({}, globalThis.window, { self: 1, top: 2 });
+    const notice = H.menuSoundNotice();
+    assert.match(String(notice), /THIS PREVIEW BLOCKS AUDIO/);
+    assert.match(String(notice), /OPEN IN TAB/);
+    // and it is painted, without throwing, at three sizes
+    for (const [w, h] of [[800, 500], [360, 640], [1280, 800]]) {
+      assert.doesNotThrow(() => H.HUD.prototype._soundOnMenu.call(g.hud, nc(w, h).getContext('2d'), g, w, h));
+    }
+  } finally {
+    if (hadTop) globalThis.window = hadTop.value;
+    Object.assign(audio, { ctx: saved.ctx, ready: saved.ready, gestures: saved.gestures, _lastGestureAt: saved.at });
+  }
+});
