@@ -626,12 +626,16 @@ export class Game {
    * camera clamp, the lighting layer -- reads `vw`/`vh`, so this is the one
    * place that decides what "the screen" means.
    */
-  setViewport(w, h) {
+  setViewport(w, h, force = false) {
     const mw = this.map ? this.map.w * T : 0;
     const mh = this.map ? this.map.h * T : 0;
     const vw = Math.round(Math.max(320, mw ? Math.min(mw, w) : w));
     const vh = Math.round(Math.max(240, mh ? Math.min(mh, h) : h));
-    if (vw === this.vw && vh === this.vh) return false;
+    // `force` is for a window that changed shape *and* for a map that did:
+    // main.js solves the view from the window alone and used to skip the call
+    // when the numbers came out the same, which left the canvas at boot size
+    // until the player dragged the window.
+    if (!force && vw === this.vw && vh === this.vh) return false;
     this.vw = vw;
     this.vh = vh;
     this.lighting?.setSize?.(vw, vh);
@@ -4032,7 +4036,19 @@ export class Game {
       const hit = (this.input.mouse.pressed && tabHit >= 0)
         ? -1
         : debugHitTest(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
-      if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
+      // Hovering *picks* only while the pointer is actually moving -- the same
+      // rule the settings page has always used. A hand resting on the list
+      // used to re-pick its row on every frame, so an arrow key moved the
+      // selection and the mouse put it back before the frame ended: the panel
+      // answered the scroll wheel and nothing else. A pointer that has not
+      // moved is not an instruction.
+      const m = this.input.mouse;
+      const moved = m.x !== (this._dbgMx ?? -9999) || m.y !== (this._dbgMy ?? -9999);
+      this._dbgMx = m.x; this._dbgMy = m.y;
+      // a press always lands on the row under the pointer, whether or not the
+      // pointer moved first (a thumb arrives without a hover to announce it)
+      if (m.pressed && hit >= 0) this.debugIndex = hit;
+      else if (moved && hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
         rows = this.debugRows();
         const row = rows[this.debugIndex] ?? rows[0];
@@ -4723,9 +4739,28 @@ export class Game {
    * Everything downstream reads through this.map, so one fresh GameMap is
    * the whole trick; the box and the player just need to be told.
    */
+  /**
+   * Build the test range before anybody asks for it.
+   *
+   * The first `new GameMap('range')` of a page paints 3 800 tiles of floor by
+   * hand and costs about 120 ms; every later one is free, and the campaign map
+   * has always been built at boot. That made the first press of TEST RANGE
+   * the one slow frame in the game. The map costs nothing to keep: it is a
+   * map, not a run, and `_loadMap` takes it and lets go of it.
+   */
+  _prewarmRange() {
+    if (this._rangeCache || this.rangeMode) return false;
+    try { this._rangeCache = new GameMap('range'); } catch { this._rangeCache = null; }
+    return !!this._rangeCache;
+  }
+
   _loadMap(range) {
     this.rangeMode = range;
-    this.map = new GameMap(range ? 'range' : 'campaign');
+    // a prewarmed range is a fresh, never-played map: hand it over and drop it
+    this.map = range
+      ? (this._rangeCache ?? new GameMap('range'))
+      : new GameMap('campaign');
+    this._rangeCache = null;
 
     // map-bound systems are rebuilt exactly the way the constructor builds
     // them, so switching worlds never drags state across with it
@@ -4800,6 +4835,11 @@ export class Game {
     this.cam.y = clamp(fresh.pos.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.rebuildFlow();
     if (this.hud) this.hud._miniDirty = true;
+    // the world just changed shape (the range is not the campaign), and every
+    // system that was built around the old one -- the camera clamp, the lights,
+    // the view -- has to be told
+    this.onMapChange?.(range);
+    this._clampCam();
   }
 
   /** The polygon is a sandbox: power on, pockets full, no dying, no scores. */

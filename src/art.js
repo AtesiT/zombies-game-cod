@@ -451,6 +451,80 @@ function buildKnight(src) {
 }
 
 /** Crawler: the zombie sprite chopped down to a dragging torso + arms. */
+/**
+ * The skeleton a Bonewright sews out of the floor.
+ *
+ * It used to be the ordinary corpse with a chalk tint on it: a *white zombie*,
+ * which at gameplay scale read as "a zombie someone turned the brightness up
+ * on" rather than as bones. A skeleton has to lose the bulk, not the colour,
+ * so this one is drawn from nothing: a skull with two sockets, a spine, four
+ * ribs with light through them, and limbs that are one pixel wide.
+ *
+ * Same 20x22 box and the same body row as every other body, so it stands on
+ * the floor the way the walker does -- and it is `headless` in the table, so
+ * the empty space above the ribs is not a headshot waiting to happen.
+ */
+function buildSkeleton(src) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  const BONE = '#e2dcc4';      // the lit side of a bone
+  const BONE2 = '#b3ab90';     // and its shadow
+  const D = '#2b271f';         // the gap between bones: this is what makes it read
+  const HOLE = '#12100c';      // a socket
+
+  // ---- the skull: a narrow box, wider at the crown than the jaw ------------
+  // Bone, not outline: the first pass was a black frame with white inside it,
+  // which at gameplay scale read as a man in a dark cap.
+  px(7, 2, BONE, 6, 1);        // the crown
+  px(6, 3, BONE, 8, 1);        // and the brow, one wider each side
+  px(6, 2, BONE2, 1, 1); px(13, 2, BONE2, 1, 1);
+  px(6, 4, BONE, 8, 4);        // the face plate
+  px(6, 4, BONE2, 1, 4);       // the far side of it in shadow
+  px(7, 5, HOLE, 2, 2);        // sockets, deep enough to read at a glance
+  px(11, 5, HOLE, 2, 2);
+  px(9, 6, BONE2, 2, 1);
+  px(9, 7, D, 2, 1);           // the nasal hole
+  px(7, 8, BONE, 6, 1);        // the upper jaw
+  px(6, 8, D, 1, 1); px(13, 8, D, 1, 1);
+  px(8, 9, BONE2, 4, 1);       // and the teeth, in shadow under it
+
+  // ---- the spine and the ribs: bars of bone with light between them -------
+  px(9, 10, BONE, 2, 1);
+  for (const y of [11, 12, 13, 14]) {
+    px(9, y, BONE2, 2, 1);     // the vertebra
+    px(7, y, BONE, 2, 1);      // the rib, left
+    px(11, y, BONE, 2, 1);     // and right
+    px(8, y, D, 1, 1);         // the gaps that stop it being a slab
+    px(11, y, D, 1, 1);
+  }
+  px(6, 12, BONE2, 1, 1);      // the tips of the lowest pair
+  px(13, 12, BONE2, 1, 1);
+
+  // ---- the pelvis, and a hip joint each side -----------------------------
+  px(7, 15, BONE, 6, 1);
+  px(8, 16, BONE2, 4, 1);
+
+  // ---- arms: one bone, hanging, with a wrist and a hand ------------------
+  px(4, 11, BONE, 1, 5);       // the near arm, down the side
+  px(5, 11, BONE2, 1, 1);      // the shoulder
+  px(4, 16, BONE, 2, 1);       // the hand
+  px(4, 12, D, 1, 1);          // the elbow's shadow, so it is not a stick
+  px(15, 11, BONE2, 1, 4);     // the far arm, darker: further away
+  px(14, 11, BONE, 1, 1);
+  px(15, 15, BONE2, 2, 1);
+
+  // ---- legs: two bones each, because a femur is not a plank -------------
+  px(7, 17, BONE, 1, 5);
+  px(8, 17, D, 1, 5);
+  px(8, 17, BONE2, 1, 1);      // the knee
+  px(7, 21, BONE, 2, 1);       // the foot
+  px(11, 17, D, 1, 5);
+  px(12, 17, BONE2, 1, 5);
+  px(11, 17, BONE2, 1, 1);
+  px(11, 21, BONE2, 2, 1);
+  return canvas;
+}
+
 function buildCrawler(src) {
   const { canvas, ctx } = makeCanvas(src.width, src.height);
   // draw only the lower two thirds, squashed, so it reads as "dragging itself"
@@ -1080,11 +1154,12 @@ export function buildArt() {
     bonewrightFlip: zombie.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
     bonewrightAtk: zombieAtk.map((c) => tintCopy(c, '#cfc9b4', 0.74)),
     bonewrightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
-    // skeletons: what it sews out of the dirt -- chalk white and much thinner
-    skeleton: zombie.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
-    skeletonFlip: zombie.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
-    skeletonAtk: zombieAtk.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
-    skeletonAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
+    // skeletons: what it sews out of the dirt. Not a tinted corpse -- a corpse
+    // with the meat taken off it (see buildSkeleton), so it reads as bones.
+    skeleton: zombie.map((c) => buildSkeleton(c)),
+    skeletonFlip: zombie.map((c) => flipH(buildSkeleton(c))),
+    skeletonAtk: zombieAtk.map((c) => buildSkeleton(c)),
+    skeletonAtkFlip: zombieAtk.map((c) => flipH(buildSkeleton(c))),
     // swarmling's scattered halves: chitin, small and dark
     swarmlet: zombie.map((c) => tintCopy(c, '#4a3a2c', 0.66)),
     swarmletFlip: zombie.map((c) => tintCopy(flipH(c), '#4a3a2c', 0.66)),

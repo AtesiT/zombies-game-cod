@@ -632,7 +632,7 @@ export class HUD {
     ctx.font = 'bold 10px "Courier New", monospace';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#9fd0e0';
-    ctx.fillText(`SCRAP ${p.salvage}`, x, y);
+    ctx.fillText(`SCRAP ${p.salvage ?? 0}`, x, y);
     if ((p.medkits ?? 0) > 0) {
       ctx.fillStyle = '#63c74d';
       ctx.fillText(`MEDKIT x${p.medkits}  [H]`, x, y + 13);
@@ -3166,9 +3166,17 @@ function _settingsLayout(game, w, h, k = 1) {
   // the panel is 420 wide on a normal screen and shrinks with a narrow one
   const cw = Math.min(420, w - 16), ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2);
-  // under the BACK chip, and inside the bottom of the screen: whatever room
-  // is left, the panel takes no more than that
-  const cy = Math.round(inset + Math.max(0, (room - ch) / 2));
+  // It used to sit under the BACK chip unconditionally, which pushed it 18
+  // pixels low on every screen there is -- an off-centre panel is exactly as
+  // wrong as an overlapped one, and it was the only panel in the game that was
+  // not centred. So: centre it, and only drop it below the chip when the two
+  // would actually land on each other (a narrow screen, where the panel is
+  // nearly as wide as the screen and its header runs under the way-out chip).
+  // The height is already inside `room`, which is the screen less the chip's
+  // band, so the centred panel never reaches the chip's corner *and* its text
+  // never does either: the header band is 30 units tall and the two lines in
+  // it sit at the left and at the right of the panel, below the corner.
+  const cy = Math.round((h - ch) / 2);
   return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow, stacked };
 }
 

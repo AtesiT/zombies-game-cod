@@ -86,10 +86,11 @@ export class AudioEngine {
     this._startReverb();
     this._startMusic();
 
-    // Only now is the engine usable: a throw above leaves `ready` false, and
-    // `_teardown` gives us a clean slate for the next gesture.
+    // ...and only now is the engine usable: a throw above leaves `ready`
+    // false, and `_teardown` gives us a clean slate for the next gesture.
     this.ready = true;
     this.lastError = null;
+    this._retries = 0;
 
     // volumes may have been set from storage before the context existed
     if (this._masterVol !== undefined || this._sfxVol !== undefined || this._ambVol !== undefined) {
@@ -104,6 +105,39 @@ export class AudioEngine {
     // A context created outside a gesture starts suspended. Try to start it
     // now -- if this is a gesture it works; if not, the next tap will.
     this._kick();
+    // ...and keep asking, quietly, until it runs. A page that was opened in a
+    // background tab, or a browser that only honours gestures for *some*
+    // events, leaves the clock parked at time zero: the graph is built, every
+    // gain is set, and not one sample ever leaves. The old code waited for
+    // the player to click again, which is indistinguishable from a game with
+    // no sound at all.
+    this._kickUntilRunning();
+  }
+
+  /**
+   * Nudge a suspended clock a few times over the first couple of seconds.
+   *
+   * Every attempt is cheap (a resume() on a context that is already running
+   * does nothing) and every attempt is swallowed: the permanent gesture
+   * listeners in main.js are still the main door. This is the safety net for
+   * the case where the gesture arrived but the browser was slow to honour it.
+   */
+  _kickUntilRunning() {
+    if (this._kickTimer) { clearInterval(this._kickTimer); this._kickTimer = null; }
+    if (!this.ctx || this.ctx.state === 'running') return;
+    let tries = 0;
+    const tick = () => {
+      tries++;
+      if (!this.ctx || this.ctx.state === 'running' || tries > 12) {
+        clearInterval(this._kickTimer);
+        this._kickTimer = null;
+        return;
+      }
+      this._kick();
+    };
+    this._kickTimer = setInterval(tick, 250);
+    // a timer must never be what keeps a page alive
+    this._kickTimer?.unref?.();
   }
 
   /** Everything a failed or closed context leaves behind. */
@@ -134,6 +168,7 @@ export class AudioEngine {
     this._pulseGain = null;
     this.ambientGain = null;
     this._victoryUntil = 0;
+    if (this._kickTimer) { clearInterval(this._kickTimer); this._kickTimer = null; }
     this.ready = false;
   }
 
@@ -153,6 +188,7 @@ export class AudioEngine {
     if (this.ctx && this.ctx.state === 'closed') this._teardown();
     if (!this.ctx) this.init();
     this._kick();
+    if (this.ctx && this.ctx.state !== 'running') this._kickUntilRunning();
     return !!this.ctx;
   }
 

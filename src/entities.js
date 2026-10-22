@@ -334,6 +334,11 @@ export class Player {
     this.netId = 0;           // who this is, on the wire
     this.name = '';
     this.points = 0;
+    // scrap and medkits start at zero *here*, not in Game.reset(): the test
+    // range builds a fresh body without going through reset, and its HUD read
+    // "SCRAP undefined" for as long as that was true
+    this.salvage = 0;
+    this.medkits = 0;
     this.hurtFlash = 0;
     this.hitDirs = [];       // {angle, age}
     this.breath = 0;

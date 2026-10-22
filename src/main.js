@@ -139,14 +139,37 @@ function resize() {
   wrap.style.width = `${view.cssW}px`;
   wrap.style.height = `${view.cssH}px`;
   // the game lays its HUD, its menus and its camera out in view units
-  game.setViewport(view.w, view.h);
+  game.setViewport(view.w, view.h, true);
   // the buttons live in the same space the game draws in
   touch.layout(view.cssW, view.cssH);
 }
 
 window.addEventListener('resize', () => { resize(); applyBacking(); });
+// A resize is not the only thing that changes the view: swapping the campaign
+// for the test range (or back) swaps the map under the camera. Until this was
+// wired up, the first range of a session was drawn and hit-tested in an
+// 800x500 box stretched over a 1280-pixel window -- the picture slid off-centre
+// and the pointer landed somewhere else entirely.
+game.onMapChange = () => { resize(); applyBacking(); };
 resize();
 applyBacking();
+
+// ---- one-time warm-up ------------------------------------------------------
+// Nine tenths of what a player calls "slow" is a first call: the range map is
+// painted tile by tile the first time it is built, and that one frame is worth
+// more than a hundred of the ones around it. Do it while the menu is on the
+// screen and nobody is timing anything, and only ever once.
+(function warmUp() {
+  const idle = window.requestIdleCallback
+    ? (fn) => window.requestIdleCallback(fn, { timeout: 2500 })
+    : (fn) => setTimeout(fn, 1200);
+  idle(() => {
+    // never during a run: a warm-up that drops a frame mid-wave is worse than
+    // a warm-up that happens later
+    if (game.started) return;
+    game._prewarmRange?.();
+  });
+})();
 
 // ---------------------------------------------------------------------------
 //  On-screen controls: shown when the setting says so (AUTO = any touch
