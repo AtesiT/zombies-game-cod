@@ -24,6 +24,69 @@ export class AudioEngine {
   get running() { return !!(this.ready && this.ctx && this.ctx.state === 'running'); }
 
   /**
+   * Build the engine ahead of time, without asking it to play.
+   *
+   * Chrome lets a page *create* an AudioContext at any moment -- it simply
+   * starts suspended and may only be resumed inside a gesture. Doing it at
+   * load is worth it twice over: the audio service starts while the loading
+   * screen is up instead of inside the player's first click (that first
+   * click is where "the game froze for a second" came from), and the graph
+   * has somewhere to put its nodes before anything is heard.
+   */
+  prepare() {
+    if (this.ctx && this.ctx.state !== 'closed') return true;
+    this.init();
+    return !!this.ctx;
+  }
+
+  /**
+   * Count a real user gesture, and ask the clock to start.
+   *
+   * Called from every pointer/key handler in main.js. `blocked` is worked out
+   * from what happened *after* a gesture: a context that is still parked more
+   * than a second later was refused by the browser, and saying so -- with a
+   * way out -- is the difference between "the sound is broken" and "the frame
+   * we are embedded in does not allow sound".
+   */
+  gesture() {
+    this.gestures = (this.gestures ?? 0) + 1;
+    this._lastGestureAt = Date.now();
+    if (!this.ctx) this.init();
+    this._kick();
+    if (this.ctx && this.ctx.state !== 'running') this._kickUntilRunning();
+    return this.ctx?.state === 'running';
+  }
+
+  /** True when the browser has refused to start the clock despite a gesture. */
+  get blocked() {
+    if (!this.ready || !this.ctx) return false;
+    if (this.ctx.state === 'running') return false;
+    if (!this.gestures) return false;               // nobody has asked yet
+    return Date.now() - (this._lastGestureAt ?? 0) > 900;
+  }
+
+  /** Are we inside somebody else's frame? (A preview is; a tab is not.) */
+  static get framed() {
+    try { return typeof window !== 'undefined' && !!window.top && window.top !== window.self; }
+    catch { return true; }                            // cross-origin frame: yes
+  }
+
+  /**
+   * The player pressed the sound chip. One more resume from inside a real
+   * gesture, and -- if the frame we live in refuses every one of them -- a
+   * door out to a tab, where the browser policy does not apply.
+   */
+  manualUnlock() {
+    this.gesture();
+    if (this.ctx?.state === 'running') return 'running';
+    if (AudioEngine.framed) {
+      try { window.open(window.location?.href ?? location.href, '_blank', 'noopener'); } catch { /* popup blocked */ }
+      return 'opened';
+    }
+    return 'blocked';
+  }
+
+  /**
    * Build the graph. This is called from a user gesture (browser policy), but
    * it has to survive being called twice, being called after a failure, and
    * being called when the context was closed by the browser.
@@ -169,6 +232,7 @@ export class AudioEngine {
     this.ambientGain = null;
     this._victoryUntil = 0;
     if (this._kickTimer) { clearInterval(this._kickTimer); this._kickTimer = null; }
+    this._lastGestureAt = 0;
     this.ready = false;
   }
 
@@ -187,6 +251,7 @@ export class AudioEngine {
   resume() {
     if (this.ctx && this.ctx.state === 'closed') this._teardown();
     if (!this.ctx) this.init();
+    this._lastGestureAt = this._lastGestureAt || Date.now();
     this._kick();
     if (this.ctx && this.ctx.state !== 'running') this._kickUntilRunning();
     return !!this.ctx;

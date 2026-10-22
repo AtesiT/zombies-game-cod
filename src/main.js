@@ -1,7 +1,7 @@
 // Boot + fixed-ish main loop.
 import { Input } from './input.js';
 import { Game, VW, VH } from './game.js';
-import { T } from './art.js';
+import { T, allCanvases } from './art.js';
 import { audio } from './audio.js';
 import { TouchControls, isTouchDevice } from './touch.js';
 import { settings } from './settings.js';
@@ -159,6 +159,40 @@ applyBacking();
 // painted tile by tile the first time it is built, and that one frame is worth
 // more than a hundred of the ones around it. Do it while the menu is on the
 // screen and nobody is timing anything, and only ever once.
+// ---- sprite warm-up --------------------------------------------------------
+// The game builds ~1 500 small canvases at boot (`buildArt`), but a browser
+// only turns a canvas into a texture the first time it is *drawn*. That first
+// draw is the first gameplay frame -- the one right after the player presses
+// SOLO -- which is why the press felt like a hang while the menu was instant.
+// Drawing every sprite once into a 2x2 scratch canvas here costs nothing and
+// moves the whole cost into idle slices while the menu is up.
+(function warmSprites() {
+  let list = null, i = 0;
+  const scratch = document.createElement('canvas');
+  scratch.width = 2; scratch.height = 2;
+  const sctx = scratch.getContext('2d');
+  const idle = window.requestIdleCallback
+    ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
+    : (fn) => setTimeout(fn, 60);
+  const slice = () => {
+    if (!list) {
+      // the sprites, the painted floors, and the lighting layers: every canvas
+      // the first gameplay frame is going to sample
+      try {
+        list = [...allCanvases(game.art), ...allCanvases(game.map), ...allCanvases(game.lighting)];
+        list = [...new Set(list)];
+      } catch { list = []; }
+    }
+    let n = 0;
+    while (i < list.length && n < 48) {
+      try { sctx.drawImage(list[i], 0, 0, 2, 2); } catch { /* one bad sprite is not a crash */ }
+      i++; n++;
+    }
+    if (i < list.length) idle(slice);
+  };
+  idle(slice);
+})();
+
 (function warmUp(tries = 0) {
   const idle = window.requestIdleCallback
     ? (fn) => window.requestIdleCallback(fn, { timeout: 2500 })
@@ -203,10 +237,16 @@ syncTouch();
 // without the autoplay permission or a tab that was in the background can all
 // leave the context suspended. So the unlock is permanent and runs on every
 // gesture -- and a failed build is retried instead of swallowing the context.
-const unlock = () => { audio.init(); audio.resume(); };
-for (const ev of ['pointerdown', 'touchstart', 'mousedown', 'keydown']) {
+const unlock = () => { audio.gesture(); };
+for (const ev of ['pointerdown', 'touchstart', 'mousedown', 'pointerup', 'touchend', 'keydown', 'click']) {
   window.addEventListener(ev, unlock, { capture: true, passive: true });
 }
+// Build the engine now, not on the first press. Creating a context costs the
+// browser a real chunk of work (it starts the audio service); doing it inside
+// the handler of the player's first click is where a "frozen for a moment"
+// menu press came from. It starts suspended whatever we do; the listeners
+// above are what start it.
+audio.prepare?.();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) unlock(); });
 window.addEventListener('focus', () => { audio.resume(); });
 window.addEventListener('pageshow', () => { audio.resume(); });
@@ -264,6 +304,13 @@ function frame(now) {
 
   const workMs = performance.now() - t0;
   game.tickPerf(workMs);
+  // A frame this long is a freeze the player felt. Say which phase it was in
+  // -- on the console and, once per few seconds, on the screen -- because a
+  // hitch nobody can name is a hitch nobody can fix.
+  if (workMs > 450) {
+    console.warn(`[slow frame] ${Math.round(workMs)} ms during ${game._phase ?? '?'}`);
+    game.noteSlowFrame?.(workMs);
+  }
 
   // the supersample watch: too slow for long enough and it steps down, fast
   // for long enough and it climbs back up. Only when AUTO PERFORMANCE is on --

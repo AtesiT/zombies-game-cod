@@ -157,3 +157,103 @@ test('a hound carries no pool of light, a walker still does', async () => {
   assert.equal(mk('crawler'), 0, 'nor do the crawlers');
   assert.ok(mk('walker') >= 1, 'a standing body still carries its eyes');
 });
+
+test('a pointer in the gap between plates lights nothing, on every screen', async () => {
+  const H = await import('../../src/hud.js');
+  for (const [w, h] of [[800, 500], [1280, 800], [1920, 1080], [360, 640], [640, 360], [1366, 768]]) {
+    const g = await game(w, h);
+    g.paused = true; g.pauseIndex = 0;
+    const rows = [];
+    for (let i = 0; i < 6; i++) rows.push(H.pauseRowRect(i, w, h));
+    for (const [i, r] of rows.entries()) {
+      g.input.mouse.x = r.x + r.w / 2; g.input.mouse.y = r.y + r.h / 2;
+      assert.equal(H.pauseHoverRow(g, w, h), i, `${w}x${h}: the middle of plate ${i} is plate ${i}`);
+    }
+    // the gaps: the pause screen must not fall back to the keyboard's row,
+    // which is what made the highlight jump to the first plate and come back
+    for (let i = 0; i < rows.length - 1; i++) {
+      const a = rows[i], b = rows[i + 1];
+      if (Math.abs(a.x - b.x) > 1) continue;              // two columns: skip
+      g.input.mouse.x = a.x + a.w / 2;
+      g.input.mouse.y = (a.y + a.h + b.y) / 2;
+      assert.equal(H.pauseHoverRow(g, w, h), -1, `${w}x${h}: the gap between ${i} and ${i + 1} is not a plate`);
+    }
+    g.input.mouse.x = 3; g.input.mouse.y = h - 3;
+    assert.equal(H.pauseHoverRow(g, w, h), -1, `${w}x${h}: the corner is not a plate`);
+  }
+});
+
+test('the wardrobe highlight is measured in the same space as the pointer', async () => {
+  const H = await import('../../src/hud.js');
+  for (const [w, h] of [[800, 500], [1920, 1080], [360, 640]]) {
+    const g = await game(w, h);
+    const L = H.outfitsLayout(g, w, h);
+    // row 3, in screen units, must read back as row 3 at every scale
+    g.input.mouse.x = L.x + L.cw / 2;
+    g.input.mouse.y = L.y + L.head + L.rowH * 3 + L.rowH / 2;
+    assert.equal(H.outfitHoverRow(g, w, h), 3, `${w}x${h}: the pointer and the painter agree`);
+  }
+});
+
+test('the engine is built at load and only the clock waits for a gesture', async () => {
+  const { AudioContext } = await import('./webaudio.mjs');
+  const had = window.AudioContext;
+  window.AudioContext = AudioContext;
+  const { AudioEngine } = await import('../../src/audio.js');
+  const a = new AudioEngine();
+  assert.equal(a.prepare(), true, 'a context exists before anybody clicks');
+  assert.equal(a.ready, true, 'and its graph is built');
+  assert.equal(a.gestures ?? 0, 0, 'no gesture has happened yet');
+  assert.equal(a.blocked, false, 'so silence is not yet a fault');
+  a.gesture();
+  assert.equal(a.ctx.state, 'running');
+  assert.equal(a.blocked, false);
+  a._teardown();
+  window.AudioContext = had;
+});
+
+test('a frame that refuses to start the clock is reported, with a way out', async () => {
+  const { AudioContext } = await import('./webaudio.mjs');
+  class Refuses extends AudioContext {
+    constructor() { super(); this.state = 'suspended'; }
+    resume() { return Promise.resolve(); }        // ignored, as a blocked frame does
+  }
+  const had = window.AudioContext;
+  window.AudioContext = Refuses;
+  const A = await import('../../src/audio.js');
+  const a = new A.AudioEngine();
+  a.prepare();
+  a.gesture();
+  assert.equal(a.ctx.state, 'suspended');
+  // `blocked` waits a moment before accusing the browser
+  const realNow = Date.now;
+  Date.now = () => realNow() + 2000;
+  try {
+    assert.equal(a.blocked, true, 'a context still parked after a gesture is blocked');
+    // the HUD talks to the singleton, so put the singleton in the same state
+    const { audio } = await import('../../src/audio.js');
+    const H = await import('../../src/hud.js');
+    const saved = { ctx: audio.ctx, ready: audio.ready, gestures: audio.gestures, at: audio._lastGestureAt };
+    audio.ctx = a.ctx; audio.ready = true; audio.gestures = 1; audio._lastGestureAt = Date.now() - 2000;
+    try {
+      const label = H.HUD.prototype._soundLabel.call(new H.HUD());
+      assert.ok(label && /SOUND BLOCKED/.test(label.label), `got ${JSON.stringify(label)}`);
+      assert.equal(label.fix, 'unlock', 'and it is a button');
+    } finally {
+      Object.assign(audio, { ctx: saved.ctx, ready: saved.ready, gestures: saved.gestures, _lastGestureAt: saved.at });
+    }
+  } finally { Date.now = realNow; a._teardown(); window.AudioContext = had; }
+});
+
+test('the warm-up list covers every sprite the art bundle builds', async () => {
+  const A = await import('../../src/art.js');
+  const art = A.buildArt();
+  const list = A.allCanvases(art);
+  assert.ok(list.length > 800, `only ${list.length} canvases found`);
+  assert.equal(new Set(list).size, list.length, 'no canvas is drawn twice for nothing');
+  // and the screens the game actually draws are in it
+  for (const key of ['player', 'knight', 'dog', 'skeleton', 'beekeeper']) {
+    const found = A.allCanvases(art[key] ?? {});
+    assert.ok(found.length > 0, `${key} has no canvases to warm`);
+  }
+});

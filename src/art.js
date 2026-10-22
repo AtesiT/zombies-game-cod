@@ -1031,6 +1031,34 @@ function buildGrave() {
   return canvas;
 }
 
+/**
+ * Every canvas in a bundle, once each -- the sprite sheets, their flipped and
+ * flashed copies, the painted floors.
+ *
+ * A browser only turns a canvas into a texture the first time something draws
+ * it, so a game that builds fifteen hundred sprites and then draws the first
+ * one inside its first gameplay frame pays for all of them in that frame. This
+ * is the list the boot-time warm-up walks (see src/main.js).
+ */
+export function allCanvases(root) {
+  const out = [];
+  const seen = new Set();
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 8) return;
+    if (Array.isArray(node)) { for (const v of node) walk(v, depth + 1); return; }
+    // anything that quacks like a canvas: a numeric size and a 2D context
+    if (typeof node.getContext === 'function' && typeof node.width === 'number'
+      && typeof node.height === 'number') {
+      if (!seen.has(node)) { seen.add(node); out.push(node); }
+      return;
+    }
+    if (node instanceof Set) { for (const v of node) walk(v, depth + 1); return; }
+    for (const k of Object.keys(node)) walk(node[k], depth + 1);
+  };
+  walk(root, 0);
+  return out;
+}
+
 export function buildArt() {
   if (cache) return cache;
 

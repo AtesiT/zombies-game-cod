@@ -3847,6 +3847,7 @@ export class Game {
 
   update(dt) {
     this.time += dt;
+    this._phase = 'update';
     // one pointer-moved answer per frame, for every list to share (see
     // `_pointerMoved`)
     const pm = this.input?.mouse;
@@ -4155,6 +4156,26 @@ export class Game {
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
       if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
+      return;
+    }
+
+    // ---- the sound chip, top right ---------------------------------------
+    // It is a button when it is telling the player something they can fix:
+    // a frame that blocks autoplay gets one more honest attempt from inside
+    // this press, and a way out to a tab if the frame will not have it.
+    if (this.input.mouse.pressed
+      && this.hud.soundChipAt(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      if (audio.muted) {
+        // the chip is also the mute warning: pressing it is the way back
+        audio.setMuted(false);
+        this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
+        return;
+      }
+      const r = audio.manualUnlock();
+      if (r === 'running') this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
+      else if (r === 'blocked') this.bannerShow('SOUND IS BLOCKED', 'the browser will not start audio here', { dur: 2.4, colour: '#c4463a', local: true });
       return;
     }
 
@@ -4755,11 +4776,33 @@ export class Game {
    */
   _prewarmRange() {
     if (this._rangeCache || this.rangeMode) return false;
+    const phase = this._phase;
+    this._phase = 'preparing the test range';
     try { this._rangeCache = new GameMap('range'); } catch { this._rangeCache = null; }
+    finally { this._phase = phase; }
     return !!this._rangeCache;
   }
 
   _loadMap(range) {
+    const phase = this._phase;
+    this._phase = range ? 'painting the test range' : 'repainting the building';
+    try { this._loadMapInner(range); } finally { this._phase = phase; }
+  }
+
+  /** Note a frame that took so long that the player saw it. */
+  noteSlowFrame(ms) {
+    this.perfLog ??= [];
+    this.perfLog.push({ ms: Math.round(ms), phase: this._phase ?? '?', at: Math.round(this.time) });
+    if (this.perfLog.length > 12) this.perfLog.shift();
+    const now = Date.now();
+    if (now - (this._slowShownAt ?? 0) < 6000) return;
+    this._slowShownAt = now;
+    this.bannerShow(`SLOW FRAME ${Math.round(ms)} ms`, `while ${this._phase ?? 'working'}`, {
+      dur: 2.6, colour: '#e0a040', local: true,
+    });
+  }
+
+  _loadMapInner(range) {
     this.rangeMode = range;
     // a prewarmed range is a fresh, never-played map: hand it over and drop it
     this.map = range
@@ -4962,6 +5005,14 @@ export class Game {
   _menuUpdate(dt) {
     const inp = this.input;
     if (!inp) return;
+    // the sound chip is a button before it is anything else
+    if (inp.mouse.pressed
+      && this.hud?.soundChipAt?.(this, this.vw, this.vh, inp.mouse.x, inp.mouse.y)) {
+      inp.mouse.pressed = false;
+      inp.mouse.down = false;
+      audio.manualUnlock();
+      return;
+    }
     if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
     // the achievements list is its own little screen: it scrolls, and ESC leaves
     if (this.scene === 'achievements') { this._achUpdate(dt); return; }
@@ -5390,6 +5441,7 @@ export class Game {
 
   // ------------------------------------------------------------------ draw
   draw(ctx) {
+    this._phase = 'draw';
     const { vw, vh } = this;
     // `smooth` is DLSS5's doing (see src/main.js): when the frame is being
     // supersampled the sprites want filtering, and when it is not they want
@@ -5893,7 +5945,12 @@ export class Game {
     else if (!this.started && this.scene === 'achievements') drawAchievements(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'stats') drawStats(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'outfits') drawOutfits(ctx, this, vw, vh);
-    else if (!this.started) drawMenu(ctx, this, vw, vh);
+    else if (!this.started) {
+      drawMenu(ctx, this, vw, vh);
+      // ...and, over the title screen, the one warning that has a button
+      // behind it: a frame that will not let the game make a sound
+      this.hud?._soundOnMenu?.(ctx, this, vw, vh);
+    }
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
     // The way out of every one of those, drawn over it: a phone has no ESC,

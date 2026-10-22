@@ -37,6 +37,10 @@ function menuSpace(ctx, w, h, fn) {
   try { fn(U.w, U.h, U.k); } finally { ctx.restore(); }
 }
 
+function AudioEngineFramed() {
+  try { return !!window.top && window.top !== window.self; } catch { return true; }
+}
+
 function menuPoint(w, h, mx, my) {
   const U = uiView(w, h);
   return { k: U.k, w: U.w, h: U.h, x: mx / U.k, y: my / U.k };
@@ -236,9 +240,23 @@ export class HUD {
    */
   /** The sound warning, if there is one to give. */
   _soundLabel() {
-    if (audio.muted) return { label: 'MUTED — M', colour: '#c4463a' };
-    if (!audio.ready) return { label: 'SOUND IS OFF — CLICK', colour: '#c4463a' };
-    if (audio.ctx && audio.ctx.state !== 'running') return { label: 'SOUND PAUSED — CLICK', colour: '#c4463a' };
+    if (audio.muted) return { label: 'MUTED — M', colour: '#c4463a', fix: 'mute' };
+    // A browser that refused to start the clock is the one silence the player
+    // cannot fix by clicking again -- so say exactly what it is, and offer the
+    // one door that works: a tab of its own, where the autoplay policy of an
+    // embedding frame does not apply.
+    if (audio.blocked) {
+      return AudioEngineFramed()
+        ? { label: 'SOUND BLOCKED — OPEN IN TAB', colour: '#c4463a', fix: 'unlock' }
+        : { label: 'SOUND BLOCKED — TAP HERE', colour: '#c4463a', fix: 'unlock' };
+    }
+    if (!audio.ready) return { label: 'NO AUDIO IN THIS BROWSER', colour: '#c4463a' };
+    // a resume takes a moment; do not shout "paused" at the player for the
+    // hundred milliseconds the browser needs to wind the clock up
+    if (audio.ctx && audio.ctx.state !== 'running' && audio.gestures > 0
+      && Date.now() - (audio._lastGestureAt ?? 0) > 600) {
+      return { label: 'SOUND PAUSED — TAP', colour: '#c4463a', fix: 'unlock' };
+    }
     if (settings.get('master') === 0) return { label: 'MASTER VOLUME 0 — O', colour: '#e0a040' };
     if (settings.get('sfx') === 0 && settings.get('ambient') === 0 && settings.get('music') === 0) {
       return { label: 'ALL FADERS AT 0 — O', colour: '#e0a040' };
@@ -246,24 +264,54 @@ export class HUD {
     return null;
   }
 
+  /** Is this page living inside somebody else's frame? */
   /**
    * Where the sound chip sits. It lives in the map's corner, so at MAX PICTURE
    * SIZE -- where the map is small but the chip is not -- it stands under it.
    * Everything else that wants the top of the screen asks this.
    */
-  _soundRectFor(game, w) {
+  _soundRectFor(game, w, menu = false) {
     const info = this._soundLabel();
     if (!info) return null;
-    const mini = this._miniRectFor(game, w);
+    // on the title screen there is no minimap to step around (there is no
+    // minimap at all), so the chip takes the corner
+    const mini = menu ? null : this._miniRectFor(game, w);
     const tw = Math.ceil(info.label.length * 6.6) + 16;
     const x = Math.max(4, w - tw - 8);
     const below = mini && x < mini.x + mini.w ? mini.y + mini.h + 6 : 0;
     const y = Math.max(below, settings.get('fps') ? 28 : 6);
-    return { x, y, w: tw, h: 18, colour: info.colour, label: info.label };
+    return { x, y, w: tw, h: 18, colour: info.colour, label: info.label, fix: info.fix ?? null };
   }
 
-  _sound(ctx, game, w, h) {
+  /**
+   * The sound chip, and whether it is a button.
+   *
+   * Two of the warnings on it are things the player can act on -- a frame that
+   * blocks autoplay, and the mute key -- and a chip that says CLICK and then
+   * ignores the click is worse than no chip at all.
+   */
+  /**
+   * The chip as it appears on the front page.
+   *
+   * The menu is the first thing a player sees, and a frame that blocks audio
+   * is exactly the moment to say so -- but a permanent "no audio in this
+   * browser" badge over the title screen is noise. Only the two warnings with
+   * a button behind them are drawn before a run starts.
+   */
+  _soundOnMenu(ctx, game, w, h) {
+    const info = this._soundLabel();
+    if (!info || !info.fix) return;
+    this._sound(ctx, game, w, h, true);
+  }
+
+  soundChipAt(game, w, h, mx, my) {
     const r = this._soundRectFor(game, w);
+    if (!r || !r.fix) return false;
+    return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+  }
+
+  _sound(ctx, game, w, h, menu = false) {
+    const r = this._soundRectFor(game, w, menu);
     if (!r) return;
     const { label, colour, x, y, w: tw } = r;
     ctx.save();
@@ -2317,11 +2365,18 @@ export function outfitNote(id, achievements) {
   return badge ? `EARN · ${badge.name} — ${badge.desc}` : 'LOCKED';
 }
 
-export function drawOutfits(ctx, game, w, h) {
-  menuSpace(ctx, w, h, (ww, hh) => _drawOutfits(ctx, game, ww, hh));
+/** Which coat the pointer is on, in screen units -- see `pauseHoverRow`. */
+export function outfitHoverRow(game, w, h) {
+  const m = game?.input?.mouse;
+  return m ? outfitRowAt(game, w, h, m.x, m.y) : -1;
 }
 
-function _drawOutfits(ctx, game, w, h) {
+export function drawOutfits(ctx, game, w, h) {
+  const hover = outfitHoverRow(game, w, h);
+  menuSpace(ctx, w, h, (ww, hh) => _drawOutfits(ctx, game, ww, hh, hover));
+}
+
+function _drawOutfits(ctx, game, w, h, hover = -1) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.9)';
   ctx.fillRect(0, 0, w, h);
@@ -2430,7 +2485,7 @@ function _drawOutfits(ctx, game, w, h) {
       colour: isOn ? '#8fdc6a' : own ? INK_DIM : 'rgba(120,112,96,0.7)',
       align: 'right',
     });
-    if (m && i === outfitRowAt(game, w, h, m.x, m.y)) {
+    if (i === hover) {
       ctx.strokeStyle = 'rgba(240,217,138,0.35)';
       ctx.strokeRect(cx + 6.5, row.y + 0.5, cw - 13, rowH - 2);
     }
@@ -2770,11 +2825,28 @@ export function pauseTitleAt(w, h, mx, my) {
   return Math.abs(P.x - P.w / 2) < 70 && Math.abs(P.y - P.h * 0.30) < 22;
 }
 
-export function drawPause(ctx, game, w, h) {
-  menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh));
+/**
+ * Which pause row the pointer is on, in **screen** units.
+ *
+ * The pause screen is painted inside `menuSpace`, where everything -- including
+ * `w` and `h` -- is in design units, but the pointer arrives in screen units.
+ * The painter used to hand the raw pointer to the hit test and the raw design
+ * size with it, so on any screen whose scale is not 1 (a maximised window, a
+ * phone) the test landed between the rows: the highlight fell back to the
+ * keyboard's row -- usually the first one -- for a frame, then came back. That
+ * is the "selection flies to the top plate and then returns" report.
+ */
+export function pauseHoverRow(game, w, h) {
+  const m = game?.input?.mouse;
+  return m ? pauseHitTest(game, w, h, m.x, m.y) : -1;
 }
 
-function _drawPause(ctx, game, w, h) {
+export function drawPause(ctx, game, w, h) {
+  const hover = pauseHoverRow(game, w, h);
+  menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh, hover));
+}
+
+function _drawPause(ctx, game, w, h, hover = -1) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
@@ -2783,8 +2855,6 @@ function _drawPause(ctx, game, w, h) {
   text(ctx, 'PAUSED', w / 2, L.titleY, {
     font: `bold ${big}px "Courier New", monospace`, colour: INK, align: 'center',
   });
-  const m = game.input?.mouse;
-  const hover = m ? _pauseHitTest(game, w, h, m.x, m.y) : -1;
   const labelFont = `bold ${L.font}px "Courier New", monospace`;
   const hintFont = `bold ${Math.min(10, L.font - 2)}px "Courier New", monospace`;
   PAUSE_ROWS.forEach((r, i) => {
