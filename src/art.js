@@ -427,15 +427,24 @@ function buildKnight(src) {
     px(4, 11, D, 4, 2); px(5, 11, P, 3, 1);
     px(12, 11, D, 4, 2); px(13, 11, P, 3, 1);
     // ---- the breastplate: a V of plate from the gorget down to the belt -----
+    // The chest was mostly its own outline: at the scale the game draws it the
+    // knight came out as a helm on a black shape. Plate first, edge around it.
     px(7, 12, D, 6, 1);
-    px(8, 13, D, 4, 1);
-    px(9, 14, D, 2, 2);
+    px(8, 13, D, 6, 1);
+    px(9, 14, D, 3, 2);
     px(8, 12, P, 4, 1);
-    px(9, 13, P, 2, 1);
+    px(9, 13, P, 4, 1);
+    px(10, 14, P, 1, 2);
     px(8, 12, L, 3, 1);        // the gorget catches the same light as the helm
+    px(8, 13, L, 1, 1);        // and the light runs down the near edge
+    px(9, 15, '#3f4853', 2, 1);   // the belt, in shadow under the plate
+    // ---- greaves: the same plate on the legs, or the body is a black lump.
+    // The legs are three pixels wide; a wider greave made the knight stand
+    // like a tripod, so the plate goes *on* the leg, not around it ----------
+    px(5, 16, '#4c5661', 1, 3); px(6, 16, '#3b434d', 2, 3); px(5, 16, '#6d7a88', 1, 1);
+    px(12, 16, '#3b434d', 2, 3); px(14, 16, '#31383f', 1, 3);
+    px(5, 19, '#3b434d', 3, 1); px(12, 19, '#31383f', 3, 1);
     // ---- a seam down each thigh: mail under the plate, not bare leg --------
-    px(6, 16, D, 1, 4);
-    px(13, 16, D, 1, 4);
     px(7, 20, D, 2, 1);
     px(11, 20, D, 2, 1);
   });

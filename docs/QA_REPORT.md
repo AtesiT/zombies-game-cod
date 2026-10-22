@@ -525,6 +525,13 @@ turning the panels into numbers.
   at 15 pixels each, and the statistics page turns its long column into two
   when the panel is wide and short. The title screen's key list falls back to
   short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The Knight was a helm on a black shape.** The helm was redrawn a pass ago,
+  but its body was drawn mostly as outline: at the scale the game draws it
+  (three to five pixels per sprite pixel) the chest and legs came out dark and
+  the "knight" read as a helmet floating over a shadow. The plate is now a
+  filled V with a lit near edge, a belt in shadow under it and greaves on the
+  legs -- drawn *on* the three-pixel leg, not around it, or the knight stands
+  like a tripod.
 - **The achievement card was printed over the warden's health bar.** Both sit in
   the top band of the screen, and the card is drawn last, so a warden round that
   also unlocked an achievement had a 72-unit card over the name and half the
