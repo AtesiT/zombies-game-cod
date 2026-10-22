@@ -1180,7 +1180,7 @@ export class Game {
     }
     const m = inp.mouse;
     const hit = skillCardAt(this.vw, this.vh, m.x, m.y, n);
-    if (hit >= 0) d.index = hit;
+    if (hit >= 0 && (this._pointerMoved() || m.pressed)) d.index = hit;
     // The digits are also weapon-slot keys on the wire. Take the press out of
     // the frame's set once the card has used it, or a guest would both pick a
     // skill and swap guns with the same keystroke.
@@ -3847,6 +3847,11 @@ export class Game {
 
   update(dt) {
     this.time += dt;
+    // one pointer-moved answer per frame, for every list to share (see
+    // `_pointerMoved`)
+    const pm = this.input?.mouse;
+    this._ptrMoved = !!pm && (pm.x !== (this._pmx ?? -9999) || pm.y !== (this._pmy ?? -9999));
+    if (pm) { this._pmx = pm.x; this._pmy = pm.y; }
 
     // the corner chip, before anything else can eat the press
     if ((this.settingsOpen || this.debugOpen
@@ -4941,6 +4946,19 @@ export class Game {
    * a room on the relay and then simply starts playing, because somebody
    * walking in halfway through round nine is the whole point.
    */
+  /**
+   * Has the pointer actually moved since the last frame?
+   *
+   * Hover-to-select is a mouse idea -- it means "the thing I am aiming at". A
+   * mouse that is merely *resting* is not aiming at anything, and letting it
+   * re-assert its row every frame makes the keyboard look broken: the arrow
+   * moves the selection, and the pointer puts it back before the frame ends.
+   * That is exactly what "the arrows do not work in some menus" was, and it
+   * is the same defect the debug panel had. Every list asks this before it
+   * lets a resting hover pick a row; a press always lands where it points.
+   */
+  _pointerMoved() { return !!this._ptrMoved; }
+
   _menuUpdate(dt) {
     const inp = this.input;
     if (!inp) return;
@@ -4966,9 +4984,13 @@ export class Game {
     const enter = inp.wasPressed('Enter', 'Space') || click;
     const esc = inp.wasPressed('Escape', 'Backspace');
 
-    // the mouse picks an entry outright; the keyboard walks the list
+    // the mouse picks an entry outright; the keyboard walks the list. A hover
+    // only picks while the pointer is moving, or a mouse parked over the menu
+    // would undo every arrow press in the same frame it was made.
     const hit = menuHitTest(this.scene, inp.mouse.x, inp.mouse.y, this);
-    if (hit >= 0 && hit !== this.menuIndex) { this.menuIndex = hit; audio.dryFire(); }
+    if (hit >= 0 && hit !== this.menuIndex && (this._pointerMoved() || inp.mouse.pressed)) {
+      this.menuIndex = hit; audio.dryFire();
+    }
     if (up || down) {
       this.menuIndex = (this.menuIndex + (down ? 1 : n - 1)) % Math.max(1, n);
       audio.dryFire();
@@ -5048,7 +5070,7 @@ export class Game {
     const m = inp.mouse;
     const hover = m ? outfitRowAt(this, this.vw, this.vh, m.x, m.y) : -1;
 
-    if (hover >= 0 && hover !== this.outfitIndex) {
+    if (hover >= 0 && hover !== this.outfitIndex && (this._pointerMoved() || m.pressed)) {
       this.outfitIndex = hover;
       audio.dryFire();
     }

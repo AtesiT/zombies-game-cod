@@ -94,3 +94,69 @@ test('the HUD draws its sound warning without touching the frame loop', async ()
   assert.doesNotThrow(() => g.hud.draw(ctx, g, 800, 500));
   audio._pianoWant(false);
 });
+
+test('the reverb tail is installed at build time, not on the first round', () => {
+  const a = new AudioEngine();
+  a.init();
+  // `_build` runs before `ready` is set, and `setReverb` refuses to run before
+  // then -- so the old code left the convolver with a null buffer while its
+  // send was already open, and the menu had no reverb at all
+  assert.equal(a.ready, true);
+  assert.ok(a._conv, 'the convolver exists');
+  assert.ok(a._conv.buffer, 'the impulse is in it from the first frame');
+  assert.ok(a._conv.buffer.length > 1000);
+  assert.equal(a._reverbZone, 'room');
+  a._pianoWant(false);
+});
+
+test('a shot reaches the speakers with a non-zero gain', () => {
+  const ctx = new AudioContext();
+  const NodeProto = Object.getPrototypeOf(Object.getPrototypeOf(ctx.createGain()));
+  const realConnect = NodeProto.connect;
+  // record reverse edges so the graph can be walked upwards from the output
+  NodeProto.connect = function (dest) { (dest._in ??= []).push(this); return realConnect.call(this, dest); };
+  const a = new AudioEngine();
+  a.init();
+  a.shot('m1911');
+  const seen = new Set();
+  const up = (n) => {
+    if (!n || seen.has(n)) return; seen.add(n);
+    for (const from of n._in ?? []) up(from);
+  };
+  up(a.ctx.destination);
+  const sources = [...seen].filter((n) => n.kind === 'osc' || n.kind === 'bufsrc');
+  assert.ok(sources.length > 0, 'something is playing');
+  const gainOf = (n) => (n.gain?.value ?? 1);
+  let best = 0;
+  const down = (n, gain, branch) => {
+    if (n === a.ctx.destination) { best = Math.max(best, gain); return; }
+    if (branch.has(n)) return;
+    branch.add(n);
+    for (const out of n._out ?? []) down(out, gain * (out.kind === 'gain' ? gainOf(out) : 1), branch);
+  };
+  for (const s of sources) down(s, 1, new Set());
+  assert.ok(best > 0.001, `a shot must be audible, not routed at ${best}`);
+  NodeProto.connect = realConnect;
+  a._pianoWant(false);
+});
+
+test('a suspended clock is asked to start again until it runs', async () => {
+  class Slow extends AudioContext {
+    constructor() { super(); this.state = 'suspended'; this.refused = 0; }
+    resume() {
+      if (this.refused < 2) { this.refused++; return Promise.resolve(); }  // ignored
+      this.state = 'running';
+      return Promise.resolve();
+    }
+  }
+  window.AudioContext = Slow;
+  const a = new AudioEngine();
+  a.init();
+  assert.equal(a.ctx.state, 'suspended');
+  assert.ok(a._kickTimer, 'a retry is armed');
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(a.ctx.state, 'running', 'the clock starts itself once the browser allows it');
+  a._teardown();
+  assert.equal(a._kickTimer, null, 'and the timer dies with the engine');
+  window.AudioContext = AudioContext;
+});

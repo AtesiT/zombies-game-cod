@@ -574,7 +574,12 @@ export class AudioEngine {
     this._conv = conv;
     this._revRet = ret;
     this._revIR = {};
-    this.setReverb('room', true);
+    // Install the first room directly. `setReverb` refuses to run until
+    // `ready` is true, and `_build` sets that *after* this call -- so the old
+    // code left the convolver with a null buffer for the whole of the menu,
+    // where the reverb send was already open and returning pure silence.
+    this._conv.buffer = this._ir('room');
+    this._reverbZone = 'room';
   }
 
   /** A cheap synthetic impulse: dulled noise, decaying. Four rooms is plenty. */
