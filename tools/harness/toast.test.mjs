@@ -39,9 +39,28 @@ test('the achievement card stays on the glass and out of the corner furniture', 
     assert.ok(!overlaps(card, mini), `${w}x${h}: card covers the minimap`);
     const snd = g.hud._soundRectFor(g, full);
     if (snd) assert.ok(!overlaps(card, snd), `${w}x${h}: card covers the sound chip`);
+    const boss = g.hud._bossRectFor(g, full, tall)?.box;
+    if (boss) assert.ok(!overlaps(card, boss), `${w}x${h}: card covers the warden's health bar`);
     const band = g.hud._bannerBand(tall);
     assert.ok(!overlaps(card, { x: 0, y: band.y, w: full, h: band.h }),
       `${w}x${h}: card covers the round banner`);
+    clearStorage();
+  }
+});
+
+test('the achievement card steps off a warden bar, not over it', () => {
+  for (const [w, h] of [[360, 560], [360, 640], [430, 930], [640, 360], [800, 500]]) {
+    const g = scene(w, h);
+    g.startRound(25);          // a warden round: The First
+    assert.ok(g.boss, `${w}x${h}: the round put no warden on the floor`);
+    const card = g.hud._toastRect(g, g.vw, g.vh);
+    const boss = g.hud._bossRectFor(g, g.vw, g.vh)?.box;
+    assert.ok(boss, `${w}x${h}: no warden bar to avoid`);
+    // the bar is 34 units tall and sits in the top band; a card that starts
+    // inside it hides the name and half the health, which is the one thing a
+    // warden round is about
+    assert.ok(!overlaps(card, boss), `${w}x${h}: card at ${card.y} covers the bar at ${boss.y}`);
+    assert.ok(card.y + card.h <= g.vh - 74, `${w}x${h}: card runs into the bottom HUD`);
     clearStorage();
   }
 });

@@ -895,6 +895,12 @@ export class HUD {
     const over = (x < mini.x + mini.w) ? mini.y + mini.h + 6 : 0;
     const belowSound = snd && x < snd.x + snd.w ? snd.y + snd.h + 6 : 0;
     let y = Math.max(h * 0.16, over, belowSound);
+    // the warden's bar is the one thing on screen that a boss round is about:
+    // a fading achievement card printed over it hides a health bar you need
+    const boss = this._bossRectFor(game, w, h)?.box;
+    if (boss && y < boss.y + boss.h && y + bh > boss.y && x < boss.x + boss.w) {
+      y = boss.y + boss.h + 6;
+    }
     // the round banner paints a full-width band: step under it rather than
     // printing one card over the other
     if (game.banner && game.banner.t > 0) {

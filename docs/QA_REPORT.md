@@ -525,6 +525,11 @@ turning the panels into numbers.
   at 15 pixels each, and the statistics page turns its long column into two
   when the panel is wide and short. The title screen's key list falls back to
   short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The achievement card was printed over the warden's health bar.** Both sit in
+  the top band of the screen, and the card is drawn last, so a warden round that
+  also unlocked an achievement had a 72-unit card over the name and half the
+  health of the thing you were fighting. The card now steps below the bar (and
+  below the round banner behind it).
 - **The way-out chip was printed over the corner of the panel under it.** It
   lives in the top-right of the *screen*, in screen units; the panels are drawn
   in menu units and centered, so on any screen where a panel is nearly as wide
@@ -584,8 +589,8 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **148/148** and the historical regression **48/48**.
-Twenty-four of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
+Validation: `npm test` **149/149** and the historical regression **48/48**.
+Twenty-five of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
 line from 10 to 55 and its wrap, the second-cycle health bonus, no two wardens
 sharing a sprite set, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
@@ -599,8 +604,9 @@ landscape-phone pass that walks every menu and pause row through its own hit
 test: the row that is drawn is the row that is pressed, no label under the
 way-out chip, and a faked touch device checking that the menus stop naming
 keys), and
-`tools/harness/toast.test.mjs` (2 -- the achievement card and the round banner
-stay on the glass and off the map, the chip and the floor tag). A label is
+`tools/harness/toast.test.mjs` (3 -- the achievement card and the round banner
+stay on the glass and off the map, the sound chip, the floor tag and a warden's
+health bar). A label is
 off screen when any of its letters is: a wordmark clipped at the top of the
 glass is the same bug as a row printed through the footer. The menutext sweep was written
 against the bugs above and was checked against the old behaviour twice:
