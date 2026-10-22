@@ -514,6 +514,17 @@ turning the panels into numbers.
   has no room for it).
 - **The music tab's second line ran under its own scroll counter** ("1-12 / 26")
   on a phone; the header is taller and the line is cut to the room.
+- **A landscape phone had no readable front page, pause menu or statistics
+  page.** At 640 x 360 the menu scale is 1.39, so the page is 460 x 259 units:
+  the wordmark alone took 100 of them, the eight rows and the diary and the
+  footer needed more than were left, and the rows were printed over the
+  wordmark at one end and over the footer at the other. The front page now
+  measures itself (a compact wordmark, the diary tucked under it, no
+  best-round line) and lays its rows out from the room that is actually left.
+  The pause menu turns into two columns of three when six rows would only fit
+  at 15 pixels each, and the statistics page turns its long column into two
+  when the panel is wide and short. The title screen's key list falls back to
+  short lines rather than running 500 pixels wide on a 360-pixel screen.
 - **The death screen ran off the bottom of a small phone.** At MAX PICTURE SIZE
   on a 360 x 560 canvas the one-column ledger (22 rows at a fixed 15) went
   through the prompt and the last six rows were painted off the glass, and the
@@ -538,23 +549,26 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **141/141** and the historical regression **48/48**.
-Seventeen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
+Validation: `npm test` **142/142** and the historical regression **48/48**.
+Eighteen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
 line from 10 to 55 and its wrap, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
 venom's clock and its place on the HUD, the warden's banner, the banner queue)
-and `tools/harness/menutext.test.mjs` (5 — every label on every panel turned
+and `tools/harness/menutext.test.mjs` (6 — every label on every panel turned
 into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
-off screen at seven screen sizes including the two a phone gets at MAX PICTURE
-SIZE, plus a state-by-state sweep of the HUD's two edge bands and a check that
-the all-time page never has to cut a label). The menutext sweep was written
+off screen at eight screen sizes -- the two a phone gets at MAX PICTURE SIZE
+and a phone held sideways -- plus a state-by-state sweep of the HUD's two edge
+bands and a check that the all-time page never has to cut a label). A label is
+off screen when any of its letters is: a wordmark clipped at the top of the
+glass is the same bug as a row printed through the footer. The menutext sweep was written
 against the bugs above and was checked against the old behaviour twice:
 restoring the fixed 268-wide pause rows fails it with "row 0 is 402 wide on a
 360 screen", and moving the all-time footer up into its own table fails it with
 "TIME over NO NIGHTS YET".
 
-Native renders inspected at 800 × 500, 430 × 930, 360 × 640 and 360 × 560 (the
-last at MAX PICTURE SIZE): the venom strip and label under the health bar, the
+Native renders inspected at 800 × 500, 430 × 930, 390 × 844, 360 × 640,
+360 × 560 (the last two at MAX PICTURE SIZE), 640 × 360 and 568 × 320 (a phone
+on its side): the venom strip and label under the health bar, the
 controls list with its short-form key column and its footer, the pause menu
 fitting inside a phone, the DEBUG zoo list with its scroll rail and counter, the
 boss bar clear of the sound chip and the map, the pause chip and the map in

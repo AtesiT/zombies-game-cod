@@ -1611,6 +1611,51 @@ export class HUD {
 //  Full-screen menus
 // ---------------------------------------------------------------------------
 /** The title card alone: wash, wordmark, feature list, best round. */
+/**
+ * Where the front page puts its furniture, in the menu's own units.
+ *
+ * A short panel -- a phone held sideways, or MAX PICTURE SIZE on a small one --
+ * is 253 units tall after the menu scale, and the full-size wordmark (52px over
+ * 34px) plus the diary plus eight rows plus a footer does not fit in that at
+ * any row pitch: the rows were printed over the wordmark at one end and over
+ * the footer at the other. So there is a compact front page: a smaller
+ * wordmark, the diary tucked under it, no best-round line and no controls
+ * footer, and the rows laid out from the room that is actually left.
+ */
+export function menuMetrics(w, h) {
+  const compact = h < 380;
+  // ...and a very short panel (a phone on its side in a browser with its own
+  // bars) is 210 units tall: even the compact wordmark has to give way, or
+  // eight rows and a footer have nowhere to go
+  const tiny = h < 240;
+  // the wordmark needs its own ascender above the baseline: a 30px cap at
+  // cy - 22 put the top of NACHT exactly on the glass and it read as cut off
+  const cy = tiny ? 34 : compact ? 56 : h * 0.24;
+  // the wordmark is measured too: "DER UNTOTEN" at 34px is 372 units wide,
+  // which is 558 pixels on a 360-pixel phone (the menu scale is 1.5)
+  let big = tiny ? 20 : compact ? 30 : 52;
+  let small = tiny ? 12 : compact ? 18 : 34;
+  const fits = (px) => textWidth('DER UNTOTEN', `bold ${px}px "Courier New", monospace`) <= w - 16
+    && textWidth('NACHT', `bold ${Math.min(52, px * 1.5)}px "Courier New", monospace`) <= w - 16;
+  const k = Math.min(1, Math.max(0.3, (w - 16) / textWidth('DER UNTOTEN', `bold ${small}px "Courier New", monospace`)));
+  if (!fits(small)) { small = Math.max(14, Math.floor(small * k)); big = Math.min(big, Math.round(small * 1.6)); }
+  return {
+    compact, tiny, cy,
+    big,
+    small,
+    bigY: tiny ? cy - 14 : compact ? cy - 26 : cy - 34,
+    smallY: tiny ? cy + 2 : compact ? cy : cy + 6,
+    ruleY: tiny ? cy + 8 : compact ? cy + 12 : cy + 20,
+    // the diary line is the first thing a very short page gives up
+    diary: tiny ? null : compact ? cy + 30 : h * 0.24 + 50,
+    diary2: compact || tiny ? cy + 44 : h * 0.24 + 68,
+    tail: tiny ? 16 : compact ? 28 : 44,
+    rowFont: tiny ? 11 : compact ? 13 : 16,
+    rowMin: tiny ? 13 : 15,
+    rowStep: tiny ? 15 : compact ? 19 : null,
+  };
+}
+
 export function titleBackdrop(ctx, game, w, h) {
   ctx.save();
   // dusk-blue wash rather than a black slab -- moody, but you can still read it
@@ -1622,40 +1667,62 @@ export function titleBackdrop(ctx, game, w, h) {
   ctx.fillRect(0, 0, w, h);
 
   const t = game.time;
-  const cy = h * 0.24;
+  const M = menuMetrics(w, h);
 
   ctx.globalAlpha = 0.9 + Math.sin(t * 1.6) * 0.1;
-  text(ctx, 'NACHT', w / 2, cy - 34, {
-    font: 'bold 52px "Courier New", monospace', colour: '#e2d8b8', align: 'center',
+  text(ctx, 'NACHT', w / 2, M.bigY, {
+    font: `bold ${M.big}px "Courier New", monospace`, colour: '#e2d8b8', align: 'center',
   });
-  text(ctx, 'DER UNTOTEN', w / 2, cy + 6, {
-    font: 'bold 34px "Courier New", monospace', colour: '#c2503c', align: 'center',
+  text(ctx, 'DER UNTOTEN', w / 2, M.smallY, {
+    font: `bold ${M.small}px "Courier New", monospace`, colour: '#c2503c', align: 'center',
   });
   ctx.globalAlpha = 1;
 
   ctx.fillStyle = 'rgba(200,60,45,0.7)';
-  ctx.fillRect(w / 2 - 150, cy + 20, 300, 1);
+  ctx.fillRect(w / 2 - (M.compact ? 96 : 150), M.ruleY, M.compact ? 192 : 300, 1);
   ctx.restore();
 }
 
 export function drawTitle(ctx, game, w, h) {
   titleBackdrop(ctx, game, w, h);
   ctx.save();
-  const cy = h * 0.24;
-  const lines = [
+  const M = menuMetrics(w, h);
+  // The list of keys is the first thing a new player reads, so it may not run
+  // off the glass: on a 360-pixel screen the long lines were 500 pixels wide
+  // and half of every one of them was outside the picture. Each line has a
+  // short form, and the block falls back to it (then to smaller type) before
+  // it will spill.
+  const long = [
     'WASD / ARROWS move   \u00b7   MOUSE aim   \u00b7   LEFT CLICK fire',
     'R reload   \u00b7   1-0 / WHEEL / [ ] swap   \u00b7   SHIFT sprint   \u00b7   V knife   \u00b7   G frag',
     'E buy weapon \u00b7 open door \u00b7 spin the box \u00b7 hold to rebuild barricade',
     'H use medkit   \u00b7   M mute   \u00b7   P / ESC pause',
   ];
-  let y = cy + 50;
+  const short = [
+    'WASD MOVE   \u00b7   CLICK FIRE',
+    'R RELOAD   \u00b7   WHEEL SWAP   \u00b7   V KNIFE',
+    'E USE   \u00b7   HOLD E TO REBUILD',
+    'H MEDKIT   \u00b7   P PAUSE',
+  ];
+  const room = w - 20;
+  let fontPx = M.compact ? 10 : 12;
+  const width = (arr) => Math.max(...arr.map((l) => textWidth(l, `bold ${fontPx}px "Courier New", monospace`)));
+  let lines = long;
+  if (width(long) > room) lines = short;
+  while (width(lines) > room && fontPx > 8) {
+    fontPx -= 1;
+  }
+  const font = `bold ${fontPx}px "Courier New", monospace`;
+  const step = M.compact ? 14 : 19;
+  let y = M.diary2 + (M.compact ? 12 : 24);
   for (const l of lines) {
-    text(ctx, l, w / 2, y, { font: 'bold 12px "Courier New", monospace', colour: INK_DIM, align: 'center' });
-    y += 19;
+    text(ctx, l, w / 2, y, { font, colour: INK_DIM, align: 'center' });
+    y += step;
   }
   const blink = 0.55 + Math.sin(game.time * 4) * 0.45;
-  text(ctx, 'CLICK TO BEGIN', w / 2, h - 46, {
-    font: 'bold 20px "Courier New", monospace', colour: `rgba(240,217,138,${blink})`, align: 'center',
+  text(ctx, 'CLICK TO BEGIN', w / 2, Math.min(h - 46, y + 18), {
+    font: `bold ${M.compact ? 16 : 20}px "Courier New", monospace`,
+    colour: `rgba(240,217,138,${blink})`, align: 'center',
   });
   ctx.restore();
 }
@@ -1679,13 +1746,22 @@ const MENU_HALF_W = 150;
  */
 function _menuLayout(scene, game, w, h) {
   const rows = menuRows(scene, game).length;
-  const top = h * MENU_TOP;
-  // what is left under the first row once the hint line and a breath are
-  // taken off; on a 800x500 screen this still yields the old 27 and nothing
-  // about the front page moves
-  const room = h - top - 44;
-  const step = Math.max(18, Math.min(MENU_STEP, room / Math.max(1, rows)));
-  return { rows, top, step, half: Math.min(MENU_HALF_W, w / 2 - 24) };
+  const M = menuMetrics(w, h);
+  const front = scene === 'menu';
+  const tail = M.tail;
+  // start under whatever the page has already printed above
+  const header = front ? (M.diary ?? M.diary2) + 10 : M.ruleY + 12;
+  const top = Math.max(header, Math.min(h * MENU_TOP, h - tail - rows * MENU_STEP));
+  const room = Math.max(0, h - top - tail);
+  // The pitch gives way before the rows do. 15 units is a line of 16px type
+  // with a hair between; below that the front page would be unreadable anyway,
+  // so the compact page also drops to a smaller row font (see `_drawMenu`).
+  const pitch = Math.max(M.rowMin, Math.min(M.rowStep ?? MENU_STEP, Math.min(room / Math.max(1, rows), M.rowStep ?? MENU_STEP)));
+  return {
+    rows, top, step: pitch, room,
+    half: Math.min(MENU_HALF_W, w / 2 - 24),
+    compact: M.compact, tiny: M.tiny,
+  };
 }
 
 /** The row grid in screen units (the painter works in the menu's own). */
@@ -1985,7 +2061,10 @@ function _drawStats(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  const narrow = cw < 470;
+  // "narrow" is about the type, not about the phone: the menu scale divides
+  // the width, so a landscape phone lands at 440 units -- wide enough for two
+  // columns of small monospace, which is what 470 was measuring instead
+  const narrow = cw < 380;
   text(ctx, 'ALL-TIME STATISTICS', cx + 14, cy + 20, {
     font: `bold ${narrow ? 13 : 16}px "Courier New", monospace`, colour: GOLD,
   });
@@ -1998,8 +2077,16 @@ function _drawStats(ctx, game, w, h) {
   const rows = lifetimeRows(game?.lifetime);
   const nights = rows.filter((r) => r[2] === 0);
   const deeds = rows.filter((r) => r[2] === 1);
+  // The page was two columns -- eight numbers against sixteen -- which is
+  // right for a tall panel and wrong for a short one: on a phone held sideways
+  // (or at MAX PICTURE SIZE on a small screen) the panel is 239 units tall and
+  // the long column ran through the footer. When the panel is wide and short
+  // the long column simply becomes two columns of eight.
+  const short = ch < 320;
+  let cols = (!narrow && short) ? 3 : 2;
+  if (cols === 3 && Math.floor((cw - 32 - 26 * 2) / 3) < 104) cols = 2;
   const gap = narrow ? 16 : 26;
-  const colW = Math.floor((cw - 32 - gap) / 2);
+  const colW = Math.floor((cw - 32 - gap * (cols - 1)) / cols);
   // Two columns of label + number on a phone-sized panel leave about ninety
   // units per column, and "LONGEST RUN" over "0m 00s" is more than that: the
   // value used to be printed inside the label. The numerals are the point, so
@@ -2025,6 +2112,7 @@ function _drawStats(ctx, game, w, h) {
   const valueFont = `bold ${narrow ? 9.5 : 11}px "Courier New", monospace`;
   const ax = cx + 16;
   const bx = cx + 16 + colW + gap;
+  const dx = cx + 16 + (colW + gap) * 2;
 
   const heading = (x, label) => {
     text(ctx, label, x, cy + head + 2, { font: 'bold 9px "Courier New", monospace', colour: 'rgba(240,217,138,0.72)' });
@@ -2033,11 +2121,14 @@ function _drawStats(ctx, game, w, h) {
   };
   heading(ax, 'THE NIGHTS');
   heading(bx, 'EVERYTHING ELSE');
+  if (cols === 3) heading(dx, 'AND ALSO');
 
   const line = (x, y, label, value, colour = INK) => {
     // whatever room the number leaves is the room the label gets
     const room = colW - textWidth(value, valueFont) - 7;
-    const names = narrow && SHORT[label] ? SHORT[label] : [label];
+    // a three-column panel is as narrow per column as a phone's, so it takes
+    // the same short names
+    const names = (narrow || colW < 140) && SHORT[label] ? SHORT[label] : [label];
     const short = names.find((n) => textWidth(n, labelFont) <= room) ?? names[names.length - 1];
     text(ctx, clipText(short, room, labelFont), x, y, { font: labelFont, colour: INK_DIM });
     text(ctx, value, x + colW, y, { font: valueFont, colour, align: 'right' });
@@ -2051,14 +2142,22 @@ function _drawStats(ctx, game, w, h) {
   // rather than drawn on top of the footer when there is no room left for it.
   const bodyTop = cy + head + 26;
   const bodyH = Math.max(60, ch - head - 32 - 26);
-  const nPitch = Math.max(11, Math.min(26, bodyH / Math.max(1, nights.length)));
-  const dPitch = Math.max(10.5, Math.min(21, bodyH / Math.max(1, deeds.length)));
+  const half = Math.ceil(deeds.length / (cols === 3 ? 2 : 1));
+  const deedCols = cols === 3
+    ? [[bx, deeds.slice(0, half)], [dx, deeds.slice(half)]]
+    : [[bx, deeds]];
+  const rowsPerCol = Math.max(nights.length, ...deedCols.map(([, list]) => list.length));
+  // one pitch for every column, measured against the longest of them: three
+  // columns at three pitches is a page that looks broken
+  const pitch = Math.max(10.5, Math.min(26, bodyH / Math.max(1, rowsPerCol)));
 
   let y = bodyTop;
-  for (const [label, value] of nights) { line(ax, y, label, value); y += nPitch; }
+  for (const [label, value] of nights) { line(ax, y, label, value); y += pitch; }
   const nightsEnd = y;
-  y = bodyTop;
-  for (const [label, value] of deeds) { line(bx, y, label, value); y += dPitch; }
+  for (const [x, list] of deedCols) {
+    y = bodyTop;
+    for (const [label, value] of list) { line(x, y, label, value); y += pitch; }
+  }
 
   // the record book, under the short column: the numbers above say how much,
   // these say how good the best of it was
@@ -2270,11 +2369,15 @@ function _drawOutfits(ctx, game, w, h) {
     }
   }
 
-  const foot = wide
+  // measured, not hoped: the wide footer is 372 units and a phone panel is 240
+  const wf = wide
     ? 'ARROWS  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK'
     : 'TAP A ROW TO WEAR IT   ·   ESC OR THE X BACK';
+  const nf = 'TAP A ROW   ·   X TO GO BACK';
+  const footFont = 'bold 9px "Courier New", monospace';
+  const foot = textWidth(wf, footFont) <= cw - 16 ? wf : nf;
   text(ctx, foot, cx + cw / 2, cy + ch - 18, {
-    font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    font: footFont, colour: INK_DIM, align: 'center',
   });
   ctx.restore();
 }
@@ -2344,7 +2447,9 @@ function _drawMenu(ctx, game, w, h) {
   ctx.save();
 
   const rows = menuRows(game.scene, game);
-  const { top, step, half } = _menuLayout(game.scene, game, w, h);
+  const L = _menuLayout(game.scene, game, w, h);
+  const { top, step, half } = L;
+  const M = menuMetrics(w, h);
   const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
 
   for (let i = 0; i < rows.length; i++) {
@@ -2359,8 +2464,10 @@ function _drawMenu(ctx, game, w, h) {
       ctx.fillRect(w / 2 - half, y - band / 2, 2, band);
       ctx.fillRect(w / 2 + half - 2, y - band / 2, 2, band);
     }
-    const size = row.id === 'none' ? 11 : 16;
-    text(ctx, row.label, w / 2, y + 4, {
+    // the compact page reads smaller: eight rows and a wordmark in 250 units
+    // cannot hold 16px type and a gap between them
+    const size = row.id === 'none' ? 11 : M.rowFont;
+    text(ctx, row.label, w / 2, y + (M.compact ? 4.5 : 4), {
       font: `bold ${size}px "Courier New", monospace`,
       colour: row.id === 'none' ? INK_DIM : on ? GOLD : '#cdbfa0',
       align: 'center',
@@ -2369,10 +2476,14 @@ function _drawMenu(ctx, game, w, h) {
 
   const hint = rows[sel]?.hint;
   let hy = top + rows.length * step + 6;
-  if (hint) {
-    text(ctx, hint, w / 2, hy, { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+  // the selected row's hint is the first thing given up on a short page: it is
+  // a line of prose under a list, and the list is what the page is for
+  const hintRoom = hy + 16 < h - (M.compact ? 22 : 34);
+  if (hint && hintRoom) {
+    text(ctx, clipText(hint, w - 24, 'bold 11px "Courier New", monospace'), w / 2, hy,
+      { font: 'bold 11px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     hy += 16;
-  }
+  } else if (hint) hy -= 0;
 
   // network status, good or bad
   const net = game.net;
@@ -2391,7 +2502,7 @@ function _drawMenu(ctx, game, w, h) {
   }
   // On a phone the browser's own bars eat a third of the screen; the home
   // screen icon does not have any.
-  if (isTouchDevice() && !standalone()) {
+  if (isTouchDevice() && !standalone() && hy < h - 60) {
     text(ctx, 'SHARE \u2192 ADD TO HOME SCREEN  for the full screen', w / 2, hy, {
       font: 'bold 10px "Courier New", monospace', colour: 'rgba(159,208,224,0.75)', align: 'center',
     });
@@ -2424,15 +2535,22 @@ function _drawMenu(ctx, game, w, h) {
   // point of an all-time number is that the player runs into it on the way in.
   if (game.scene === 'menu') {
     const [line1, line2] = lifetimeMenuLines(game.lifetime);
-    text(ctx, line1, w / 2, h * 0.24 + 50, {
-      font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
-    });
-    if (line2) {
+    if (M.diary) {
+      // the diary line is measured like everything else: on a portrait phone
+      // "NO NIGHTS YET — THE DARK IS WAITING" is wider than the glass, and a
+      // headline that starts at the left edge and ends outside the screen at
+      // the right is worse than a shorter headline
+      const f = `bold ${M.compact ? 10 : 12}px "Courier New", monospace`;
+      const short = /NO NIGHTS/.test(line1) ? 'NO NIGHTS YET' : line1.split('\u00b7')[0].trim();
+      const fit = textWidth(line1, f) <= w - 16 ? line1 : short;
+      text(ctx, clipText(fit, w - 12, f), w / 2, M.diary, { font: f, colour: GOLD, align: 'center' });
+    }
+    if (line2 && !M.compact) {
       // brighter than the usual dim ink: this line sits over the live map,
       // which the title backdrop only dims, not hides
-      text(ctx, line2, w / 2, h * 0.24 + 68, {
-        font: 'bold 10px "Courier New", monospace', colour: 'rgba(230,220,194,0.82)', align: 'center',
-      });
+      const f = 'bold 10px "Courier New", monospace';
+      text(ctx, clipText(line2, w - 12, f), w / 2, M.diary2,
+        { font: f, colour: 'rgba(230,220,194,0.82)', align: 'center' });
     }
   }
 
@@ -2443,18 +2561,23 @@ function _drawMenu(ctx, game, w, h) {
     // The footer is a reminder, not a manual: on the narrow layout it is
     // shortened until it fits, because a line that runs off both edges is
     // noise with a keyboard in it.
-    const foot = w < 400
-      ? 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  O SETTINGS'
-      : 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS';
-    text(ctx, foot, w / 2, h - 20, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+    const foot = M.tiny
+      ? 'CLICK FIRE'
+      : M.compact
+        ? 'CLICK FIRE   \u00b7   ESC PAUSE'
+        : w < 400
+          ? 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  O SETTINGS'
+          : 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS';
+    text(ctx, foot, w / 2, h - (M.compact ? 12 : 20),
+      { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     const board = loadBoard();
-    if (board.length) {
+    if (board.length && !M.compact) {
       text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, h - 39, {
         font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'center',
       });
     }
   } else {
-    text(ctx, 'ESC BACK   \u00b7   ENTER SELECT', w / 2, h - 22, {
+    text(ctx, 'ESC BACK   \u00b7   ENTER SELECT', w / 2, h - (M.compact ? 12 : 22), {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
   }
@@ -2504,18 +2627,49 @@ export function pauseChipAt(w, h, mx, my) {
   return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
 }
 
-function _pauseRowRect(i, w, h) {
-  // The rows breathe on a short panel, and the whole list has to fit between
-  // the title and the bottom of the glass: six rows at the old fixed 268x38
-  // came out 402 pixels wide on a 360-pixel phone (drawn at 1.5x they hung off
-  // both edges) and ran into the health bar. So the width is clamped to the
-  // panel, and the pitch to the room left for the hint line and the HUD band.
+/**
+ * The pause menu's grid, in the panel's own units.
+ *
+ * Six rows at the original fixed 268 x 38 came out 402 pixels wide on a
+ * 360-pixel phone (the menu scale is 1.5) and hung off both edges; on a phone
+ * held sideways there is also no room for the title, the rows, the hint line
+ * *and* the HUD band behind them. So the width is clamped to the panel, the
+ * pitch is measured against the room between the title and the HUD, the type
+ * shrinks with it, and the hint line is dropped rather than drawn on top of the
+ * health bar.
+ */
+function _pauseLayout(w, h) {
   const rows = PAUSE_ROWS.length;
-  const top = h * 0.30 + 26;
-  const room = Math.max(120, h - top - 46 - 54);
-  const pitch = Math.min(38, Math.max(22, room / rows));
-  const rw = Math.min(268, w - 24), rh = Math.min(30, pitch - 6);
-  return { x: w / 2 - rw / 2, y: top + i * pitch, w: rw, h: rh };
+  // A short panel gets two columns of three rather than six rows stacked: on a
+  // phone held sideways six rows fit, but only at 14 pixels each, and a row
+  // you cannot hit with a thumb is not a menu. Two columns keep the rows
+  // tappable and still leave the hint line above the HUD.
+  const cols = h < 320 && w >= 380 ? 2 : 1;
+  const perCol = Math.ceil(rows / cols);
+  const titleY = cols === 2 ? h * 0.16 : h * 0.30;
+  const top = titleY + (cols === 2 ? 22 : 26);
+  // keep clear of the bottom HUD strip, which is still painted under the pause
+  const room = Math.max(50, (h - 58 - 22) - top);
+  const pitch = Math.min(38, Math.max(15, room / perCol));
+  const rh = Math.min(30, Math.max(12, pitch - 5));
+  const gap = 12;
+  const rw = Math.min(cols === 2 ? (w - 32 - gap) / 2 : w - 24, 268);
+  const hintY = top + perCol * pitch + 12;
+  return {
+    top, pitch, rh, hintY, cols, perCol, rw, gap, titleY,
+    font: pitch >= 26 ? 14 : pitch >= 20 ? 12 : 11,
+    hintShown: hintY + 2 < h - 56,
+  };
+}
+
+function _pauseRowRect(i, w, h) {
+  const L = _pauseLayout(w, h);
+  const col = Math.floor(i / L.perCol), row = i % L.perCol;
+  const total = L.cols * L.rw + (L.cols - 1) * L.gap;
+  return {
+    x: w / 2 - total / 2 + col * (L.rw + L.gap),
+    y: L.top + row * L.pitch, w: L.rw, h: L.rh,
+  };
 }
 
 /** A pause row in screen units. */
@@ -2557,11 +2711,15 @@ function _drawPause(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
-  text(ctx, 'PAUSED', w / 2, h * 0.30, {
-    font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
+  const L = _pauseLayout(w, h);
+  const big = L.cols === 2 ? 26 : 34;
+  text(ctx, 'PAUSED', w / 2, L.titleY, {
+    font: `bold ${big}px "Courier New", monospace`, colour: INK, align: 'center',
   });
   const m = game.input?.mouse;
   const hover = m ? _pauseHitTest(game, w, h, m.x, m.y) : -1;
+  const labelFont = `bold ${L.font}px "Courier New", monospace`;
+  const hintFont = `bold ${Math.min(10, L.font - 2)}px "Courier New", monospace`;
   PAUSE_ROWS.forEach((r, i) => {
     const rc = _pauseRowRect(i, w, h);
     // the pointer lights a row, and so does the keyboard: a menu you can only
@@ -2572,21 +2730,23 @@ function _drawPause(ctx, game, w, h) {
     ctx.strokeStyle = hot ? GOLD : 'rgba(140,150,165,0.35)';
     ctx.lineWidth = 1;
     ctx.strokeRect(rc.x + 0.5, rc.y + 0.5, rc.w - 1, rc.h - 1);
-    text(ctx, r.label, rc.x + 18, rc.y + 20, {
-      font: 'bold 14px "Courier New", monospace', colour: hot ? GOLD : INK, align: 'left',
-    });
-    if (r.hint) {
-      text(ctx, r.hint, rc.x + rc.w - 18, rc.y + 20, {
-        font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
-      });
+    // centred in the row rather than 20 units down from its top: with a short
+    // row (a landscape phone) a fixed baseline printed under the box
+    const ty = rc.y + rc.h / 2 + L.font * 0.35;
+    text(ctx, r.label, rc.x + 18, ty, { font: labelFont, colour: hot ? GOLD : INK, align: 'left' });
+    if (r.hint && L.font > 11) {
+      text(ctx, r.hint, rc.x + rc.w - 18, ty, { font: hintFont, colour: INK_DIM, align: 'right' });
     }
   });
-  const last = _pauseRowRect(PAUSE_ROWS.length - 1, w, h);
-  // short enough for the narrowest panel: 12px monospace at 1.5x did not fit
-  // a phone, and a line that runs off the glass is worse than no line
-  text(ctx, 'ARROWS + ENTER WORK HERE', w / 2, last.y + last.h + 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
-  });
+  // the hint line is the first thing given up: a line drawn over the health bar
+  // is worse than no line
+  if (L.hintShown) {
+    const text_ = 'ARROWS + ENTER WORK HERE';
+    const font = 'bold 10px "Courier New", monospace';
+    text(ctx, textWidth(text_, font) <= w - 20 ? text_ : 'ARROWS + ENTER', w / 2, L.hintY, {
+      font, colour: INK_DIM, align: 'center',
+    });
+  }
   ctx.restore();
 }
 
@@ -2646,7 +2806,7 @@ function _debugPanel(game, w, h) {
   // on a narrow panel every unit of width is a character of a row: take the
   // whole screen rather than the 380-unit default
   const cw = w < 400 ? w - 12 : Math.min(music ? 540 : 380, w - 16);
-  const HEAD = music ? 106 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
+  const HEAD = music ? 106 : 70, FOOT = music ? 62 : 40;   // the extra 24 is the tab strip
   // The zoo tab now has one row per creature and there are more than forty of
   // them. Squeezing the pitch until they all fit gave rows of twelve pixels
   // and, past that, a list that ran out of the bottom of the panel. So the
@@ -2734,7 +2894,9 @@ function _drawDebug(ctx, game, w, h) {
   if (game.debugTab === DEBUG_MUSIC_TAB) {
     const current = audio.soundtrack?.current;
     const selected = SOUNDTRACKS.find((t) => game.debugRows()[game.debugIndex]?.id === `music:${t.id}`);
-    text(ctx, current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cx + 18, cy + 66,
+    // the header lines are cut to the panel like the rows below them
+    text(ctx, clipText(current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cw - 34,
+      'bold 11px "Courier New", monospace'), cx + 18, cy + 66,
       { font: 'bold 11px "Courier New", monospace', colour: GOLD });
     // the second line is cut to the room the scroll counter leaves: on a phone
     // it ran under the "1-12 / 26" in the corner of the list
@@ -2803,13 +2965,27 @@ function _drawDebug(ctx, game, w, h) {
   const dbgFoot = cw >= 380
     ? 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO'
     : 'W S PICK   ·   L/R TAB   ·   ENTER DO';
-  text(ctx, dbgFoot, cx + cw / 2, cy + ch - 27, {
+  // the footer of the music tab is two thoughts in one line: on a narrow panel
+  // the second one moves to a line of its own rather than off the glass, and
+  // the line above it moves up to make room
+  const footFont = '9px "Courier New", monospace';
+  const musicFoot = '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE';
+  const closeFoot = '` / ESC: CLOSE';
+  const twoLines = game.debugTab === DEBUG_MUSIC_TAB && textWidth(musicFoot, footFont) > cw - 12;
+  text(ctx, dbgFoot, cx + cw / 2, cy + ch - (twoLines ? 34 : 27), {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
-  text(ctx, game.debugTab === DEBUG_MUSIC_TAB ? '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE' : '` / ESC: CLOSE',
-    cx + cw / 2, cy + ch - 12, {
-      font: '9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  if (twoLines) {
+    text(ctx, closeFoot, cx + cw / 2, cy + ch - 21, {
+      font: footFont, colour: INK_DIM, align: 'center',
     });
+    text(ctx, 'STOP: BACK TO THE ADAPTIVE SCORE', cx + cw / 2, cy + ch - 10, {
+      font: footFont, colour: INK_DIM, align: 'center',
+    });
+  } else {
+    text(ctx, game.debugTab === DEBUG_MUSIC_TAB ? musicFoot : closeFoot,
+      cx + cw / 2, cy + ch - 12, { font: footFont, colour: INK_DIM, align: 'center' });
+  }
   ctx.restore();
 }
 
@@ -3002,8 +3178,15 @@ function _drawSettings(ctx, game, w, h, k = 1) {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
     });
     if (HEAD >= 56) {
-      text(ctx, 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE', cx + cw / 2, cy + 44, {
-        font: 'bold 9px "Courier New", monospace', colour: 'rgba(159,208,224,0.8)', align: 'center',
+      // measured against the panel: at the menu scale a 360-pixel phone gives
+      // the settings panel 240 units and this line is 242 of them
+      const hf = 'bold 9px "Courier New", monospace';
+      const full = 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE';
+      const half = 'DRAG TO SCROLL   ·   W S / A D';
+      const hintText = textWidth(full, hf) <= cw - 16 ? full
+        : textWidth(half, hf) <= cw - 16 ? half : 'DRAG TO SCROLL';
+      text(ctx, hintText, cx + cw / 2, cy + 44, {
+        font: hf, colour: 'rgba(159,208,224,0.8)', align: 'center',
       });
     }
   } else {

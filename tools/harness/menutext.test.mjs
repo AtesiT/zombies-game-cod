@@ -111,15 +111,18 @@ function collisions(items) {
   return bad;
 }
 
+// Any part of a label outside the glass is a label with letters the player
+// cannot see: the wordmark clipped at the top of a landscape phone is the same
+// bug as a row printed through the footer.
 const offscreen = (items, vw, vh) => items
-  .filter((b) => b.x1 < -2 || b.x0 > vw + 2 || b.y1 < -2 || b.y0 > vh + 2)
-  .map((b) => `"${b.str}" at ${b.x0.toFixed(0)},${b.y0.toFixed(0)}`);
+  .filter((b) => b.x0 < -2 || b.x1 > vw + 2 || b.y0 < -2 || b.y1 > vh + 2)
+  .map((b) => `"${b.str}" at ${b.x0.toFixed(0)},${b.y0.toFixed(0)}-${b.x1.toFixed(0)},${b.y1.toFixed(0)}`);
 
 // A short phone, a tall phone, a small desktop, a big one -- and the canvases
 // a phone gets when PICTURE SIZE is pushed to its top step on a narrow screen
 // (the world is zoomed, so the same glass ends up with fewer canvas pixels).
 const SIZES = [[360, 640], [430, 930], [800, 500], [1280, 800], [1920, 1080],
-  [360, 704], [360, 560]];
+  [360, 704], [360, 560], [640, 360]];
 
 const PANELS = {
   title: (ctx, g, w, h) => HUD.drawTitle(ctx, g, w, h),
@@ -226,10 +229,12 @@ test('the pause menu fits a phone, and stays out of the HUD', () => {
     }
     const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
     HUD.drawPause(ctx, g, g.vw, g.vh);
-    // the hint under the last row is above the health bar, not on top of it
+    // the hint under the last row is above the HUD strip, not on top of it.
+    // The strip is drawn from h-74 down
     const hint = items.find((it) => it.str.includes('ARROWS'));
     assert.ok(hint, `${w}x${h}: no hint line`);
-    assert.ok(hint.y1 < g.vh - 80, `${w}x${h}: the hint line sits at ${hint.y1.toFixed(0)}, in the HUD band`);
+    assert.ok(hint.y1 <= g.vh - 72,
+      `${w}x${h}: the hint line sits at ${hint.y1.toFixed(0)}, in the HUD band (from ${g.vh - 74})`);
     clearStorage();
   }
 });
@@ -262,6 +267,42 @@ test('the death screen and the all-time page fit a phone at max picture size', (
     // short true names for every row it might have to squeeze
     const cut = stats.items.filter((it) => it.str.endsWith('\u2026'));
     assert.deepEqual(cut.map((c) => c.str), [], `${w}x${h}: cut labels on the all-time page`);
+    clearStorage();
+  }
+});
+
+test('the front page, the pause menu and the all-time page hold a landscape phone', () => {
+  clearStorage();
+  // 640x360 is the shape a phone has when it is turned sideways, and after the
+  // menu scale it is only 460x259 units of drawing space: the wordmark, eight
+  // rows, the diary and the footer all have to share it
+  for (const [w, h] of [[640, 360], [568, 320], [740, 360]]) {
+    const g = fresh(w, h);
+    const shot = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawMenu(shot.ctx, g, g.vw, g.vh);
+    assert.deepEqual(collisions(shot.items), [], `${w}x${h}: the front page overlaps itself`);
+    assert.deepEqual(offscreen(shot.items, g.vw, g.vh), [], `${w}x${h}: the front page runs off the glass`);
+
+    // every row of the menu is reachable, and the row you press is the row you
+    // see: the layout the painter used is the layout the hit test uses
+    const rows = HUD.menuRows('menu', g);
+    const L = HUD.menuLayout('menu', g, g.vw, g.vh);
+    for (let i = 0; i < rows.length; i++) {
+      const y = L.top + i * L.step;
+      assert.equal(HUD.menuHitTest('menu', g.vw / 2, y, g), i,
+        `${w}x${h}: row ${i} is drawn at ${y.toFixed(0)} but not pressed there`);
+      assert.ok(y > 0 && y < g.vh, `${w}x${h}: row ${i} is off screen at ${y.toFixed(0)}`);
+    }
+
+    const pause = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawPause(pause.ctx, g, g.vw, g.vh);
+    assert.deepEqual(collisions(pause.items), [], `${w}x${h}: the pause menu overlaps itself`);
+    for (let i = 0; i < HUD.PAUSE_ROWS.length; i++) {
+      const r = HUD.pauseRowRect(i, g.vw, g.vh);
+      assert.ok(r.h >= 12, `${w}x${h}: pause row ${i} is ${r.h.toFixed(1)} tall -- not a thumb target`);
+      const hit = HUD.pauseHitTest(g, g.vw, g.vh, r.x + r.w / 2, r.y + r.h / 2);
+      assert.equal(hit, i, `${w}x${h}: pause row ${i} is drawn but not pressed`);
+    }
     clearStorage();
   }
 });
