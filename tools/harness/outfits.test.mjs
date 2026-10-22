@@ -473,16 +473,18 @@ test('the outfit travels on the wire, in both directions', () => {
 });
 
 // ---------------------------------------------------------------------------
-//  The dog, which was the whole reason for the size pass
+//  The dog: a dog, at dog size
 // ---------------------------------------------------------------------------
-test('the hellhound is a big animal with a body to match', () => {
+test('the hellhound is a dog, three times smaller than the pony it was', () => {
   const dog = ENEMY_TYPES.dog;
-  assert.ok(dog.scale >= 1.7, `the hound is drawn at ${dog.scale}`);
-  assert.ok(dog.r >= 10, `the hound collides as a ${dog.r}-unit body`);
-  assert.ok(dog.hitScale >= 1.8, 'the bigger body must be an easier target');
-  // it is bigger than a soldier, not smaller: 22x16 at 1.75 is 45x28 world px
-  assert.ok(26 * dog.scale > 40, 'nose to tail it should be wider than two soldiers');
-  // and the sprite itself is a quadruped's frame, not the human one
+  // it was 1.75 on a 26x16 sprite -- 45x28 world pixels, wider than two
+  // soldiers. It is drawn at 1:1 now: 26x16, and it must not creep back up.
+  assert.ok(dog.scale <= 1.05, `the hound is drawn at ${dog.scale}`);
+  assert.ok(26 * dog.scale <= 30, 'nose to tail it should be about one tile');
+  assert.ok(dog.r >= 5 && dog.r <= 8, `the hound collides as a ${dog.r}-unit body`);
+  // the hit box follows the body down: a small dog is a small target
+  assert.ok(dog.hitScale >= 1.2 && dog.hitScale <= 1.5, `hitScale is ${dog.hitScale}`);
+  // and the sprite itself is still a quadruped's frame, not the human one
   const art = buildArt();
   assert.ok(art.dogFrames?.[0] && art.dogFrames.length === 2, 'the trot frames are missing');
   assert.ok(art.dogFrames[0].width >= 24 && art.dogFrames[0].height >= 14,

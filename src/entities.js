@@ -15,11 +15,14 @@ export const THROW_POCKET = Object.freeze({ frag: 'grenades', molotov: 'molotovs
 export const throwPocket = (kind) => THROW_POCKET[kind] ?? 'grenades';
 
 // Shift is a dash, not a jog: a short burst of legs with a five-second clock
-// on it. Long enough to break a bite, short enough that it never replaces the
-// walk -- and the cooldown runs in the HUD so nobody has to count.
-export const DASH_TIME = 0.18;
+// on it. It used to cover 93 world units -- most of a room -- which made the
+// five-second clock feel like a teleport with a cooldown; it now covers about
+// 31, a little over one tile, so it is a step out of a swing and nothing more.
+// The burst itself stays sharp: a third of a second of nothing would not read
+// as a dash at all, so the distance came out of the length, not the speed.
+export const DASH_TIME = 0.10;
 export const DASH_CD = 5;
-export const DASH_SPEED = 690;
+export const DASH_SPEED = 420;
 
 const SPRITE_OX = SPRITE_W / 2;
 const SPRITE_OY = BODY_ROW;             // sprite pixel drawn at the entity origin
@@ -1151,13 +1154,15 @@ export const ENEMY_TYPES = {
     chew: 3.4, points: 1.7, set: 'brute', headOff: 1.25, smash: true,
   },
   dog: {
-    // A hound is a big animal, not a lap dog. The sprite is a side-on 22x14
-    // drawing, so on a 20x22 human it read as a puppy at scale 1: it now sits
-    // at 1.75 -- 38 px nose to tail, taller at the shoulder than a crawling
-    // body -- and its collision radius grew with it. `hitScale` keeps the
-    // bullets honest -- a bigger body is a bigger target, or the picture lies.
-    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 10.5, scale: 1.75,
-    hitScale: 1.9, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
+    // A hound is a dog, not a pony. 1.75 on a 26x16 sprite drew a 45x28 body --
+    // wider than two soldiers and taller at the shoulder than a man -- which
+    // read as something you ride, not something that bites your ankles. It is
+    // back to 1.0, so the drawing lands at its own 26x16: three times less
+    // body than before, still twice the length of an old 18x12 frame, and
+    // still a dog from across the room. `hitScale` follows the body down --
+    // bullets hit what the picture shows.
+    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 7.0, scale: 1.0,
+    hitScale: 1.35, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
     sprinty: true, four: true,
   },
   crawler: {

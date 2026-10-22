@@ -240,6 +240,52 @@ export function tintCopy(src, colour, amount = 0.35) {
 }
 
 /**
+ * The armoured walker: a steel pot on a grey corpse.
+ *
+ * The old one was a plain tint of the ordinary body, and a flat recolour of a
+ * bald head reads as a lump: nothing on it says "armour", so the eye settles
+ * on the shape, and the shape is a skull. This draws the helmet instead of
+ * recolouring the head -- a domed pot with a brim, a riveted band, a chin
+ * strap and a shoulder plate on each side -- so the thing on its head is
+ * something, and the face underneath is still a face.
+ */
+function buildHelmeted(src, steel = 0.42) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  ctx.drawImage(tintCopy(src, '#7c8a94', steel), 0, 0);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  const DARK = '#48525b';     // the shell's edge, and the shadow under the brim
+  const MID = '#7c8b96';      // the pot itself
+  const LIT = '#a9b7c0';      // moonlight on the crown
+  // ---- the pot: a dome, two pixels wide at the top and eight at the brim ----
+  px(9, 1, DARK, 2, 1);
+  px(8, 2, DARK, 4, 1);
+  px(7, 3, DARK, 6, 1);
+  px(6, 4, DARK, 8, 1);
+  px(9, 1, MID, 2, 1);
+  px(8, 2, MID, 4, 1);
+  px(7, 3, MID, 6, 1);
+  px(6, 4, MID, 8, 1);
+  px(8, 2, LIT, 2, 1);        // one highlight, on the crown only
+  px(9, 3, LIT, 1, 1);
+  // ---- the brim: one row, the same width as the shell, so it is a helmet
+  //      and not a hat; a shadow under it hides everything but the face ----
+  px(6, 5, DARK, 8, 1);
+  px(7, 5, MID, 6, 1);
+  px(8, 5, LIT, 4, 1);
+  px(7, 6, '#2b3238', 6, 1);
+  // ---- chin strap, so the pot is worn rather than balanced ------------------
+  px(6, 6, '#59636b', 1, 3);
+  px(13, 6, '#59636b', 1, 3);
+  // ---- shoulder plates: the armour continues where a coat would -------------
+  px(2, 11, DARK, 4, 2);
+  px(3, 11, MID, 3, 1);
+  px(14, 11, DARK, 4, 2);
+  px(14, 11, MID, 3, 1);
+  px(8, 13, DARK, 4, 1);                            // a breastplate seam
+  return canvas;
+}
+
+/**
  * The hellhound, side on, facing east: 26x16 at two leg poses.
  *
  * It is the only body with a frame of its own, so it is the only one that
@@ -254,9 +300,12 @@ export function tintCopy(src, colour, amount = 0.35) {
 function buildDog(legs = 0) {
   const W = 26, H = 16;
   const { canvas, ctx } = makeCanvas(W, H);
-  const D = '#241c14';   // dark fur / outline
-  const M = '#4a3a28';   // mid fur
-  const L = '#6b5439';   // light fur (the moon on its back)
+  // The fur is lit a shade above the old coat: at 1.75 the body was big enough
+  // to read in a dark room by its silhouette alone, and at 1:1 a near-black
+  // dog in a near-black room is a pair of eyes and nothing else.
+  const D = '#33261a';   // dark fur / outline
+  const M = '#634c33';   // mid fur
+  const L = '#8a6c48';   // light fur (the moon on its back)
   const S = '#1a1410';   // shadow, under everything
   const E = '#b02a1c';   // eye glow
   const R = '#6d1a18';   // collar
@@ -469,11 +518,11 @@ export function buildArt() {
     zombieRunnerAtk: zombieAtk.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
     zombieBrute: zombie.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
-    // helmeted: steel pot over the skull, heavy coat
-    helmet: zombie.map((c) => tintCopy(c, '#7c8a94', 0.42)),
-    helmetFlip: zombie.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
-    helmetAtk: zombieAtk.map((c) => tintCopy(c, '#7c8a94', 0.42)),
-    helmetAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
+    // helmeted: a steel pot with a brim and a strap, plates on both shoulders
+    helmet: zombie.map((c) => buildHelmeted(c)),
+    helmetFlip: zombie.map((c) => buildHelmeted(flipH(c))),
+    helmetAtk: zombieAtk.map((c) => buildHelmeted(c)),
+    helmetAtkFlip: zombieAtk.map((c) => buildHelmeted(flipH(c))),
     // napalm: charred, glowing from the inside
     napalm: zombie.map((c) => tintCopy(c, '#c4461c', 0.62)),
     napalmFlip: zombie.map((c) => tintCopy(flipH(c), '#c4461c', 0.62)),
@@ -577,11 +626,12 @@ export function buildArt() {
     shockerFlip: zombie.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
     shockerAtk: zombieAtk.map((c) => tintCopy(c, '#3a7ab0', 0.55)),
     shockerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
-    // knight: old steel, no colour left anywhere
-    knight: zombie.map((c) => tintCopy(c, '#77838d', 0.5)),
-    knightFlip: zombie.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
-    knightAtk: zombieAtk.map((c) => tintCopy(c, '#77838d', 0.5)),
-    knightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
+    // knight: old steel, and a pot to match -- it is a suit of armour, so the
+    // head has to be wearing some of it
+    knight: zombie.map((c) => buildHelmeted(c, 0.62)),
+    knightFlip: zombie.map((c) => buildHelmeted(flipH(c), 0.62)),
+    knightAtk: zombieAtk.map((c) => buildHelmeted(c, 0.62)),
+    knightAtkFlip: zombieAtk.map((c) => buildHelmeted(flipH(c), 0.62)),
     totem: buildTotem(),
     grave: buildGrave(),
 

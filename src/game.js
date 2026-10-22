@@ -21,7 +21,7 @@ import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout} from './hud.js';
+import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -3444,18 +3444,34 @@ export class Game {
       // (the selection keeps its place while the list moves under it)
       const m = this.input.mouse;
       const wheeled = !!this.input.wheel;
+      const SL = settingsLayout(this, this.vw, this.vh);
       if (wheeled) {
-        const L = settingsLayout(this, this.vw, this.vh);
-        if (L.over > 0) {
+        if (SL.over > 0) {
           // a list taller than the panel: the wheel scrolls the window and
           // the selection keeps its place
-          const cur = this.settingsView ?? L.top;
-          this.settingsView = clamp(cur + this.input.wheel, 0, L.over);
+          const cur = this.settingsView ?? SL.top;
+          this.settingsView = clamp(cur + this.input.wheel, 0, SL.over);
         } else {
           // everything fits: the wheel walks the selection, as it always did
           this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
         }
         audio.dryFire();
+      }
+      // A finger has no wheel. Dragging the list scrolls it -- and a press
+      // that turned into a drag must not also land on a row, or scrolling a
+      // toggle row flips it.
+      if (m?.down && SL.over > 0) {
+        if (this._setDragY === undefined) { this._setDragY = m.y; this._setDragged = false; }
+        const dy = m.y - this._setDragY;
+        if (Math.abs(dy) >= 8) {
+          const stepPx = Math.max(6, SL.ROW);
+          this.settingsView = clamp((this.settingsView ?? SL.top)
+            - Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy) / stepPx)), 0, SL.over);
+          this._setDragY = m.y;
+          this._setDragged = true;
+        }
+      } else if (!m?.down) {
+        this._setDragY = undefined;
       }
       // hover only picks a row while the pointer is actually moving: a hand
       // resting on the panel must not pin the keyboard's selection
@@ -3467,7 +3483,7 @@ export class Game {
         this._viewFollow();
         audio.dryFire();
       }
-      if (m.pressed && hover >= 0) {
+      if (m.pressed && hover >= 0 && !this._setDragged) {
         const d = SETTING_DEFS[hover];
         if (d.type === 'range') {
           const { bx, bw } = settingsSliderRect(this, this.vw, this.vh);
@@ -3479,6 +3495,10 @@ export class Game {
         } else if (d.id === 'reset') this._settingsReset();
         else S.activate(d.id);
       }
+      // The finger came off: the press has been used, so the *next* one is a
+      // tap again. (Clearing this on `m.pressed` cleared the flag before the
+      // line above could read it, which made every tap after a drag dead.)
+      if (!m.down) this._setDragged = false;
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
         this._viewFollow();
@@ -4545,8 +4565,9 @@ export class Game {
     // `update()` advanced the clock already; adding it again made the page
     // blink at double speed
 
-    const rowsH = Math.min((this.vh ?? 500) - 20, 460) - 46 - 26;
-    const visible = Math.floor(rowsH / 40);
+    // the count comes from the panel painter (hud.js), so the scroll can never
+    // stop short of the last badge or run past the end of the list
+    const visible = achVisible(this.vw, this.vh);
     const total = this.achievements?.total ?? 0;
     const maxScroll = Math.max(0, total - visible);
     this.achScroll = Math.max(0, Math.min(this.achScroll ?? 0, maxScroll));

@@ -17,11 +17,30 @@ import { MAX_PLAYERS } from './net.js';
 import { isPortrait, isTouchDevice } from './touch.js';
 import { SKINS, SKIN_ORDER, skinOwned } from './skins.js';
 import { buildArt } from './art.js';
+import { uiView } from './ui.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
 const GOLD = '#f0d98a';
 const RED = '#c4463a';
+
+// ------------------------------------------------------------------ menus
+// Every full-screen menu is painted in one design space (the 800x500 the
+// rows were drawn for) and then scaled up for a phone: `menuSpace` does the
+// scaling, `menuPoint` puts a pointer back into that space. The two go
+// together -- a hit-test that forgets the second is a menu that opens the row
+// next to the one you pressed.
+function menuSpace(ctx, w, h, fn) {
+  const U = uiView(w, h);
+  ctx.save();
+  ctx.scale(U.k, U.k);
+  try { fn(U.w, U.h); } finally { ctx.restore(); }
+}
+
+function menuPoint(w, h, mx, my) {
+  const U = uiView(w, h);
+  return { k: U.k, w: U.w, h: U.h, x: mx / U.k, y: my / U.k };
+}
 
 // ------------------------------------------------------------------ text
 // Setting ctx.font is one of the more expensive things you can ask a 2d
@@ -125,6 +144,34 @@ export function text(ctx, str, x, y, {
   ctx.globalAlpha = alpha * s.alpha;
   ctx.drawImage(s.canvas, Math.round(dx), Math.round(dy));
   ctx.restore();
+}
+
+/** How wide a string is in a font, measured once and not guessed at. */
+function textWidth(str, font) {
+  const m = measurer();
+  m.font = font;
+  return m.measureText(String(str)).width;
+}
+
+/**
+ * A string cut to fit `maxW`, with an ellipsis.
+ *
+ * Character counting was good enough while every menu was drawn at one size;
+ * the moment a panel is laid out differently on a phone ("LONGEST RUN" against
+ * "0m 00s" in ninety units) the guess is wrong by a few pixels and two
+ * strings print on top of each other. This measures.
+ */
+function clipText(str, maxW, font) {
+  str = String(str);
+  if (textWidth(str, font) <= maxW) return str;
+  const ell = '…';
+  let lo = 0, hi = str.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (textWidth(str.slice(0, mid) + ell, font) <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return str.slice(0, Math.max(0, lo)).trimEnd() + ell;
 }
 
 function bar(ctx, x, y, w, h, k, bg, fg, border = true) {
@@ -538,9 +585,6 @@ export class HUD {
       ctx.fillStyle = '#63c74d';
       ctx.fillText(`MEDKIT x${p.medkits}  [H]`, x, y + 13);
     }
-    if ((p.armor ?? 0) > 0) {
-      bar(ctx, x, y + 18, 70, 4, Math.min(1, p.armor / 120), 'rgba(0,0,0,0.6)', '#7aa8d0');
-    }
     ctx.restore();
   }
 
@@ -552,9 +596,15 @@ export class HUD {
    * one. The geometry lives in craftLayout/craftRowAt, so what the pointer
    * hits is exactly what got painted.
    */
-  _craftMenu(ctx, game, w, h) {
+  _craftMenu(ctx, game, w0, h0) {
+    // the bench is a menu like any other: it gets the menu scale, so a phone
+    // reads it at thumb size instead of at caption size
+    menuSpace(ctx, w0, h0, (w, h) => this._craftPanel(ctx, game, w, h));
+  }
+
+  _craftPanel(ctx, game, w, h) {
     const p = game.player;
-    const L = craftLayout(game, w, h);
+    const L = _craftLayout(game, w, h);
     ctx.save();
     ctx.fillStyle = 'rgba(6,7,10,0.88)';
     ctx.fillRect(0, 0, w, h);
@@ -989,7 +1039,12 @@ export class HUD {
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(x + (bw * i) / pips, y, 1, bh);
     }
+    // dash and armour share the line above the health bar, because both are
+    // the same kind of thing: a number that says how much of a defence you
+    // have left. Armour used to live in the bottom-left corner under SCRAP,
+    // where nobody looked for it in a fight.
     this._dash(ctx, game, w, h, x, y);
+    this._armor(ctx, game, x, y);
     const regenIn = Math.max(0, p.regenDelay - (game.time - p.lastHurt));
     if (p.hp < p.maxHp) {
       // right end of the same line the dash clock sits on
@@ -1009,11 +1064,12 @@ export class HUD {
     const p = game.player;
     const max = p.dashMax || 5;
     const left = Math.max(0, p.dashCd ?? 0);
-    // The clock shares the line above the health bar with the regen
-    // countdown: the bar on the left, its seconds to the right of it, the
-    // countdown over the far end. Nothing sits under the bar but ROUND.
+    // Two short bars stacked over the health bar: the dash clock on top, the
+    // armour plate under it. They are the same kind of reading -- how much of
+    // a defence is left -- and they used to live at opposite ends of the
+    // screen, one over the health bar and one under SCRAP in the corner.
     const bw = 44, bh = 5;
-    const bx = x, by = y - 9;
+    const bx = x, by = y - 17;
     const ready = left <= 0;
     const k = ready ? 1 : 1 - left / max;
     ctx.save();
@@ -1030,6 +1086,35 @@ export class HUD {
       colour: ready ? 'rgba(159,208,224,0.85)' : 'rgba(200,190,160,0.6)',
       align: 'left',
     });
+    return by;
+  }
+
+  /**
+   * The armour plate, on the line under the dash clock. Drawn only when there
+   * is plate on you, so the HUD stays quiet until you have bought some; when
+   * it is there, it is exactly where your eye already is after being bitten.
+   */
+  _armor(ctx, game, x, y) {
+    const p = game.player;
+    const armor = Math.max(0, p.armor ?? 0);
+    if (armor <= 0) return 0;
+    const bw = 44, bh = 5;
+    const bx = x, by = y - 9;
+    const k = Math.min(1, armor / 120);
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = '#7aa8d0';
+    ctx.fillRect(bx, by, bw * k, bh);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    ctx.restore();
+    text(ctx, `ARM ${Math.round(armor)}`, bx + bw + 5, by + 5, {
+      font: 'bold 8px "Courier New", monospace',
+      colour: 'rgba(140,180,215,0.95)', align: 'left',
+    });
+    return bx + bw + 5;
   }
 
   // --------------------------------------------------------------- prompt --
@@ -1433,7 +1518,7 @@ const MENU_HALF_W = 150;
  * below the title: eight rows and a hint have to fit on a phone in portrait
  * without the last one sliding under the bottom edge.
  */
-export function menuLayout(scene, game, w, h) {
+function _menuLayout(scene, game, w, h) {
   const rows = menuRows(scene, game).length;
   const top = h * MENU_TOP;
   // what is left under the first row once the hint line and a breath are
@@ -1442,6 +1527,15 @@ export function menuLayout(scene, game, w, h) {
   const room = h - top - 44;
   const step = Math.max(18, Math.min(MENU_STEP, room / Math.max(1, rows)));
   return { rows, top, step, half: Math.min(MENU_HALF_W, w / 2 - 24) };
+}
+
+/** The row grid in screen units (the painter works in the menu's own). */
+export function menuLayout(scene, game, w, h) {
+  const U = uiView(w, h);
+  const L = _menuLayout(scene, game, U.w, U.h);
+  return {
+    rows: L.rows, top: L.top * U.k, step: L.step * U.k, half: L.half * U.k,
+  };
 }
 const CONTROLS_TOP = 0.16;      // the controls screen is a list, not a menu
 const CONTROLS_STEP = 21;
@@ -1524,20 +1618,27 @@ export function drawControls(ctx, game, w, h) {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
   });
 
+  // Two columns, both of which can be longer than the panel is wide. They are
+  // measured now, and the key column gets cut first -- a half-sentence of
+  // explanation is still an explanation, while a cut key is a wrong answer.
+  const rowFont = `bold ${cw < 470 ? 10 : 11}px "Courier New", monospace`;
   let y = cy + 34 + step * 0.7;
   for (const [what, keys] of rows) {
-    text(ctx, what, cx + 16, y, {
-      font: 'bold 11px "Courier New", monospace', colour: '#cdbfa0',
+    const whatW = textWidth(what, rowFont);
+    const keysRoom = cw - 40 - whatW;
+    const label = clipText(what, cw - 40 - 12, rowFont);
+    text(ctx, label, cx + 16, y, {
+      font: rowFont, colour: '#cdbfa0',
     });
-    text(ctx, keys, cx + cw - 16, y, {
-      font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+    text(ctx, clipText(keys, keysRoom, rowFont), cx + cw - 16, y, {
+      font: rowFont, colour: GOLD, align: 'right',
     });
     // a dotted leader, so the eye can run from the verb to its key
     ctx.save();
     ctx.globalAlpha = 0.25;
     ctx.fillStyle = '#6f6a5c';
-    const lw = cx + 16 + what.length * 6.6 + 4;
-    const rw = cx + cw - 16 - keys.length * 6.6 - 4;
+    const lw = cx + 16 + whatW + 4;
+    const rw = cx + cw - 16 - textWidth(keys, rowFont) - 4;
     for (let x = lw; x < rw; x += 4) ctx.fillRect(x, y - 3, 1, 1);
     ctx.restore();
     y += step;
@@ -1555,7 +1656,7 @@ export function drawControls(ctx, game, w, h) {
 // ---------------------------------------------------------------------------
 const ACH_ROW = 40;
 
-export function achPanel(game, w, h) {
+function _achPanel(game, w, h) {
   const cw = Math.min(w - 20, 540);
   const ch = Math.min(h - 20, 460);
   return {
@@ -1566,12 +1667,30 @@ export function achPanel(game, w, h) {
   };
 }
 
+/** How many badge rows fit the panel at this screen size (a count, unscaled). */
+export function achVisible(w, h) {
+  const k = uiView(w, h).k;
+  const p = _achPanel(null, w / k, h / k);
+  return Math.max(1, Math.floor((p.ch - p.head - p.foot) / ACH_ROW));
+}
+
+/** The badge panel in screen units. */
+export function achPanel(game, w, h) {
+  const k = uiView(w, h).k;
+  const p = _achPanel(game, w / k, h / k);
+  return { cw: p.cw * k, ch: p.ch * k, x: p.x * k, y: p.y * k, head: p.head * k, foot: p.foot * k };
+}
+
 export function drawAchievements(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawAchievements(ctx, game, ww, hh));
+}
+
+function _drawAchievements(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.9)';
   ctx.fillRect(0, 0, w, h);
 
-  const p = achPanel(game, w, h);
+  const p = _achPanel(game, w, h);
   const { x: cx, y: cy, cw, ch, head, foot } = p;
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
@@ -1622,7 +1741,10 @@ export function drawAchievements(ctx, game, w, h) {
     y += ACH_ROW;
   }
 
-  text(ctx, 'UP / DOWN OR DRAG TO SCROLL      ESC OR TAP TO CLOSE', cx + cw / 2, cy + ch - 9, {
+  const achFoot = cw >= 470
+    ? 'UP / DOWN OR DRAG TO SCROLL      ESC OR TAP TO CLOSE'
+    : 'DRAG TO SCROLL   ·   TAP TO CLOSE';
+  text(ctx, achFoot, cx + cw / 2, cy + ch - 9, {
     font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
   ctx.restore();
@@ -1634,7 +1756,7 @@ export function drawAchievements(ctx, game, w, h) {
  * Every figure is a sum or a maximum over every run this browser has finished,
  * kept in localStorage by src/lifetime.js.
  */
-export function statsPanel(w, h) {
+function _statsPanel(w, h) {
   const cw = Math.min(w - 20, 600);
   const ch = Math.min(h - 20, 440);
   return {
@@ -1645,12 +1767,23 @@ export function statsPanel(w, h) {
   };
 }
 
+/** The all-time panel in screen units. */
+export function statsPanel(w, h) {
+  const k = uiView(w, h).k;
+  const p = _statsPanel(w / k, h / k);
+  return { cw: p.cw * k, ch: p.ch * k, x: p.x * k, y: p.y * k, head: p.head * k, foot: p.foot * k };
+}
+
 export function drawStats(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawStats(ctx, game, ww, hh));
+}
+
+function _drawStats(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.9)';
   ctx.fillRect(0, 0, w, h);
 
-  const { x: cx, y: cy, cw, ch, head } = statsPanel(w, h);
+  const { x: cx, y: cy, cw, ch, head } = _statsPanel(w, h);
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
   ctx.strokeStyle = '#3a3f4a';
@@ -1659,16 +1792,39 @@ export function drawStats(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, 'ALL-TIME STATISTICS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
-  text(ctx, 'THIS MACHINE', cx + cw - 14, cy + 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  const narrow = cw < 470;
+  text(ctx, 'ALL-TIME STATISTICS', cx + 14, cy + 20, {
+    font: `bold ${narrow ? 13 : 16}px "Courier New", monospace`, colour: GOLD,
   });
+  if (!narrow) {
+    text(ctx, 'THIS MACHINE', cx + cw - 14, cy + 20, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+    });
+  }
 
   const rows = lifetimeRows(game?.lifetime);
   const nights = rows.filter((r) => r[2] === 0);
   const deeds = rows.filter((r) => r[2] === 1);
-  const gap = 26;
+  const gap = narrow ? 16 : 26;
   const colW = Math.floor((cw - 32 - gap) / 2);
+  // Two columns of label + number on a phone-sized panel leave about ninety
+  // units per column, and "LONGEST RUN" over "0m 00s" is more than that: the
+  // value used to be printed inside the label. The numerals are the point, so
+  // the label gives way -- cut with an ellipsis, never overlapped.
+  // Short names for the two-column phone layout: an ellipsis is honest but a
+  // shorter true word is better, and there are only a handful of long ones.
+  const SHORT = {
+    'RUNS FINISHED': 'RUNS', 'EVACUATIONS': 'EVACS', 'ROUNDS CLEARED': 'ROUNDS',
+    'BEST RUN KILLS': 'BEST KILLS', 'BEST RUN POINTS': 'BEST POINTS',
+    'LONGEST RUN': 'LONGEST', 'TOTAL KILLS': 'KILLS', 'HEADSHOT KILLS': 'HEADSHOTS',
+    'SPECIAL KILLS': 'SPECIALS', 'KNIFE KILLS': 'KNIFE', 'TRAP KILLS': 'TRAPS',
+    'POINTS EARNED': 'POINTS', 'SCRAP COLLECTED': 'SCRAP', 'HEALTH LOST': 'DAMAGE',
+    'PLANKS REBUILT': 'PLANKS', 'DOORS OPENED': 'DOORS', 'ITEMS CRAFTED': 'CRAFTED',
+    'THROWABLES USED': 'THROWN', 'MEDKITS USED': 'MEDKITS', 'TEAMMATES REVIVED': 'REVIVED',
+    'TIMES DOWNED': 'DOWNED', 'TIME PLAYED': 'TIME',
+  };
+  const labelFont = `${narrow ? 9 : 10}px "Courier New", monospace`;
+  const valueFont = `bold ${narrow ? 9.5 : 11}px "Courier New", monospace`;
   const ax = cx + 16;
   const bx = cx + 16 + colW + gap;
 
@@ -1681,8 +1837,11 @@ export function drawStats(ctx, game, w, h) {
   heading(bx, 'EVERYTHING ELSE');
 
   const line = (x, y, label, value, colour = INK) => {
-    text(ctx, label, x, y, { font: '10px "Courier New", monospace', colour: INK_DIM });
-    text(ctx, value, x + colW, y, { font: 'bold 11px "Courier New", monospace', colour, align: 'right' });
+    // whatever room the number leaves is the room the label gets
+    const room = colW - textWidth(value, valueFont) - 8;
+    const short = narrow && SHORT[label] ? SHORT[label] : label;
+    text(ctx, clipText(short, room, labelFont), x, y, { font: labelFont, colour: INK_DIM });
+    text(ctx, value, x + colW, y, { font: valueFont, colour, align: 'right' });
   };
 
   let y = cy + head + 26;
@@ -1729,7 +1888,7 @@ export function ownedOutfitCount(game) {
   return SKIN_ORDER.filter((id) => skinOwned(id, game?.achievements)).length;
 }
 
-export function outfitsLayout(game, w, h) {
+function _outfitsLayout(game, w, h) {
   const cw = Math.min(w - 20, 560);
   const ch = Math.min(h - 20, 480);
   const head = 56, foot = 34;
@@ -1743,6 +1902,17 @@ export function outfitsLayout(game, w, h) {
   };
 }
 
+/** The wardrobe in screen units. */
+export function outfitsLayout(game, w, h) {
+  const k = uiView(w, h).k;
+  const L = _outfitsLayout(game, w / k, h / k);
+  return {
+    cw: L.cw * k, ch: L.ch * k, x: L.x * k, y: L.y * k,
+    head: L.head * k, foot: L.foot * k, rowH: L.rowH * k,
+    rows: L.rows,
+  };
+}
+
 /** Row 0 is "take it off"; 1..10 are the catalogue, in SKIN_ORDER. */
 export function outfitIdAt(game, index) {
   if (index <= 0) return null;
@@ -1750,9 +1920,10 @@ export function outfitIdAt(game, index) {
 }
 
 export function outfitRowAt(game, w, h, mx, my) {
-  const L = outfitsLayout(game, w, h);
-  if (mx < L.x || mx > L.x + L.cw) return -1;
-  const rel = my - (L.y + L.head);
+  const P = menuPoint(w, h, mx, my);
+  const L = _outfitsLayout(game, P.w, P.h);
+  if (P.x < L.x || P.x > L.x + L.cw) return -1;
+  const rel = P.y - (L.y + L.head);
   if (rel < 0 || rel >= L.rows * L.rowH) return -1;
   return Math.min(L.rows - 1, Math.floor(rel / L.rowH));
 }
@@ -1768,11 +1939,15 @@ export function outfitNote(id, achievements) {
 }
 
 export function drawOutfits(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawOutfits(ctx, game, ww, hh));
+}
+
+function _drawOutfits(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.9)';
   ctx.fillRect(0, 0, w, h);
 
-  const L = outfitsLayout(game, w, h);
+  const L = _outfitsLayout(game, w, h);
   const { x: cx, y: cy, cw, ch, head, rowH } = L;
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
@@ -1847,16 +2022,21 @@ export function drawOutfits(ctx, game, w, h) {
       font: 'bold 12px "Courier New", monospace',
       colour: own ? (on ? GOLD : INK) : 'rgba(154,145,124,0.7)',
     });
-    // the note is the longest string on the row and the only one that can run
-    // into the state column: cut it rather than draw it underneath
-    const maxNote = Math.max(24, Math.floor((cw - (wide ? 100 : 32) - 34) / 5.2));
+    // On a wide panel the state sits at the foot of the row and the note runs
+    // up to it. On a narrow one there is not room for both on the same line,
+    // so the state moves up beside the name -- which leaves the note the whole
+    // width of the panel, and stops the two printing over each other.
+    const state = isOn ? 'WEARING' : own ? 'OWNED' : 'LOCKED';
+    const stateY = wide ? row.y + 20 : row.y + 13;
+    const stateX = wide ? cx + cw - 86 : cx + cw - 16;
+    const noteFont = '9px "Courier New", monospace';
+    const noteRoom = wide ? cw - 100 - 34 : cw - 34 - 22;
     const note = outfitNote(id, game.achievements);
-    text(ctx, note.length > maxNote ? `${note.slice(0, maxNote - 1)}\u2026` : note, cx + 34, row.y + 26, {
-      font: '9px "Courier New", monospace',
+    text(ctx, clipText(note, noteRoom, noteFont), cx + 34, row.y + 26, {
+      font: noteFont,
       colour: own ? 'rgba(154,145,124,0.95)' : 'rgba(120,112,96,0.75)',
     });
-    const state = isOn ? 'WEARING' : own ? 'OWNED' : 'LOCKED';
-    text(ctx, state, cx + cw - (wide ? 86 : 18), row.y + 20, {
+    text(ctx, state, stateX, stateY, {
       font: 'bold 9px "Courier New", monospace',
       colour: isOn ? '#8fdc6a' : own ? INK_DIM : 'rgba(120,112,96,0.7)',
       align: 'right',
@@ -1867,10 +2047,12 @@ export function drawOutfits(ctx, game, w, h) {
     }
   }
 
-  text(ctx, 'W S  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK',
-    cx + cw / 2, cy + ch - 18, {
-      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
-    });
+  const foot = wide
+    ? 'W S  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK'
+    : 'TAP A ROW TO WEAR IT   ·   ESC BACK';
+  text(ctx, foot, cx + cw / 2, cy + ch - 18, {
+    font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  });
   ctx.restore();
 }
 
@@ -1917,23 +2099,29 @@ export function menuRows(scene, game) {
 
 /** Which row is under this point, or -1. */
 export function menuHitTest(scene, mx, my, game) {
-  const L = menuLayout(scene, game, game.vw ?? 800, game.vh ?? 500);
+  const w = game.vw ?? 800, h = game.vh ?? 500;
+  const P = menuPoint(w, h, mx, my);
+  const L = _menuLayout(scene, game, P.w, P.h);
   const rows = menuRows(scene, game);
   const { top, step, half } = L;
   for (let i = 0; i < rows.length; i++) {
     const y = top + i * step;
-    if (my >= y - step * 0.5 && my < y + step * 0.5
-      && mx > (game.vw ?? 800) / 2 - half && mx < (game.vw ?? 800) / 2 + half) return i;
+    if (P.y >= y - step * 0.5 && P.y < y + step * 0.5
+      && P.x > P.w / 2 - half && P.x < P.w / 2 + half) return i;
   }
   return -1;
 }
 
 export function drawMenu(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawMenu(ctx, game, ww, hh));
+}
+
+function _drawMenu(ctx, game, w, h) {
   titleBackdrop(ctx, game, w, h);
   ctx.save();
 
   const rows = menuRows(game.scene, game);
-  const { top, step, half } = menuLayout(game.scene, game, w, h);
+  const { top, step, half } = _menuLayout(game.scene, game, w, h);
   const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
 
   for (let i = 0; i < rows.length; i++) {
@@ -2029,8 +2217,13 @@ export function drawMenu(ctx, game, w, h) {
   if (game.scene === 'menu') {
     // one line, not three: CONTROLS is a row now and the panel has one more
     // row than it used to, so the old three-line block would sit over the hint
-    text(ctx, 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS',
-      w / 2, h - 20, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
+    // The footer is a reminder, not a manual: on the narrow layout it is
+    // shortened until it fits, because a line that runs off both edges is
+    // noise with a keyboard in it.
+    const foot = w < 400
+      ? 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  O SETTINGS'
+      : 'WASD MOVE  \u00b7  CLICK FIRE  \u00b7  E USE  \u00b7  C CONTROLS  \u00b7  O SETTINGS';
+    text(ctx, foot, w / 2, h - 20, { font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center' });
     const board = loadBoard();
     if (board.length) {
       text(ctx, `BEST ROUND  ${board[0].round}${board[0].evac ? '  EVAC' : ''}   (${board[0].kills} kills)`, w / 2, h - 39, {
@@ -2058,20 +2251,36 @@ export const PAUSE_ROWS = [
   { label: 'RETURN TO MENU', hint: '' },
 ];
 
-export function pauseRowRect(i, w, h) {
+function _pauseRowRect(i, w, h) {
   const rw = 268, rh = 30;
   return { x: w / 2 - rw / 2, y: h * 0.30 + 30 + i * 38, w: rw, h: rh };
 }
 
-export function pauseHitTest(game, w, h, mx, my) {
+/** A pause row in screen units. */
+export function pauseRowRect(i, w, h) {
+  const k = uiView(w, h).k;
+  const r = _pauseRowRect(i, w / k, h / k);
+  return { x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k };
+}
+
+function _pauseHitTest(game, w, h, mx, my) {
   for (let i = 0; i < PAUSE_ROWS.length; i++) {
-    const r = pauseRowRect(i, w, h);
+    const r = _pauseRowRect(i, w, h);
     if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) return i;
   }
   return -1;
 }
 
+export function pauseHitTest(game, w, h, mx, my) {
+  const P = menuPoint(w, h, mx, my);
+  return _pauseHitTest(game, P.w, P.h, P.x, P.y);
+}
+
 export function drawPause(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawPause(ctx, game, ww, hh));
+}
+
+function _drawPause(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.7)';
   ctx.fillRect(0, 0, w, h);
@@ -2079,9 +2288,9 @@ export function drawPause(ctx, game, w, h) {
     font: 'bold 34px "Courier New", monospace', colour: INK, align: 'center',
   });
   const m = game.input?.mouse;
-  const hover = m ? pauseHitTest(game, w, h, m.x, m.y) : -1;
+  const hover = m ? _pauseHitTest(game, w, h, m.x, m.y) : -1;
   PAUSE_ROWS.forEach((r, i) => {
-    const rc = pauseRowRect(i, w, h);
+    const rc = _pauseRowRect(i, w, h);
     const hot = i === hover;
     ctx.fillStyle = hot ? 'rgba(240,217,138,0.14)' : 'rgba(18,22,28,0.66)';
     ctx.fillRect(rc.x, rc.y, rc.w, rc.h);
@@ -2097,7 +2306,7 @@ export function drawPause(ctx, game, w, h) {
       });
     }
   });
-  const last = pauseRowRect(PAUSE_ROWS.length - 1, w, h);
+  const last = _pauseRowRect(PAUSE_ROWS.length - 1, w, h);
   text(ctx, 'the shortcuts still work', w / 2, last.y + last.h + 24, {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
   });
@@ -2124,19 +2333,27 @@ export const DEBUG_TABS = [
 /** The tab that shows the music library. Kept as a number: rows branch on it. */
 export const DEBUG_MUSIC_TAB = 3;
 
+/** Where the strip of tabs sits, in the panel's own units. */
+function _debugTabBar(p) {
+  return { x: p.x + 1, y: p.y + 30, w: p.cw - 2, h: 22, tabs: DEBUG_TABS };
+}
+
 /** Where the strip of tabs sits, shared by the drawing and the click test. */
 export function debugTabBar(game, w, h) {
-  const p = debugPanel(game, w, h);
-  return { x: p.x + 1, y: p.y + 30, w: p.cw - 2, h: 22, tabs: DEBUG_TABS };
+  const k = uiView(w, h).k;
+  const p = _debugPanel(game, w / k, h / k);
+  const b = _debugTabBar(p);
+  return { x: b.x * k, y: b.y * k, w: b.w * k, h: b.h * k, tabs: DEBUG_TABS };
 }
 
 /** Which tab is under this point, or -1. */
 export function debugTabHit(game, w, h, mx, my) {
-  const b = debugTabBar(game, w, h);
-  if (my < b.y || my > b.y + b.h) return -1;
+  const P = menuPoint(w, h, mx, my);
+  const b = _debugTabBar(_debugPanel(game, P.w, P.h));
+  if (P.y < b.y || P.y > b.y + b.h) return -1;
   const tabW = b.w / b.tabs.length;
-  const i = Math.floor((mx - b.x) / tabW);
-  return (i >= 0 && i < b.tabs.length && mx >= b.x && mx <= b.x + b.w) ? i : -1;
+  const i = Math.floor((P.x - b.x) / tabW);
+  return (i >= 0 && i < b.tabs.length && P.x >= b.x && P.x <= b.x + b.w) ? i : -1;
 }
 
 /**
@@ -2146,10 +2363,12 @@ export function debugTabHit(game, w, h, mx, my) {
  * row per creature, and at the full height the panel would not fit on screen
  * at all.
  */
-export function debugPanel(game, w, h) {
+function _debugPanel(game, w, h) {
   const rows = game.debugRows();
   const music = game.debugTab === DEBUG_MUSIC_TAB;
-  const cw = Math.min(music ? 540 : 380, w - 16);
+  // on a narrow panel every unit of width is a character of a row: take the
+  // whole screen rather than the 380-unit default
+  const cw = w < 400 ? w - 12 : Math.min(music ? 540 : 380, w - 16);
   const HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
   // rows keep arriving (the round picker, and whatever comes next): squeeze
   // them so the LAST one always lands inside the panel -- a row you cannot
@@ -2166,16 +2385,31 @@ export function debugPanel(game, w, h) {
   };
 }
 
+/** The panel in screen units. */
+export function debugPanel(game, w, h) {
+  const k = uiView(w, h).k;
+  const p = _debugPanel(game, w / k, h / k);
+  return {
+    rows: p.rows, cw: p.cw * k, ch: p.ch * k, rowH: p.rowH * k,
+    x: p.x * k, y: p.y * k, head: p.head * k,
+  };
+}
+
 /** Which row is under this point, or -1. */
 export function debugHitTest(game, w, h, mx, my) {
-  const p = debugPanel(game, w, h);
-  if (mx < p.x || mx > p.x + p.cw) return -1;
-  const i = Math.floor((my - (p.y + p.head)) / p.rowH);
+  const P = menuPoint(w, h, mx, my);
+  const p = _debugPanel(game, P.w, P.h);
+  if (P.x < p.x || P.x > p.x + p.cw) return -1;
+  const i = Math.floor((P.y - (p.y + p.head)) / p.rowH);
   return (i >= 0 && i < p.rows.length) ? i : -1;
 }
 
 export function drawDebug(ctx, game, w, h) {
-  const p = debugPanel(game, w, h);
+  menuSpace(ctx, w, h, (ww, hh) => _drawDebug(ctx, game, ww, hh));
+}
+
+function _drawDebug(ctx, game, w, h) {
+  const p = _debugPanel(game, w, h);
   const { x: cx, y: cy, cw, ch, rows } = p;
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.86)';
@@ -2194,7 +2428,7 @@ export function drawDebug(ctx, game, w, h) {
   });
 
   // ---- tabs -------------------------------------------------------------
-  const b = debugTabBar(game, w, h);
+  const b = _debugTabBar(p);
   const tabW = b.w / b.tabs.length;
   b.tabs.forEach((tab, i) => {
     const onTab = i === (game.debugTab ?? 0);
@@ -2233,22 +2467,29 @@ export function drawDebug(ctx, game, w, h) {
       ctx.fillRect(cx + 6, by, 2, bh);
     }
     const live = r.value === 'ON';
-    text(ctx, r.label, cx + 18, y + Math.round(p.rowH * 0.72), {
-      font: 'bold 12px "Courier New", monospace',
-      colour: sel ? INK : INK_DIM,
+    // The label is the long half and the value is the important half: measure
+    // the value, give the label what is left, and cut it rather than let the
+    // two print through each other (they did, on every long outfit row).
+    const font = `bold ${cw < 380 ? 11 : 12}px "Courier New", monospace`;
+    const value = String(r.value ?? '');
+    const room = cw - 36 - textWidth(value, font) - 10;
+    text(ctx, clipText(r.label, room, font), cx + 18, y + Math.round(p.rowH * 0.72), {
+      font, colour: sel ? INK : INK_DIM,
     });
-    text(ctx, r.value, cx + cw - 18, y + Math.round(p.rowH * 0.72), {
-      font: 'bold 12px "Courier New", monospace',
-      colour: r.value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
+    text(ctx, value, cx + cw - 18, y + Math.round(p.rowH * 0.72), {
+      font,
+      colour: value === 'OFF' ? INK_DIM : (live ? '#8fdc6a' : (sel ? GOLD : INK_DIM)),
       align: 'right',
     });
     y += p.rowH;
   });
 
-  text(ctx, 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO',
-    cx + cw / 2, cy + ch - 27, {
-      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
-    });
+  const dbgFoot = cw >= 380
+    ? 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO'
+    : 'W S PICK   ·   L/R TAB   ·   ENTER DO';
+  text(ctx, dbgFoot, cx + cw / 2, cy + ch - 27, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  });
   text(ctx, game.debugTab === DEBUG_MUSIC_TAB ? '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE' : '` / ESC: CLOSE',
     cx + cw / 2, cy + ch - 12, {
       font: '9px "Courier New", monospace', colour: INK_DIM, align: 'center',
@@ -2262,7 +2503,7 @@ export function drawDebug(ctx, game, w, h) {
  * 330x62 in two columns once there are more than four of them, one wider
  * column while the bench is nearly bare.
  */
-export function craftLayout(game, w, h) {
+function _craftLayout(game, w, h) {
   const ids = recipeIds();
   // two columns need 672 units of panel, plus a margin: on a portrait phone
   // there is no room for that, and a card hanging off the screen is a
@@ -2276,18 +2517,31 @@ export function craftLayout(game, w, h) {
   return { ids, cols, rows, cw, ch, gap, x0, y0: 122, totalW };
 }
 
+/** The bench in screen units. */
+export function craftLayout(game, w, h) {
+  const k = uiView(w, h).k;
+  const L = _craftLayout(game, w / k, h / k);
+  return {
+    ids: L.ids, cols: L.cols, rows: L.rows,
+    cw: L.cw * k, ch: L.ch * k, gap: L.gap * k,
+    x0: L.x0 * k, y0: L.y0 * k, totalW: L.totalW * k,
+  };
+}
+
 /** Which blueprint (index into recipeIds()) is under the pointer, or -1. */
 export function craftRowAt(game, w, h, mx, my) {
-  const L = craftLayout(game, w, h);
+  const P = menuPoint(w, h, mx, my);
+  const L = _craftLayout(game, P.w, P.h);
+  const x = P.x, y = P.y;
   if (!L.ids.length) return -1;
-  if (mx < L.x0 || mx > L.x0 + L.totalW) return -1;
-  const rel = my - L.y0;
+  if (x < L.x0 || x > L.x0 + L.totalW) return -1;
+  const rel = y - L.y0;
   if (rel < 0 || rel >= L.rows * (L.ch + L.gap) - L.gap) return -1;
   const row = Math.floor(rel / (L.ch + L.gap));
   if (rel - row * (L.ch + L.gap) > L.ch) return -1;      // the gutter between rows
-  const col = Math.floor((mx - L.x0) / (L.cw + L.gap));
+  const col = Math.floor((x - L.x0) / (L.cw + L.gap));
   if (col >= L.cols) return -1;
-  if (mx - L.x0 - col * (L.cw + L.gap) > L.cw) return -1; // the gutter between columns
+  if (x - L.x0 - col * (L.cw + L.gap) > L.cw) return -1; // the gutter between columns
   const i = row * L.cols + col;
   return i < L.ids.length ? i : -1;
 }
@@ -2296,47 +2550,95 @@ export function craftRowAt(game, w, h, mx, my) {
  * The settings panel geometry, shared by the painter and the mouse. Keeping
  * them on one function is what lets a click land on exactly the row you see.
  */
-export function settingsLayout(game, w, h) {
-  const ROW = 24, HEAD = 52, FOOT = 46;
+function _settingsLayout(game, w, h) {
+  // A phone draws the panel in ~290 design units, which is not enough for a
+  // label and a slider on one line: they used to be laid on top of each other.
+  // Narrow panels therefore put the control on its own line under its label,
+  // which is also the only shape a thumb can hit without aiming.
+  const narrow = w < 430;
+  const ROW = narrow ? 40 : 24, HEAD = narrow ? 64 : 52, FOOT = narrow ? 54 : 46;
   const rows = SETTING_DEFS.length;
-  const maxRows = Math.max(5, Math.floor((h - 40 - HEAD - FOOT) / ROW));
+  const maxRows = Math.max(4, Math.floor((h - 32 - HEAD - FOOT) / ROW));
   const shown = Math.min(rows, maxRows);
   const over = rows - shown;
-  // the wheel owns the window; the selection only drags it along when it
-  // walks out of sight
+  // the wheel and the finger own the window; the selection only drags it along
+  // when it walks out of sight
   const top = over > 0
     ? Math.max(0, Math.min(over, game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2))))
     : 0;
-  // the panel is 420 wide on a normal screen and shrinks with a narrow one:
-  // a phone in portrait draws the whole game in ~430 units
-  const cw = Math.min(420, w - 24), ch = HEAD + shown * ROW + FOOT;
+  // the panel is 420 wide on a normal screen and shrinks with a narrow one
+  const cw = Math.min(420, w - 16), ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
-  return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy };
+  return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow };
+}
+
+/**
+ * The panel's geometry in screen units. The list itself is laid out in the
+ * menu's own (smaller) space, so every measurement a caller can press on has
+ * the scale put back into it; the *counts* -- rows, shown, over, top -- are
+ * counts and stay as they are.
+ */
+export function settingsLayout(game, w, h) {
+  const U = uiView(w, h);
+  const L = _settingsLayout(game, U.w, U.h);
+  return {
+    ...L,
+    ROW: L.ROW * U.k, HEAD: L.HEAD * U.k, FOOT: L.FOOT * U.k,
+    cw: L.cw * U.k, ch: L.ch * U.k, cx: L.cx * U.k, cy: L.cy * U.k,
+  };
 }
 
 /** Which settings row (index into SETTING_DEFS) is under the pointer, or -1. */
 export function settingsRowAt(game, w, h, mx, my) {
-  const L = settingsLayout(game, w, h);
-  const rel = my - (L.cy + L.HEAD - 12);
+  const P = menuPoint(w, h, mx, my);
+  const L = _settingsLayout(game, P.w, P.h);
+  const rel = P.y - (L.cy + L.HEAD - 12);
   if (rel < 0 || rel >= L.shown * L.ROW) return -1;
-  if (mx < L.cx || mx > L.cx + L.cw) return -1;
+  if (P.x < L.cx || P.x > L.cx + L.cw) return -1;
   return Math.min(L.rows - 1, L.top + Math.floor(rel / L.ROW));
 }
 
-/** Horizontal slider rect for a range row, in the same coords as the panel. */
+/**
+ * Horizontal slider rect for a range row, in screen units. In the narrow
+ * layout the slider owns the whole second line of a row, so its width is the
+ * panel's, not the desktop strip's.
+ */
 export function settingsSliderRect(game, w, h) {
-  const L = settingsLayout(game, w, h);
-  return { bx: L.cx + L.cw - 148, bw: 84 };
+  const U = uiView(w, h);
+  const L = _settingsLayout(game, U.w, U.h);
+  if (L.narrow) {
+    return { bx: (L.cx + 16) * U.k, bw: (L.cw - 32 - 58) * U.k };
+  }
+  return { bx: (L.cx + L.cw - 148) * U.k, bw: 84 * U.k };
+}
+
+/** Break a line so it fits `cols` characters, on word boundaries. */
+function wrapLine(str, cols) {
+  const words = String(str).split(' ');
+  const out = [];
+  let line = '';
+  for (const word of words) {
+    if (!line.length) line = word;
+    else if (line.length + 1 + word.length <= cols) line += ` ${word}`;
+    else { out.push(line); line = word; }
+  }
+  if (line.length) out.push(line);
+  return out.slice(0, 3);
 }
 
 export function drawSettings(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawSettings(ctx, game, ww, hh));
+}
+
+function _drawSettings(ctx, game, w, h) {
   ctx.save();
   ctx.fillStyle = 'rgba(6,7,10,0.86)';
   ctx.fillRect(0, 0, w, h);
 
-  // the list scrolls now: there are more knobs than there is screen, and a
-  // panel that runs off the top is a setting you cannot reach
-  const { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy } = settingsLayout(game, w, h);
+  // the list scrolls: there are more knobs than there is screen, and a panel
+  // that runs off the top is a setting you cannot reach
+  const { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy, narrow }
+    = _settingsLayout(game, w, h);
 
   ctx.fillStyle = '#14171d';
   ctx.fillRect(cx, cy, cw, ch);
@@ -2349,50 +2651,73 @@ export function drawSettings(ctx, game, w, h) {
   text(ctx, 'SETTINGS', cx + 14, cy + 20, {
     font: 'bold 16px "Courier New", monospace', colour: GOLD,
   });
-  text(ctx, 'MOUSE / WHEEL or W S A D — pick, change', cx + cw - 14, cy + 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
-  });
+  if (narrow) {
+    // one line is not enough for both: the title row carries the count, the
+    // line under it says how to move, and the rows start below both
+    const seen = over > 0 ? `${top + 1}–${Math.min(rows, top + shown)} OF ${rows}` : `${rows} ROWS`;
+    text(ctx, seen, cx + cw - 14, cy + 20, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+    });
+    text(ctx, 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE', cx + cw / 2, cy + 44, {
+      font: 'bold 9px "Courier New", monospace', colour: 'rgba(159,208,224,0.8)', align: 'center',
+    });
+  } else {
+    text(ctx, 'MOUSE / WHEEL or W S A D — pick, change', cx + cw - 14, cy + 20, {
+      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+    });
+  }
 
   // the rows are clipped to the panel, so a half-scrolled one cannot spill
   ctx.beginPath();
-  ctx.rect(cx + 2, cy + HEAD - 16, cw - 4, shown * ROW + 12);
+  ctx.rect(cx + 2, cy + HEAD - 14, cw - 4, shown * ROW + 12);
   ctx.clip();
 
   let y = cy + HEAD;
   for (let i = top; i < top + shown; i++) {
     const d = SETTING_DEFS[i];
     const sel = i === game.settingsIndex;
+    const labelY = narrow ? y + 9 : y + 2;
+    const controlY = narrow ? y + 28 : y + 2;
     if (sel) {
+      const bh = narrow ? ROW - 4 : 22;
       ctx.fillStyle = 'rgba(240,217,138,0.10)';
-      ctx.fillRect(cx + 6, y - 12, cw - 12, 22);
+      ctx.fillRect(cx + 6, y - (narrow ? 9 : 12), cw - 12, bh);
       ctx.fillStyle = GOLD;
-      ctx.fillRect(cx + 6, y - 12, 2, 22);
+      ctx.fillRect(cx + 6, y - (narrow ? 9 : 12), 2, bh);
     }
-    text(ctx, d.label, cx + 18, y + 2, {
+    text(ctx, d.label, cx + 18, labelY, {
       font: 'bold 12px "Courier New", monospace',
       colour: sel ? INK : INK_DIM,
     });
 
     if (d.type === 'range') {
       const v = settings.get(d.id);
-      const bx = cx + cw - 148, bw = 84;
+      const bx = narrow ? cx + 16 : cx + cw - 148;
+      const bw = narrow ? cw - 32 - 58 : 84;
+      const by = controlY - (narrow ? 4 : 5);
       ctx.fillStyle = '#0c0e13';
-      ctx.fillRect(bx, y - 5, bw, 8);
+      ctx.fillRect(bx, by, bw, 8);
       const k = (v - d.min) / (d.max - d.min);
       ctx.fillStyle = sel ? GOLD : '#7d8360';
-      ctx.fillRect(bx, y - 5, Math.round(bw * k), 8);
-      text(ctx, d.fmt(v), bx + bw + 54, y + 2, {
+      ctx.fillRect(bx, by, Math.round(bw * k), 8);
+      // a fat handle, because this is the thing a thumb has to land on
+      if (narrow) {
+        ctx.fillStyle = sel ? '#fff3c8' : '#cdbfa0';
+        ctx.fillRect(bx + Math.round(bw * k) - 2, by - 3, 4, 14);
+      }
+      text(ctx, d.fmt(v), cx + cw - 18, controlY + (narrow ? 2 : 0), {
         font: 'bold 12px "Courier New", monospace',
         colour: sel ? INK : INK_DIM, align: 'right',
       });
     } else if (d.type === 'toggle') {
       const v = settings.get(d.id);
-      const bx = cx + cw - 108;
+      const bx = narrow ? cx + 16 : cx + cw - 108;
+      const by = controlY - (narrow ? 10 : 11);
       ctx.fillStyle = v ? '#3d6b3a' : '#2a2d35';
-      ctx.fillRect(bx, y - 11, 46, 20);
+      ctx.fillRect(bx, by, 46, 20);
       ctx.fillStyle = v ? '#8fdc6a' : '#6a6a6a';
-      ctx.fillRect(v ? bx + 26 : bx + 4, y - 7, 16, 12);
-      text(ctx, v ? 'ON' : 'OFF', cx + cw - 18, y + 2, {
+      ctx.fillRect(v ? bx + 26 : bx + 4, by + 4, 16, 12);
+      text(ctx, v ? 'ON' : 'OFF', cx + cw - 18, controlY + (narrow ? 2 : 0), {
         font: 'bold 12px "Courier New", monospace',
         colour: v ? '#8fdc6a' : INK_DIM, align: 'right',
       });
@@ -2400,7 +2725,7 @@ export function drawSettings(ctx, game, w, h) {
       // the destructive row asks twice (src/game.js `_settingsReset`), and
       // says so where the first press happened
       const armed = d.id === 'reset' && (game._resetArmT ?? 0) > 0;
-      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, y + 2, {
+      text(ctx, armed ? 'SURE?' : 'ENTER', cx + cw - 18, narrow ? controlY + 2 : labelY, {
         font: 'bold 12px "Courier New", monospace',
         colour: armed ? '#e0896a' : sel ? GOLD : INK_DIM, align: 'right',
       });
@@ -2410,7 +2735,7 @@ export function drawSettings(ctx, game, w, h) {
   ctx.restore();      // drop the clip
   ctx.save();
 
-  if (over > 0) {     // a thin marker, so you can tell there is more below
+  if (over > 0) {     // a track and a thumb, so you can tell there is more
     const tx = cx + cw - 8, th = shown * ROW;
     ctx.fillStyle = 'rgba(255,255,255,0.07)';
     ctx.fillRect(tx, cy + HEAD - 14, 3, th + 6);
@@ -2420,18 +2745,26 @@ export function drawSettings(ctx, game, w, h) {
     ctx.fillRect(tx, ky, 3, kh);
   }
 
-  // hint line for whatever is selected
+  // hint line for whatever is selected -- wrapped, because at this width one
+  // line of it would be a quarter of a sentence
   const chosen = SETTING_DEFS[game.settingsIndex];
   const armed = chosen?.id === 'reset' && (game._resetArmT ?? 0) > 0;
   const hint = armed ? 'PRESS AGAIN TO PUT EVERYTHING BACK' : chosen?.hint;
   if (hint) {
-    text(ctx, hint, w / 2, cy + ch - 30, {
-      font: 'bold 11px "Courier New", monospace',
-      colour: armed ? '#e0896a' : INK_DIM, align: 'center',
-    });
+    const cols = Math.max(18, Math.floor((cw - 24) / 5.7));
+    const lines = narrow ? wrapLine(hint, cols) : [hint];
+    // the last line sits clear of the footer, and the block grows upwards
+    let hy = cy + ch - (narrow ? 26 : 30) - (lines.length - 1) * 11;
+    for (const line of lines) {
+      text(ctx, line, w / 2, hy, {
+        font: `bold ${narrow ? 10 : 11}px "Courier New", monospace`,
+        colour: armed ? '#e0896a' : INK_DIM, align: 'center',
+      });
+      hy += 11;
+    }
   }
-  text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 14, {
-    font: 'bold 11px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
+  text(ctx, 'O / ESC — back to the game', w / 2, cy + ch - 8, {
+    font: 'bold 10px "Courier New", monospace', colour: '#6f6a5c', align: 'center',
   });
   ctx.restore();
 }
@@ -2522,6 +2855,10 @@ export function roundReportRows(r) {
 }
 
 export function drawGameOver(ctx, game, w, h) {
+  menuSpace(ctx, w, h, (ww, hh) => _drawGameOver(ctx, game, ww, hh));
+}
+
+function _drawGameOver(ctx, game, w, h) {
   // The same screen wears two faces: the night got you, or you got out.
   const evac = !!game.evacuated;
   const guestWaiting = !evac && game.net?.playing && !game.net.isHost;
@@ -2554,30 +2891,53 @@ export function drawGameOver(ctx, game, w, h) {
   // The end of the night is where the whole ledger gets read: the run's
   // totals and the skills that shaped them, on one quiet line.
   const picked = game.player?.skills?.size ? skillLine(game.player.skills) : '';
-  text(ctx, `${(game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN'}${picked ? `  ·  SKILLS ${picked}` : ''}`,
-    w / 2, h * 0.20 + 24,
+  // The ledger is two columns of eleven on a wide screen and ONE column on a
+  // phone. It used to be two columns positioned from `w/2 - 310` at every
+  // size, which on a 430-pixel screen starts at -95: half the table was off
+  // the left edge and the other half ran into it. On a narrow screen the
+  // single column gets the whole width and a slightly shorter row pitch.
+  const narrow = w < 640;
+  const perCol = narrow ? rows.length : 11;
+  const pairs = narrow ? rows : rows.slice(0, perCol);
+  const cols = narrow ? [pairs] : [pairs, rows.slice(perCol)];
+  const ROWH = narrow ? 15 : 16;
+  const headY = h * 0.20 + (narrow ? 14 : 24);
+  text(ctx, `${(game.players?.length ?? 1) > 1 ? 'TEAM TOTALS / THIS RUN' : 'THIS RUN'}${picked ? `  \u00b7  SKILLS ${picked}` : ''}`,
+    w / 2, headY,
     { font: 'bold 10px "Courier New", monospace', colour: GOLD, align: 'center' });
-  rows.forEach(([label, value], i) => {
-    const col = i >= 11 ? 1 : 0, row = i % 11;
-    const left = w / 2 - 310 + col * 320, y = h * 0.20 + 43 + row * 16;
-    text(ctx, label, left, y, { font: '10px "Courier New", monospace', colour: INK_DIM });
-    text(ctx, value, left + 282, y, { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
-  });
-  let y = h * 0.20 + 43 + 11 * 16;
 
+  const colW = narrow ? Math.min(w - 36, 320) : 282;
+  let bottom = headY;
+  cols.forEach((col, ci) => {
+    const left = narrow ? w / 2 - colW / 2 : w / 2 - 310 + ci * 320;
+    col.forEach(([label, value], i) => {
+      const y = headY + 20 + i * ROWH;
+      const room = colW - textWidth(value, 'bold 11px "Courier New", monospace') - 8;
+      text(ctx, clipText(label, room, '10px "Courier New", monospace'), left, y,
+        { font: '10px "Courier New", monospace', colour: INK_DIM });
+      text(ctx, value, left + colW, y,
+        { font: 'bold 11px "Courier New", monospace', colour: INK, align: 'right' });
+      bottom = Math.max(bottom, y);
+    });
+  });
+  let y = bottom + 22;
+
+  // three of them at most on a phone: the ledger already fills the page, and
+  // the board is the least important table on it
   const board = game.board ?? loadBoard();
   if (board.length) {
-    y += 8;
     text(ctx, 'BEST RUNS', w / 2, y, {
       font: 'bold 12px "Courier New", monospace', colour: GOLD, align: 'center',
     });
     y += 17;
-    board.slice(0, 5).forEach((e, i) => {
+    const show = narrow ? Math.min(3, board.length) : 5;
+    const bLeft = w / 2 - (narrow ? 130 : 150);
+    board.slice(0, show).forEach((e, i) => {
       const col = i === (game.rank ?? -1) ? GOLD : INK_DIM;
-      text(ctx, `${i + 1}.`, w / 2 - 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
-      text(ctx, `ROUND ${e.round}${e.evac ? ' EVAC' : ''}`, w / 2 - 88, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
-      text(ctx, `${e.kills} kills`, w / 2 - 10, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
-      text(ctx, `${e.points} pts`, w / 2 + 110, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'right' });
+      text(ctx, `${i + 1}.`, bLeft, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `ROUND ${e.round}${e.evac ? ' EVAC' : ''}`, bLeft + 22, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `${e.kills} kills`, bLeft + 130, y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'left' });
+      text(ctx, `${e.points} pts`, bLeft + (narrow ? 260 : 300), y, { font: 'bold 11px "Courier New", monospace', colour: col, align: 'right' });
       y += 15;
     });
   }

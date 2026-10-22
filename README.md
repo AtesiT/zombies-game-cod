@@ -77,6 +77,14 @@ of notches and rounded edges, and big enough for a thumb. A tap anywhere else
 reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
 the barrel at the nearest walker while you are not touching the aim stick.
 
+Menus are drawn through a scale that grows as the screen narrows (`src/ui.js`):
+a phone gets the same layout 1.5× bigger, a desktop gets exactly the 800 × 500
+design, and every hit-test divides the pointer by the same factor, so the row
+you press is the row you see. The settings list scrolls by dragging it (a drag
+that scrolls does not also flip the toggle it started on), and on a narrow panel
+a row puts its slider on a second line under its label instead of printing the
+two on top of each other.
+
 The picture is not a fixed 800 × 500 box any more. The canvas takes the shape of
 whatever it is sitting in — a phone held upright, a laptop, an ultrawide — and
 keeps the same *amount* of world on screen by trading width for height, so a tall
@@ -100,7 +108,7 @@ page and closes on any tap.
 | Input | Action |
 | --- | --- |
 | `WASD` / arrows | Move |
-| `Shift` | Dash — one short burst in the direction you are walking (or facing). One every five seconds; the bar under the health shows the clock |
+| `Shift` | Dash — a step of about one tile in the direction you are walking (or facing), then five seconds before the next. The clock and your armour share the two thin bars above the health |
 | Mouse | Aim |
 | Left click | Fire (hold for automatic weapons) |
 | `R` | Reload |
@@ -292,7 +300,8 @@ M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 
 **Workbench.** Kills drop **scrap**, and the bench in the attic spends it. On the bench today:
 **Medkit** (8 scrap, +55 HP, up to three carried), **Armour Plate** (14 scrap + 1500 points,
-absorbs the next 60 damage, up to 120) and **Steel Shutters** (30 scrap + 2500 points, once per
+absorbs the next 60 damage, up to 120 — its meter sits under the dash clock above the health
+bar, where your eye already is after being bitten) and **Steel Shutters** (30 scrap + 2500 points, once per
 house: every window on every floor takes two more planks — the cap itself rises, and the boards
 come with it). The original six recipes were flat vending-machine buttons with nothing behind
 them; they were rewritten onto a new recipe contract, and the four not on the bench yet (Plank
@@ -322,7 +331,9 @@ hurts zombies — and 15 trap kills in one run is an achievement.
 
 **Enemies — 26 types.** Walkers, **Runners** (fast, frail, round 6), **Brutes** (2.7× HP, smashes
 three planks at a time, round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
-**Hellhounds** (every fifth round is a dog round), **Helmeted**, **Napalm**, **Gasbags**,
+**Hellhounds** (every fifth round is a dog round — a 26 × 16 dog, drawn at 1:1,
+about one tile nose to tail), **Helmeted** (a steel pot with a brim, a riveted
+band and a chin strap, plates on both shoulders), **Napalm**, **Gasbags**,
 **Miners** (come up through the floor), **Mimics**, **Field Medics**, **Bonewrights**,
 **Swarmlings**, **Jammers**, and **Amalgams**.
 
