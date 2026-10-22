@@ -665,9 +665,17 @@ const DEAD = 0.14;   // ignore a thumb just resting on the stick
 /** Phones and tablets, and laptops that think they are both. */
 export function isTouchDevice() {
   if (typeof window === 'undefined') return false;
+  const mm = (q) => (typeof matchMedia === 'function' ? !!matchMedia(q)?.matches : false);
+  // A laptop with a touchscreen has touch points too, and it also has the mouse
+  // it is actually being driven with. Answering "phone" for it took the game's
+  // cursor away and put a thumb stick on the glass for somebody sitting at a
+  // desk -- so the question is not "can it be touched" but "is a finger the
+  // only pointer there is".
+  const coarse = mm('(pointer: coarse)');
+  const fine = mm('(any-pointer: fine)');
+  if (fine && !coarse) return false;                      // a mouse is the primary pointer
   const has = ('ontouchstart' in window) || (globalThis.navigator?.maxTouchPoints ?? 0) > 0;
-  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-  return has || coarse;
+  return coarse || (has && !fine);
 }
 
 /** Held upright? The game is wider than it is tall, and it shows. */

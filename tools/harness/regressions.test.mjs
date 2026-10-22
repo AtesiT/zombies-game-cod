@@ -107,3 +107,31 @@ test('the range is built before the first press, and handed over once', async ()
   assert.equal(g._rangeCache, null, 'and the cache is handed over, not shared');
   assert.ok(ms < 60, `opening the range takes ${ms.toFixed(0)} ms, not a painted floor`);
 });
+
+test('a laptop with a touchscreen is still a laptop', async () => {
+  const T = await import('../../src/touch.js');
+  const hadMM = globalThis.matchMedia;
+  const points = globalThis.navigator?.maxTouchPoints;
+  const set = (mm) => { globalThis.matchMedia = (q) => ({ matches: mm(String(q)) }); };
+  try {
+    // a phone: one coarse pointer and nothing else
+    set((q) => q.includes('(pointer: coarse)'));
+    assert.equal(T.isTouchDevice(), true, 'a phone is a phone');
+
+    // a laptop with a touchscreen, being driven with its mouse: the cursor and
+    // the thumb stick belong to the mouse, not to the finger it also has
+    set((q) => q.includes('(any-pointer: fine)'));
+    const hadTouch = 'ontouchstart' in globalThis.window;
+    globalThis.window.ontouchstart = null;
+    try { Object.defineProperty(globalThis, 'navigator', { value: { maxTouchPoints: 10 }, configurable: true }); } catch { /* node owns it */ }
+    assert.equal(T.isTouchDevice(), false, 'a touchscreen laptop with a mouse keeps its cursor');
+
+    // ...and folded into a tablet, where the finger is all there is
+    set(() => true);
+    assert.equal(T.isTouchDevice(), true, 'the same machine in tablet mode is a tablet');
+    if (!hadTouch) delete globalThis.window.ontouchstart;
+  } finally {
+    if (hadMM === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = hadMM;
+    try { Object.defineProperty(globalThis, 'navigator', { value: { maxTouchPoints: points ?? 0 }, configurable: true }); } catch { /* ignore */ }
+  }
+});
