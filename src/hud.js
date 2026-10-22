@@ -106,6 +106,12 @@ function textSprite(str, font, colour, shadow) {
   x.fillText(str, TEXT_PAD, TEXT_PAD + asc);
 
   const sprite = { canvas: c, tw, ox: TEXT_PAD, oy: TEXT_PAD + asc, alpha: a };
+  // What this sprite says, kept on the canvas itself. A label at 1:1 is blitted
+  // rather than drawn with `fillText`, so a harness that wants to know where
+  // every label landed cannot see it otherwise -- and a menu that prints one
+  // row through another is exactly the kind of bug that has to be caught by a
+  // machine rather than by squinting at a screenshot.
+  c.textInfo = { str, font, shadow: !!shadow, asc, desc };
   if (TEXT_CACHE.size >= TEXT_CACHE_MAX) TEXT_CACHE.delete(TEXT_CACHE.keys().next().value);
   TEXT_CACHE.set(key, sprite);
   return sprite;
@@ -1695,27 +1701,31 @@ const CONTROLS_STEP = 21;
 const CONTROLS_HALF_W = 250;
 
 /** What every key and on-screen button actually does. */
+// The third column is the same answer for a narrow panel. A key list on a
+// 360-pixel phone has room for about twenty characters of key before the two
+// columns meet, and a truncated key is a wrong answer -- so the long rows say
+// the short version of themselves instead of being cut.
 export const CONTROL_ROWS = [
-  ['MOVE', 'W A S D   ARROWS   LEFT STICK'],
-  ['AIM', 'MOUSE   RIGHT STICK'],
-  ['FIRE', 'LEFT MOUSE   FIRE'],
+  ['MOVE', 'W A S D   ARROWS   LEFT STICK', 'WASD / ARROWS / STICK'],
+  ['AIM', 'MOUSE   RIGHT STICK', 'MOUSE / R STICK'],
+  ['FIRE', 'LEFT MOUSE   FIRE', 'LMB / FIRE'],
   ['RELOAD', 'R   RLD'],
   ['USE  BUY  REVIVE', 'F   F'],
   ['REPAIR A WINDOW', 'HOLD F   HOLD F'],
-  ['WORKBENCH MENU', 'E OPENS  ARROWS PICK  ENTER BUILDS'],
+  ['WORKBENCH MENU', 'E OPENS  ARROWS PICK  ENTER BUILDS', 'E / ARROWS / ENTER'],
   ['KNIFE', 'V   KNIFE'],
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
   ['DASH (5s)', 'SHIFT   >>'],
-  ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS'],
-  ['PICK A SKILL', '1  2  3   ARROWS + ENTER   CLICK A CARD'],
+  ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS', 'G'],
+  ['PICK A SKILL', '1  2  3   ARROWS + ENTER   CLICK A CARD', '1 2 3 / ARROWS / TAP'],
   ['MEDKIT', 'H   KIT'],
   ['PAUSE', 'P   ESC   ||'],
   ['SETTINGS', 'O'],
-  ['CONTROLS LIST', 'C   CONTROLS ON THE MENU'],
+  ['CONTROLS LIST', 'C   CONTROLS ON THE MENU', 'C'],
   ['MUTE', 'M'],
-  ['DEBUG MENU', '`   PAUSE MENU ROW   FIVE TAPS ON PAUSED'],
-  ['PICK A MENU ROW', 'CLICK   OR TAP (A DRAG ONLY SCROLLS)'],
+  ['DEBUG MENU', '`   PAUSE MENU ROW   FIVE TAPS ON PAUSED', '` / PAUSE ROW'],
+  ['PICK A MENU ROW', 'CLICK   OR TAP (A DRAG ONLY SCROLLS)', 'CLICK / TAP'],
 ];
 
 /**
@@ -1728,7 +1738,7 @@ export const TOUCH_CONTROL_ROWS = [
   ['FIRE', 'FIRE'],
   ['USE  BUY  REVIVE', 'F'],
   ['REPAIR A WINDOW', 'HOLD F'],
-  ['WORKBENCH MENU', 'F AT THE BENCH'],
+  ['WORKBENCH MENU', 'F AT THE BENCH', 'F AT BENCH'],
   ['RELOAD', 'R'],
   ['SWAP WEAPON', 'Q'],
   ['DASH', '>>'],
@@ -1737,10 +1747,10 @@ export const TOUCH_CONTROL_ROWS = [
   ['MEDKIT', 'H'],
   ['KNIFE', 'V'],
   ['PAUSE  SETTINGS  MENU', 'II — TOP LEFT'],
-  ['CLOSE A MENU', 'BACK / X IN THE TOP RIGHT'],
-  ['SCROLL A LIST', 'DRAG IT, THEN TAP'],
+  ['CLOSE A MENU', 'BACK / X IN THE TOP RIGHT', 'X TOP RIGHT'],
+  ['SCROLL A LIST', 'DRAG IT, THEN TAP', 'DRAG, THEN TAP'],
   // the phone has a visible way in now, so say where it is
-  ['DEBUG MENU', 'PAUSE MENU → DEBUG PANEL'],
+  ['DEBUG MENU', 'PAUSE MENU → DEBUG PANEL', 'PAUSE → DEBUG'],
 ];
 
 export function drawControls(ctx, game, w, h) {
@@ -1768,40 +1778,67 @@ export function drawControls(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
-  text(ctx, onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYS', cx + 14, cy + 20,
-    { font: 'bold 16px "Courier New", monospace', colour: GOLD });
-  text(ctx, 'ESC OR CLICK TO CLOSE', cx + cw - 14, cy + 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
-  });
+  // The title and the way out are measured against each other: on a narrow
+  // phone "CONTROLS — KEYS" ran into "ESC OR CLICK TO CLOSE" and the pair read
+  // as one smear. The way out is the more important half of the two, so it
+  // keeps its room and the footer says the rest.
+  const titleFont = 'bold 16px "Courier New", monospace';
+  const hintFont = 'bold 10px "Courier New", monospace';
+  const title = onTouch ? 'CONTROLS — TOUCH' : 'CONTROLS — KEYS';
+  const hint = 'ESC OR CLICK TO CLOSE';
+  const titleW = textWidth(title, titleFont);
+  const hintW = textWidth(hint, hintFont);
+  const narrowHead = titleW + hintW + 34 > cw;
+  text(ctx, title, cx + 14, cy + 20, { font: titleFont, colour: GOLD });
+  if (!narrowHead) {
+    text(ctx, hint, cx + cw - 14, cy + 20, { font: hintFont, colour: INK_DIM, align: 'right' });
+  }
 
-  // Two columns, both of which can be longer than the panel is wide. They are
-  // measured now, and the key column gets cut first -- a half-sentence of
-  // explanation is still an explanation, while a cut key is a wrong answer.
+  // Two columns, both of which can be longer than the panel is wide. The key
+  // is never cut -- a half-sentence of label is still a hint, while a cut key
+  // ("WHEEL O…") is a wrong answer -- so a narrow panel reads the short form
+  // of the row and the label takes what is left.
   const rowFont = `bold ${cw < 470 ? 10 : 11}px "Courier New", monospace`;
+  // a narrow panel reads the short form of a row rather than the cut one
+  const wide = cw >= 400;
   let y = cy + 34 + step * 0.7;
-  for (const [what, keys] of rows) {
-    const whatW = textWidth(what, rowFont);
-    const keysRoom = cw - 40 - whatW;
-    const label = clipText(what, cw - 40 - 12, rowFont);
+  for (const [what, longKeys, shortKeys] of rows) {
+    const keys = !wide && shortKeys ? shortKeys : longKeys;
+    // the key column gets what it needs (up to 60 % of the panel) and the label
+    // is cut to fit what is left: a truncated key ("WHEEL O…") is a wrong
+    // answer, a truncated label is still a hint
+    const keysW = textWidth(keys, rowFont);
+    const keysRoom = Math.min(keysW, cw * 0.6);
+    const label = clipText(what, Math.max(24, cw - 40 - keysRoom), rowFont);
     text(ctx, label, cx + 16, y, {
       font: rowFont, colour: '#cdbfa0',
     });
-    text(ctx, clipText(keys, keysRoom, rowFont), cx + cw - 16, y, {
+    text(ctx, keys, cx + cw - 16, y, {
       font: rowFont, colour: GOLD, align: 'right',
     });
     // a dotted leader, so the eye can run from the verb to its key
     ctx.save();
     ctx.globalAlpha = 0.25;
     ctx.fillStyle = '#6f6a5c';
-    const lw = cx + 16 + whatW + 4;
+    const lw = cx + 16 + textWidth(label, rowFont) + 4;
     const rw = cx + cw - 16 - textWidth(keys, rowFont) - 4;
     for (let x = lw; x < rw; x += 4) ctx.fillRect(x, y - 3, 1, 1);
     ctx.restore();
     y += step;
   }
 
-  text(ctx, 'ON A PHONE: HOLD AND SLIDE TO A ROW, THEN LET GO', w / 2, cy + ch - 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
+  // one footer line, cut to what the panel can hold: the close hint when the
+  // header had no room for it, otherwise the phone rule
+  const footFont = 'bold 10px "Courier New", monospace';
+  const footRoom = cw - 20;
+  // the longest line that fits, rather than the same line cut short
+  const feet = narrowHead
+    ? ['ESC / ✕ TO CLOSE   ·   HOLD AND SLIDE TO A ROW, THEN LET GO',
+      '✕ TO CLOSE   ·   HOLD AND SLIDE TO A ROW', '✕ CLOSE  ·  HOLD, SLIDE, LET GO']
+    : ['ON A PHONE: HOLD AND SLIDE TO A ROW, THEN LET GO'];
+  const foot = feet.find((t) => textWidth(t, footFont) <= footRoom) ?? '✕ CLOSE';
+  text(ctx, foot, w / 2, cy + ch - 20, {
+    font: footFont, colour: INK_DIM, align: 'center',
   });
   ctx.restore();
 }
@@ -2450,16 +2487,16 @@ export function pauseChipAt(w, h, mx, my) {
 }
 
 function _pauseRowRect(i, w, h) {
-  // the rows breathe a little on a short panel: six of them at the old pitch
-  // and the last one landed in the "shortcuts still work" line
+  // The rows breathe on a short panel, and the whole list has to fit between
+  // the title and the bottom of the glass: six rows at the old fixed 268x38
+  // came out 402 pixels wide on a 360-pixel phone (drawn at 1.5x they hung off
+  // both edges) and ran into the health bar. So the width is clamped to the
+  // panel, and the pitch to the room left for the hint line and the HUD band.
   const rows = PAUSE_ROWS.length;
   const top = h * 0.30 + 26;
-  // the pitch leaves room for the hint under the last row: on a short
-  // landscape phone the list used to run down to the very edge of the glass
-  // and the line that says how to use it was half off the screen
-  const room = Math.max(120, h - top - 46);
-  const pitch = Math.min(38, Math.max(24, room / rows));
-  const rw = 268, rh = Math.min(30, pitch - 6);
+  const room = Math.max(120, h - top - 46 - 54);
+  const pitch = Math.min(38, Math.max(22, room / rows));
+  const rw = Math.min(268, w - 24), rh = Math.min(30, pitch - 6);
   return { x: w / 2 - rw / 2, y: top + i * pitch, w: rw, h: rh };
 }
 
@@ -2591,7 +2628,7 @@ function _debugPanel(game, w, h) {
   // on a narrow panel every unit of width is a character of a row: take the
   // whole screen rather than the 380-unit default
   const cw = w < 400 ? w - 12 : Math.min(music ? 540 : 380, w - 16);
-  const HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
+  const HEAD = music ? 106 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
   // The zoo tab now has one row per creature and there are more than forty of
   // them. Squeezing the pitch until they all fit gave rows of twelve pixels
   // and, past that, a list that ran out of the bottom of the panel. So the
@@ -2679,10 +2716,17 @@ function _drawDebug(ctx, game, w, h) {
   if (game.debugTab === DEBUG_MUSIC_TAB) {
     const current = audio.soundtrack?.current;
     const selected = SOUNDTRACKS.find((t) => game.debugRows()[game.debugIndex]?.id === `music:${t.id}`);
-    text(ctx, current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cx + 18, cy + 68,
+    text(ctx, current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cx + 18, cy + 66,
       { font: 'bold 11px "Courier New", monospace', colour: GOLD });
-    text(ctx, audio.muted || settings.get('music') === 0 || settings.get('master') === 0 ? 'SOUND IS MUTED / CHECK VOLUME IN SETTINGS (O)' : selected ? `${selected.mood} / ${selected.bpm} BPM` : 'Local playback. Music continues after closing debug.', cx + 18, cy + 84,
-      { font: '10px "Courier New", monospace', colour: INK_DIM });
+    // the second line is cut to the room the scroll counter leaves: on a phone
+    // it ran under the "1-12 / 26" in the corner of the list
+    const infoFont = '10px "Courier New", monospace';
+    const info = audio.muted || settings.get('music') === 0 || settings.get('master') === 0
+      ? 'SOUND IS MUTED / CHECK VOLUME IN SETTINGS (O)'
+      : selected ? `${selected.mood} / ${selected.bpm} BPM`
+        : 'Local playback. Music continues after closing debug.';
+    text(ctx, clipText(info, cw - 46, infoFont), cx + 18, cy + 80,
+      { font: infoFont, colour: INK_DIM });
   }
 
   let y = cy + p.head;

@@ -476,47 +476,76 @@ own rule, not by a live window.
 
 ## Pass: the roster, the wardens and a phone UI that can be left — 2026-10-22
 
-Found by playing the build on a 430 × 930 layout and by reading the tables:
+Found by playing the build on a 430 × 930 layout, by reading the tables, and by
+turning the panels into numbers.
 
 - **The widow's venom did nothing.** Regen healed 30 a second straight through a
   4-a-second bleed, so nine seconds of poison left the bar exactly where it
-  started; the one thing the bite was meant to cost — the next few seconds —
-  cost nothing. Regen now holds while `venomT > 0` and the bleed stops at a
+  started: the one thing the bite was meant to cost — the next few seconds —
+  cost nothing. Regen now holds while `venomT > 0`, and the bleed stops at a
   fifth of the bar (`hp > floor` rather than a clamp: the clamp version healed a
-  body already under the floor back up to it, which is the worst possible bug
-  in a poison). The HUD shows the clock as a green strip under the health bar
-  and `VENOM Ns` where `RECOVERING` would be, because a held regen with no
+  body already under the floor back up to it, which is the worst possible bug in
+  a poison). The HUD shows the clock as a green strip under the health bar and
+  `VENOM Ns` where `RECOVERING` would be, because a held regen with no
   explanation reads as a bug.
 - **The First had no `boss` flag** while `bossForRound(25)` handed it a warden
-  round. That is deliberate — it also walks in the ordinary horde from round
-  18 — so `_spawnBoss` sets `z.boss` on the body it spawns and the bar, the
-  revive pips and the banner read the flag on the zombie, not the type. The
+  round. That is deliberate — it also walks in the ordinary horde from round 18
+  — so `_spawnBoss` sets `z.boss` on the body it spawns, and the bar, the revive
+  pips and the banner read the flag on the zombie rather than the type. The
   roster test asserts the eight warden-only types carry `boss: true`.
-- **Every warden round hid the warden's name.** `_spawnBoss` puts the name up
-  for four seconds; `startRound` then showed `ROUND N — something is out there`
-  in the same frame (every warden round is also a fifth round, so every one of
-  them is a dog round), and on most of them the radio's `THE RADIO` banner
-  followed a few lines later. The result was that the one thing a warden round
-  is about was the one thing never said. `bannerShow` now takes `queue: true`
-  for quiet banners, which wait behind whatever is being read (max three), and
-  the round banner stands down on a warden round.
-- **A beekeeper's hive was reachable only if the keeper was close enough to
-  kneel in the 60–520 px band**; the test that spawned it 200 px away across a
-  wall never saw a box in 20 s. The rule is right (it has to arrive to place
-  it); the test was wrong, and now spawns one keeper at 70 px for 45 s.
-- Phone: every panel has a visible way out, DEBUG sits in the pause menu, the
-  pause chip is top left, flick-scroll never counts as a press, and one wheel
-  notch is one row. Covered by `tools/harness/phoneexit.test.mjs` (9 tests).
+- **Every warden round hid the warden's name.** `_spawnBoss` puts the name up for
+  four seconds; `startRound` then showed `ROUND N — something is out there` in
+  the same frame (every warden round is also a fifth round, so every one of them
+  is a dog round), and on most of them the radio's `THE RADIO` banner followed a
+  few lines later. The one thing a warden round is about was the one thing never
+  said. `bannerShow` now takes `queue: true` for quiet banners, which wait
+  behind whatever is being read (three at most), the round banner stands down on
+  a warden round, and a `reset()` empties the queue so a waiting banner cannot
+  walk into the front door.
+- **The pause menu did not fit a phone.** Its rows were a fixed 268 × 38 and
+  inherited the menu scale, so on a 360-pixel screen they came out 402 pixels
+  wide and hung off both edges; the list also ran down into the health bar. The
+  width is clamped to the panel and the pitch to the room above the HUD.
+- **The controls list cut its answers.** On a narrow panel the *key* column was
+  the one that got clipped ("WHEEL O…", "ARROWS + ENT…"), which is worse than a
+  clipped label: a key you cannot read is a wrong answer. Rows now carry a short
+  form for narrow panels, the key column is never cut, and the title no longer
+  runs into "ESC OR CLICK TO CLOSE" (that line moves to the footer when the head
+  has no room for it).
+- **The music tab's second line ran under its own scroll counter** ("1-12 / 26")
+  on a phone; the header is taller and the line is cut to the room.
+- **The archer carried a walking stick and the drummer a box.** The bow was a
+  straight stick with a gap beside it and the drum hung off the right hip. The
+  bow is now a curve with a string across it and a nocked shaft; the drum is
+  slung across the belly with its rope over the shoulder. Both were checked at
+  12× and in a live render.
+- **A beekeeper's hive was reachable only if the keeper was close enough to kneel
+  in the 60–520 px band**; the test that spawned it 200 px away across a wall
+  never saw a box in 20 s. The rule is right (it has to arrive to place it); the
+  test was wrong, and now spawns one keeper at 70 px for 45 s.
+- Phone, from the previous pass and still covered: every panel has a visible way
+  out, DEBUG sits in the pause menu, the pause chip is top left, flick-scroll
+  never counts as a press, and one wheel notch is one row
+  (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **136/136** (124 before; +12 in
-`tools/harness/roster.test.mjs` — the warden line and its wrap, escort sizing,
-every arrival round, four sprites per body, the verb table, the hive and its
-bees, shootable silk, the venom's clock, the venom on the HUD, the warden's
-banner, and the banner queue) and the
-historical regression **48/48**. Native renders inspected at 800 × 500 and
-430 × 930: the venom strip and label under the health bar in both, the boss bar
-clear of the sound chip and the map, the pause chip and the map in their
-corners.
+Validation: `npm test` **140/140** and the historical regression **48/48**.
+Sixteen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
+line from 10 to 55 and its wrap, escort sizing, every arrival round, four
+sprites per body, the verb table, the hive and its bees, shootable silk, the
+venom's clock and its place on the HUD, the warden's banner, the banner queue)
+and `tools/harness/menutext.test.mjs` (4 — every label on every panel turned
+into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
+off screen at five screen sizes, plus a state-by-state sweep of the HUD's two
+edge bands). The menutext sweep was written against the bugs above and was
+checked against the old code: restoring the fixed 268-wide pause rows fails it
+with "row 0 is 402 wide on a 360 screen".
+
+Native renders inspected at 800 × 500, 430 × 930 and 360 × 640: the venom strip
+and label under the health bar, the controls list with its short-form key column
+and its footer, the pause menu fitting inside a phone, the DEBUG zoo list with
+its scroll rail and counter, the boss bar clear of the sound chip and the map,
+the pause chip and the map in their corners, and the new archer and drummer
+sprites at gameplay scale.
 
 Not claimed: a real phone or browser run; drag physics on real glass; audio
 output.

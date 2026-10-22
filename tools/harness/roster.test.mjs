@@ -361,10 +361,32 @@ test('a plain round still announces its number, and the queue is bounded', () =>
   }
   assert.ok(g.bannerQueue.length <= 3, `${g.bannerQueue.length} banners are waiting`);
   assert.equal(g.banner.title, 'ROUND 24', 'a queued banner jumped the one being read');
-  // and every queued one is shown, one at a time, in order
-  g.banner.t = 0.01;
-  for (let i = 0; i < 60 * 20; i++) g.update(H);
-  assert.equal(g.banner, null, 'a banner never left the screen');
-  assert.equal(g.bannerQueue.length, 0, 'a banner never got its turn');
+  // and every queued one is shown, one at a time, in order. A fresh game with
+  // no round running: the round itself keeps talking (the radio, a crate, the
+  // next warden), and that is not what is being measured here.
+  const q = fresh();
+  q.scene = 'game';
+  q.banner = { title: 'HEAD', sub: null, t: 2.4, max: 2.4, big: true };
+  for (let i = 0; i < 6; i++) {
+    q.bannerShow('ONE', null, { queue: true });
+    q.bannerShow('TWO', null, { queue: true });
+    q.bannerShow('THREE', null, { queue: true });
+    q.bannerShow('FOUR', null, { queue: true });
+  }
+  const shown = [];
+  q.banner.t = 0.01;
+  for (let i = 0; i < 60 * 20; i++) {
+    q.update(H);
+    const t = q.banner?.title;
+    if (t && shown[shown.length - 1] !== t) shown.push(t);
+  }
+  assert.deepEqual(shown, ['ONE', 'TWO', 'THREE'], 'the queue was shown out of order, or dropped one');
+  assert.equal(q.bannerQueue.length, 0, 'a banner never got its turn');
+  // a reset empties it: a banner from the last night may not walk into the menu
+  g.bannerShow('LATE', null, { queue: true });
+  assert.ok(g.bannerQueue.length > 0 || g.banner?.title === 'LATE');
+  g._quitToMenu();
+  assert.equal(g.banner, null, 'a banner survived the return to the menu');
+  assert.equal(g.bannerQueue.length, 0, 'a queued banner survived the return to the menu');
   clearStorage();
 });

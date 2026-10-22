@@ -510,14 +510,24 @@ function buildBeekeeper(src) {
 
 /** An archer: a bow held out to the side, and a quiver over one shoulder. */
 function buildArcher(src) {
+  // A bow is a curve with a string across it, and on a 20-pixel corpse a curve
+  // is three rows of two pixels. The first version was a straight stick with a
+  // gap beside it, which read as a walking stick. This one leans out over the
+  // hand -- top, belly and bottom all step away from the body -- and the string
+  // runs back to the shoulder, so the whole shape is a D.
   return painted(src, '#e8e4d2', 0.86, (px) => {
-    // ---- the bow: a tall curve on its drawing arm, and a taut string ------
-    px(17, 6, '#6a4a24', 1, 1);
-    px(16, 7, '#8a6338', 1, 1);
-    px(16, 8, '#8a6338', 1, 6);
-    px(17, 14, '#6a4a24', 1, 1);
-    px(15, 8, '#d8d2bc', 1, 6);        // the string, straight down the back
-    px(16, 11, '#c8c2a8', 2, 1);       // the nocked shaft
+    // ---- the stave: one pixel where it is thin, three where it bends ------
+    px(16, 3, '#6a4a24', 1, 1);        // the top nock
+    px(17, 4, '#8a6338', 1, 3);        // the upper limb, stepping out
+    px(18, 7, '#8a6338', 1, 3);        // the belly
+    px(17, 10, '#8a6338', 1, 3);       // the lower limb, stepping back in
+    px(16, 13, '#6a4a24', 1, 2);       // the bottom nock
+    px(18, 7, '#a87a44', 1, 1);        // the lit shoulder of the belly
+    // ---- the string, straight down the inside of the curve ----------------
+    px(15, 3, '#c8c2a8', 1, 12);
+    // ---- the nocked shaft, across it and at you --------------------------
+    px(11, 8, '#d8d2bc', 8, 1);
+    px(11, 7, '#8a8a7a', 1, 3);        // the barb
     // ---- a quiver of arrows over the shoulder -----------------------------
     px(2, 8, '#4e3a22', 2, 6);
     px(2, 7, '#c8c2a8', 1, 1);
@@ -546,17 +556,24 @@ function buildBulwark(src) {
 /** A drummer: a drum on its belly and two raised sticks. */
 function buildDrummer(src) {
   return painted(src, '#e8e4d2', 0.86, (px) => {
-    px(12, 11, '#6b2a24', 7, 5);       // the shell
-    px(13, 11, '#8a3a2e', 5, 1);
-    px(12, 11, '#d8cfae', 7, 1);       // the skin, facing us
-    px(12, 13, '#d8cfae', 7, 1);
-    px(12, 12, '#b8a888', 7, 1);
-    px(13, 15, '#4a1e1a', 5, 1);
-    // sticks up over the shoulders
-    px(5, 4, '#c8b48a', 1, 5);
-    px(6, 3, '#e0cfa8', 2, 1);
-    px(14, 3, '#c8b48a', 1, 5);
-    px(12, 2, '#e0cfa8', 2, 1);
+    // ---- the drum: slung across the front of the body, not carried at the
+    // side. The first version hung it off the right hip, where it read as a
+    // box the corpse had picked up; a drum has to be on the belly and it has
+    // to be the widest thing in the silhouette.
+    px(4, 11, '#3a1612', 13, 1);       // the iron rim, top
+    px(4, 16, '#3a1612', 13, 1);       // ...and bottom
+    px(5, 12, '#7a3228', 11, 4);       // the shell
+    px(5, 13, '#8a3a2e', 11, 2);       // its lit face
+    px(5, 12, '#e0d8bc', 11, 1);       // the skin, catching the light
+    px(5, 15, '#c8bda0', 11, 1);
+    // the rope over one shoulder, holding it up
+    px(7, 6, '#8a7038', 1, 6);
+    px(8, 6, '#a8874a', 1, 6);
+    // ---- sticks, up over the shoulders -----------------------------------
+    px(3, 3, '#c8b48a', 1, 6);
+    px(2, 2, '#e0cfa8', 2, 1);
+    px(16, 4, '#c8b48a', 1, 5);
+    px(15, 3, '#e0cfa8', 2, 1);
   });
 }
 
