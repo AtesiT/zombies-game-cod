@@ -630,7 +630,40 @@ was nobody's guess:
   the front door, the wardrobe and the skill cards, exactly as they had in the
   debug list.
 
-Validation: `npm test` **156/156** and the historical regression **48/48**.
+### The second report: three things that were still wrong
+
+- **The pause highlight flew to the first plate and came back.** The pause
+  screen is painted in design units and the pointer arrives in screen units;
+  the painter handed the raw pointer to the hit test with the raw design size,
+  so on any screen whose scale is not exactly 1 the test landed *between* the
+  rows and the highlight fell back to whatever the keyboard had selected. The
+  hit test happens in screen space now and the result is handed to the painter;
+  a pointer in a gutter lights nothing, and a pointer outside the menu lights
+  nothing either. The wardrobe had the same defect and the same fix.
+- **The first press of anything stalled.** Three separate one-time costs were
+  being paid inside the player's click: the audio context was created there
+  (which starts the browser's audio service -- seconds of it on a machine with
+  a Bluetooth output), 1 500 sprites became textures on the first gameplay
+  frame (a browser only uploads a canvas the first time it is drawn), and the
+  first range of a session painted 3 800 tiles. The context is built at load,
+  the sprites are drawn once into a scratch canvas in idle slices while the
+  menu is up, and the range map is built in the same idle window. A frame over
+  450 ms is now named on screen and in the console, so the next freeze can be
+  identified instead of guessed at.
+- **The sound.** Rendered through a real Web Audio implementation the engine
+  is not silent: every effect has a non-zero path to the output (measured
+  peaks 0.19-0.89), and the ambient bed and elegy sit under them. What is left
+  is the environment, so the game now diagnoses it instead of shrugging:
+  the settings footer carries one line -- NOT STARTED / MUTED / BLOCKED BY THIS
+  FRAME / PAUSED / MASTER 0 / EFFECTS 0 / RUNNING, with both faders -- and the
+  line is a button that puts the faders back, unmutes, starts the clock and
+  plays a shot, a reload and a purchase so the answer is heard rather than
+  read. The corner chip says the same thing, is a button too, and a title
+  screen inside a preview frame carries a line across the menu explaining that
+  the frame blocks audio and the game has to be opened in its own tab. One
+  fader at zero used to have a clean bill of health; it no longer does.
+
+Validation: `npm test` **167/167** and the historical regression **48/48**.
 Thirty-two of the tests are new, including
 `tools/harness/regressions.test.mjs` (4 -- the settings panel centred within a
 pixel at eight screen sizes, the arrows moving the front door, the wardrobe and
