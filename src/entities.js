@@ -792,8 +792,12 @@ export class Player {
     for (const h of this.hitDirs) h.age += dt;
     this.hitDirs = this.hitDirs.filter((h) => h.age < 1.6);
 
-    // health regen
-    if (!this.dead && !this.downed && game.time - this.lastHurt > this.regenDelay && this.hp < this.maxHp) {
+    // Health regen -- but not through venom. It used to heal straight through
+    // the widow's bite (30 a second against a 4-a-second bleed), so the poison
+    // was decoration: you lost nothing, and the one thing it was supposed to
+    // cost you -- the next few seconds -- cost nothing at all.
+    if (!this.dead && !this.downed && !(this.venomT > 0)
+      && game.time - this.lastHurt > this.regenDelay && this.hp < this.maxHp) {
       this.hp = Math.min(this.maxHp, this.hp + this.regenRate * dt);
     }
 
@@ -833,8 +837,15 @@ export class Player {
       if (this._venomTick >= 0.5) {
         this._venomTick = 0;
         const tick = Math.max(1, (this.venomRate || 4) * 0.5);
-        this.hp = Math.max(0, this.hp - tick);
-        game.roundDamageTaken = (game.roundDamageTaken ?? 0) + tick;
+        // It takes you down to a fifth of your health and then stops: the
+        // price of the bite is the next nine seconds and the risk of a second
+        // one, never a medkit. (A wound that can finish you on its own would
+        // be a wound you have to carry a medkit for, which is the thing the
+        // widow was asked *not* to be.)
+        const floor = Math.max(Math.min(this.hp, 8), Math.round((this.maxHp ?? 100) * 0.2));
+        const dealt = Math.max(0, this.hp - Math.max(floor, this.hp - tick));
+        this.hp = Math.max(floor, this.hp - tick);
+        game.roundDamageTaken = (game.roundDamageTaken ?? 0) + dealt;
         this.hurtFlash = Math.max(this.hurtFlash, 0.25);
         if (this.hp <= 0) {
           if ((game.players?.length ?? 1) > 1 && !this.downed) {
