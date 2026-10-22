@@ -1520,8 +1520,9 @@ export const ENEMY_TYPES = {
     zaps: true, summons: 'walker', standoff: 330, boss: true,
   },
   colonel: {
-    // The last of the staff. Plate, a cap that used to mean something, and a
-    // whistle: the knights come when it blows.
+    // The last of the staff, and the only one without a helm: a peaked cap
+    // that used to mean something, a cuirass under it, a sabre, and a whistle.
+    // The knights come when it blows.
     id: 'colonel', name: 'The Colonel', hp: 2.2, speed: 0.6, dmg: 2.2, r: 10.5,
     scale: 1.45, chew: 2.6, points: 9, set: 'colonel', headOff: 1.15,
     plate: true, summons: 'knight', boss: true,

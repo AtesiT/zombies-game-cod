@@ -390,3 +390,64 @@ test('a plain round still announces its number, and the queue is bounded', () =>
   assert.equal(g.bannerQueue.length, 0, 'a queued banner survived the return to the menu');
   clearStorage();
 });
+
+// ---------------------------------------------------------------------------
+//  The second time round, the wardens are heavier
+// ---------------------------------------------------------------------------
+test('a warden that comes round again has 35 % more health each cycle', () => {
+  clearStorage();
+  // The round itself already sets the health budget, so the claim is measured
+  // against a body of a known size rather than against another round's warden.
+  const spawned = (round) => {
+    const g = fresh();
+    g.round = round;
+    const spot = { x: g.player.pos.x + 40, y: g.player.pos.y };
+    g.pickSpawn = () => ({ s: spot, floor: 0 });
+    g.makeZombie = () => ({ maxHp: 1000, def: ENEMY_TYPES.warden, type: 'warden', pos: spot });
+    g._spawnBoss('warden');
+    assert.ok(g.boss, `round ${round} put no warden on the floor`);
+    return g.boss.maxHp;
+  };
+  // the first cycle is the table value, untouched
+  for (const r of [10, 15, 25, 50, 54]) {
+    assert.equal(spawned(r), 1000, `round ${r}'s warden was scaled inside the first cycle`);
+  }
+  // 55 starts the line again, and it is 35 % heavier
+  assert.equal(spawned(55), 1350, 'round 55 is not 35 % heavier');
+  assert.equal(spawned(60), 1350);
+  // 100 is the third time round: two cycles of 35 %
+  assert.equal(spawned(100), 1700, 'round 100 is not two cycles heavier');
+  clearStorage();
+});
+
+// ---------------------------------------------------------------------------
+//  Every warden is its own silhouette
+// ---------------------------------------------------------------------------
+test('no two wardens are the same sprite, and the Colonel is not the Warden', () => {
+  const art = buildArt();
+  // a set from `buildArt` is four frames, not one canvas
+  const shot = (name) => {
+    const set = art[name];
+    assert.ok(set, `${name} has no sprite`);
+    const src = Array.isArray(set) ? set[0] : set;
+    const c = nc(src.width, src.height), ctx = c.getContext('2d');
+    ctx.drawImage(src, 0, 0);
+    return { data: ctx.getImageData(0, 0, src.width, src.height).data, w: src.width, h: src.height };
+  };
+  const same = (a, b) => {
+    const A = shot(a), B = shot(b);
+    if (A.w !== B.w || A.h !== B.h) return false;
+    for (let i = 0; i < A.data.length; i++) if (A.data[i] !== B.data[i]) return false;
+    return true;
+  };
+  // the two that used to be the same corpse under two tints
+  assert.ok(!same('warden', 'colonel'), 'the Colonel is the Warden with a cap drawn on');
+  assert.ok(!same('knight', 'colonel'), 'the Colonel is the Knight');
+  const seen = [];
+  for (const id of BOSS_ORDER) {
+    const set = ENEMY_TYPES[id].set;
+    assert.ok(art[set], `${id} draws from "${set}", which is not in the art table`);
+    assert.ok(!seen.includes(set), `${id} draws the same body as another warden`);
+    seen.push(set);
+  }
+});

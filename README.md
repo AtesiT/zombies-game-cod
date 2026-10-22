@@ -372,16 +372,17 @@ The second wave, each arriving on its own round so the early game stays quiet:
 
 **Wardens.** Every fifth round from ten — 10, 15, 20 … 50 — belongs to one of
 nine, in this order; on round 55 the cycle starts again with every warden 35 %
-heavier: **The Warden** (plated, and it calls the walkers in),
-**The Organist** (keeps its distance and screams — the ring staggers you and
+more health, and another 35 % on round 100: **The Warden** (plated, and it
+calls the walkers in), **The Organist** (keeps its distance and screams — the ring staggers you and
 hastes the rest), **The Butcher** (plants its feet, then crosses the room in a
 straight line with a cleaver; the line is the telegraph), **The First**
 (reassembles twice), **The Mother** (broods swarmlets), **The Queen** (two hives at
 once), **The Gravedigger** (two graves, and the bells do not stop while it
 stands), **The Bellringer** (its bell is the bolt, and every ring brings the horde
-with it) and **The Colonel** (plate, a cap that used to mean something, and a
-whistle that brings the knights). A warden round is an escort, not an army: half
-the bodies, and never more than 22 alive at once.
+with it) and **The Colonel** (the only one not wearing a helm: a peaked cap
+that used to mean something, a cuirass, a sabre, and a whistle that brings the
+knights). A warden round is an escort, not an army: half the bodies, and never
+more than 22 alive at once.
 
 The haunt roster arrives from round 12 up: **Snowmen** lob snowballs (badly — on purpose) that
 chill your legs for three seconds, and roll double in a storm; **Arsonists** throw fire bottles

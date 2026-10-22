@@ -827,15 +827,56 @@ function buildBellringer(src) {
   });
 }
 
+/**
+ * The Colonel: the last of the nine, and the only one that is not a corpse
+ * wearing its old job.
+ *
+ * He used to be the Warden's helm with a cap drawn on top of it, which made the
+ * first warden and the last one the same silhouette in the same green -- and the
+ * helm sits over the zombie's own head, so the cap had nothing to sit on. He has
+ * a head of his own now: a bare jaw under a peaked cap, gold braid on the
+ * shoulder, a sabre up in the right hand. Round fifty should not look like
+ * round ten.
+ */
 function buildColonel(src) {
-  return painted(buildKnightHead(src, 0.6), '#4a4a3a', 0.22, (px) => {
-    // the peaked cap over the helm, and the ribbons under it
-    px(5, 0, '#3c4230', 10, 2);
-    px(4, 1, '#5a6142', 12, 1);
-    px(9, 0, '#c8b048', 2, 1);
-    px(6, 2, '#242a1e', 8, 1);
+  return painted(src, '#4a4a3a', 0.22, (px) => {
+    const CAP = '#2e3526';     // the crown, dark olive
+    const BAND = '#171c12';    // the band and the peak, near black
+    const LIT = '#5a6142';     // the moon on the crown
+    const GOLD = '#c8b048';
+    // ---- the peaked cap: crown, band, and a peak that juts forward ---------
+    px(5, 1, CAP, 9, 2);       // crown, rows 1..2
+    px(4, 2, CAP, 11, 1);      // it flares out over the head
+    px(5, 1, LIT, 6, 1);       // the crown catches the light from the left
+    px(4, 3, BAND, 12, 1);     // the band
+    px(4, 4, BAND, 13, 1);     // and the peak, one row proud of the face
+    px(17, 4, BAND, 1, 1);     // the point of it
+    // the badge, and the braid looped over the band
+    px(9, 1, GOLD, 2, 1);
+    px(9, 3, GOLD, 1, 1);
+    px(11, 3, GOLD, 1, 1);
+    px(13, 3, GOLD, 1, 1);
+    // ---- the jaw, shut: a line of teeth under the shadow of the peak ------
+    px(6, 8, '#2a2018', 7, 1);
+    px(7, 9, '#c8b48a', 5, 1);
+    // ---- the cuirass under the tunic: he is still plated, just not helmed --
+    px(7, 12, '#9aa4ac', 1, 3);       // the near edge catches the light
+    px(6, 12, '#6f7985', 1, 3);
+    px(8, 12, '#8a94a0', 4, 1);       // the breastplate
+    px(8, 13, '#7c8794', 4, 2);
+    px(12, 12, '#5a646c', 1, 3);      // and the far side in shadow
+    px(9, 12, GOLD, 1, 1);            // buttons down the seam
+    px(11, 14, GOLD, 1, 1);
+    // ---- gold braid on the shoulder, and the ribbon of the last campaign ---
+    px(2, 11, GOLD, 4, 1);
+    px(2, 12, '#8a7a30', 4, 1);
     px(14, 12, '#c85a3a', 1, 2);
-    px(14, 14, '#c8b048', 1, 1);
+    px(14, 14, GOLD, 1, 1);
+    // ---- the sabre: held in the forward hand, blade up past the shoulder --
+    px(18, 3, '#c8d2da', 1, 9);      // the blade
+    px(18, 2, '#eef3f8', 1, 1);      // the point of it
+    px(17, 12, GOLD, 3, 1);          // the guard, over the hand that holds it
+    px(18, 13, '#3a2c1c', 1, 1);     // the grip, under the guard
   });
 }
 
