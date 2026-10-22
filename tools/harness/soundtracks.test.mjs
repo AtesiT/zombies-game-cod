@@ -5,7 +5,7 @@ import { AudioContext } from './webaudio.mjs';
 import { SOUNDTRACKS, scoreBar, musicTime, SoundtrackPlayer } from '../../src/soundtracks.js';
 const M = await load();
 const { audio, AudioEngine } = await import('../../src/audio.js');
-const { DEBUG_TABS, debugPanel, debugHitTest, debugTabBar, debugTabHit, drawDebug, drawGameOver, roundReportRows } = await import('../../src/hud.js');
+const { DEBUG_TABS, DEBUG_MUSIC_TAB, debugPanel, debugHitTest, debugTabBar, debugTabHit, drawDebug, drawGameOver, roundReportRows } = await import('../../src/hud.js');
 class Clock extends AudioContext {
   constructor() { super(); this.all = []; }
   createOscillator() {
@@ -75,10 +75,12 @@ test('third debug tab is reachable by keyboard/click, every row fits, and guest 
   window.AudioContext = Clock;
   const g = fresh(); g.debugOpen = true; g.paused = true;
   const key = (code) => { g.input.pressed.add(code); g.update(1 / 60); g.input.endFrame(); };
-  key('ArrowRight'); key('ArrowRight'); assert.equal(g.debugTab, 2); assert.equal(DEBUG_TABS[2].id, 'music');
+  // CHEATS, ZOMBIES, OUTFITS, MUSIC: walk right to the last tab
+  for (let i = 0; i < DEBUG_MUSIC_TAB; i++) key('ArrowRight');
+  assert.equal(g.debugTab, DEBUG_MUSIC_TAB); assert.equal(DEBUG_TABS[DEBUG_MUSIC_TAB].id, 'music');
   const p = debugPanel(g, 800, 500), b = debugTabBar(g, 800, 500);
   assert.ok(p.y >= 8 && p.y + p.ch <= 492);
-  assert.equal(debugTabHit(g, 800, 500, b.x + b.w * 5 / 6, b.y + 10), 2);
+  assert.equal(debugTabHit(g, 800, 500, b.x + (b.w * (DEBUG_MUSIC_TAB + 0.5)) / DEBUG_TABS.length, b.y + 10), DEBUG_MUSIC_TAB);
   p.rows.forEach((r, i) => {
     const y = p.y + p.head + (i + 0.5) * p.rowH;
     assert.ok(y < p.y + p.ch - 40); assert.equal(debugHitTest(g, 800, 500, p.x + 40, y), i);

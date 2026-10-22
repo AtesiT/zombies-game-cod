@@ -71,11 +71,20 @@ the wire is not a cosmetic bug, it is a frozen picture.
 
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
-FIRE / F / R / Q / sprint / throw / medkit / knife buttons on the right, plus a
+FIRE / F / R / Q / dash / throw / medkit / knife buttons on the right, plus a
 pause button in the corner — parked off the physical corner of the glass, clear
 of notches and rounded edges, and big enough for a thumb. A tap anywhere else
 reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
 the barrel at the nearest walker while you are not touching the aim stick.
+
+The picture is not a fixed 800 × 500 box any more. The canvas takes the shape of
+whatever it is sitting in — a phone held upright, a laptop, an ultrawide — and
+keeps the same *amount* of world on screen by trading width for height, so a tall
+screen sees more of the corridor above you instead of black bars top and bottom.
+`SETTINGS → PICTURE SIZE` then zooms the whole picture (SMALLER / NORMAL / BIGGER
+/ BIGGEST): on a phone **BIGGER** is usually the difference between reading a
+zombie and guessing at one, and the touch panel is measured from the same view,
+so the buttons keep their place at the bottom of the glass.
 
 The panel belongs to the round, not to the screen: the moment a menu, the
 pause, the crafting bench, the controls page, the debug panel, the card draft
@@ -91,7 +100,7 @@ page and closes on any tap.
 | Input | Action |
 | --- | --- |
 | `WASD` / arrows | Move |
-| `Shift` | Sprint |
+| `Shift` | Dash — one short burst in the direction you are walking (or facing). One every five seconds; the bar under the health shows the clock |
 | Mouse | Aim |
 | Left click | Fire (hold for automatic weapons) |
 | `R` | Reload |
@@ -176,6 +185,40 @@ single runs sit under the left column. The page fits without scrolling, so a
 phone can read all of it and a tap closes it; a range run is practice and is
 never banked. One run is banked exactly once, whichever way it ends.
 
+## Outfits: ten coats, ten badges, ten small edges
+
+The soldier in the middle of the screen is *yours*. **OUTFITS** on the front page
+opens the wardrobe: a list of ten outfits and the standard kit you were issued.
+Every outfit is locked behind one achievement — walk into the wardrobe and the
+row tells you which badge it wants, in the same words the achievements page
+uses:
+
+| Outfit | Badge | What it does |
+| --- | --- | --- |
+| **The Scout** | Ten Deep — reach round 10 | walk 8 % faster |
+| **Field Medic** | Field Medic — craft a medkit | health comes back 30 % faster |
+| **Speed Loader** | Punched — run a weapon through the Pack-a-Punch | reload 15 % faster |
+| **The Marksman** | Marksman — land half your shots over a hundred fired | headshots hit 25 % harder |
+| **The Blade** | Knife Work — take down twenty-five with the knife | the knife hits 50 % harder |
+| **The Heavy** | Twenty Deep — reach round 20 | 15 more maximum health |
+| **The Hoarder** | Care Package — pick up a crate the radio dropped for you | one more throwable every round |
+| **The Ghost** | Untouchable — clear a round without a scratch | the dash returns in 3 s |
+| **The Scavenger** | Big Spender — hold 10 000 points | kills drop scrap 50 % more often |
+| **The Veteran** | The Long Night — reach round 30 | 25 armour at the start of every night |
+
+Wear one with a click (or `Enter`), take the standard kit back off the same way,
+`Esc` backs out. The buff is folded into the same stat block perks and run skills
+use, so it stacks with them and is capped where they are capped — an outfit is
+the size of a run skill, never a replacement for a perk. The choice is stored in
+`localStorage` (`ndu.skin.v1`), remembered across runs, checked against the
+achievement wall on load (a hand-edited save cannot wear a coat it did not earn)
+and **sent over the wire**, so the other player in a co-op room sees the coat
+standing next to them — including a swap made in the middle of a round.
+
+For testing, `DEBUG → OUTFITS` grants each badge by name (and `GRANT EVERY OUTFIT`
+grants all ten), wears the outfit, and marks the row so you can see what is
+granted; `DEBUG → CHEATS` still has the broader handy switches.
+
 ## The map (72 × 50 tiles)
 
 **Three storeys, one building.** The bunker has a second floor and an attic that opens onto the
@@ -231,7 +274,7 @@ and the vault light.
 
 **Perks.** Eight machines, six per run:
 Juggernog (×2 health) · Speed Cola (½ reload) · Double Tap (−33 % shot delay) ·
-Quick Revive (faster regen) · Stamin-Up (+25 % speed, sprint) · PhD Flopper (immune to your own
+Quick Revive (faster regen) · Stamin-Up (dash every 3 s instead of 5) · PhD Flopper (immune to your own
 explosions) · Deadshot Daiquiri (aim drifts to the head) · Widow's Wine (knife and frags leave
 slowing webs).
 
@@ -374,10 +417,10 @@ plank. Repairing barricades pays *you* — that is the authentic CoD safety net.
 
 ```
 index.html          shell + canvas
-styles.css          crisp upscaling, letterboxing
+styles.css          crisp upscaling, no fixed game box (the canvas fills the frame)
 server.mjs          zero-dependency dev server
 src/
-  main.js           boot, fixed-step loop, integer-ish canvas upscaling
+  main.js           boot, fixed-step loop, viewport sized to the device, supersampling
   game.js           rounds, spawning, interactions, camera, frame renderer
   map.js            tile grid, collision, stairwell portals, dijkstra flow field
   mapData.js        AUTO-GENERATED level layout (see tools/genmap.py)
@@ -387,6 +430,7 @@ src/
   powerups.js       power-up table, drop roll, floating pickup
   mysterybox.js     the box: spin, teddy bear, relocation, fire sale
   crafting.js       the workbench: recipe contract, three shipped recipes, four shelved
+  skins.js          ten outfits: palettes, buffs, achievement gates, saved choice
   achievements.js   achievements, localStorage leaderboard, easter-egg state machine
   art.js            sprite baking, parametric gun builder, procedural level painting
   spriteData.js     ASCII pixel art + palette (pure data)
@@ -448,7 +492,7 @@ runtime assets; repository metadata and developer tools are not public files.
 ## Music listening room and round reports
 
 Open debug (backquote, or five taps on the round counter while paused on a
-phone), then select the third **MUSIC** tab. It contains **20 original procedural
+phone), then select the fourth **MUSIC** tab (CHEATS · ZOMBIES · OUTFITS · MUSIC). It contains **20 original procedural
 scores, 5–9 minutes each** (~2 h 22 min total), repeat/playlist/once modes, volume,
 minute-seeking and an evacuation-fanfare preview. Closing debug keeps the chosen
 score playing; STOP returns to the adaptive score. Selection is local in co-op.

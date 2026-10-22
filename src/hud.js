@@ -15,6 +15,8 @@ import { T } from './art.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { MAX_PLAYERS } from './net.js';
 import { isPortrait, isTouchDevice } from './touch.js';
+import { SKINS, SKIN_ORDER, skinOwned } from './skins.js';
+import { buildArt } from './art.js';
 
 const INK = '#e6dcc2';
 const INK_DIM = '#9a917c';
@@ -987,13 +989,47 @@ export class HUD {
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(x + (bw * i) / pips, y, 1, bh);
     }
+    this._dash(ctx, game, w, h, x, y);
     const regenIn = Math.max(0, p.regenDelay - (game.time - p.lastHurt));
     if (p.hp < p.maxHp) {
-      text(ctx, regenIn > 0.05 ? `+${Math.ceil(regenIn)}s` : 'RECOVERING', w / 2, y - 4, {
+      // right end of the same line the dash clock sits on
+      text(ctx, regenIn > 0.05 ? `+${Math.ceil(regenIn)}s` : 'RECOVERING', x + bw, y - 6, {
         font: 'bold 9px "Courier New", monospace',
-        colour: regenIn > 0.05 ? 'rgba(200,190,160,0.55)' : '#8fae6a', align: 'center',
+        colour: regenIn > 0.05 ? 'rgba(200,190,160,0.55)' : '#8fae6a', align: 'right',
       });
     }
+  }
+
+  /**
+   * The dash clock, tucked under the health bar. A five-second ability with no
+   * readout is a five-second ability you never know you have: the sliver fills
+   * as it comes back, and it is the only HUD element that ever blinks.
+   */
+  _dash(ctx, game, w, h, x, y) {
+    const p = game.player;
+    const max = p.dashMax || 5;
+    const left = Math.max(0, p.dashCd ?? 0);
+    // The clock shares the line above the health bar with the regen
+    // countdown: the bar on the left, its seconds to the right of it, the
+    // countdown over the far end. Nothing sits under the bar but ROUND.
+    const bw = 44, bh = 5;
+    const bx = x, by = y - 9;
+    const ready = left <= 0;
+    const k = ready ? 1 : 1 - left / max;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = ready ? '#9fd0e0' : 'rgba(159,208,224,0.5)';
+    ctx.fillRect(bx, by, bw * Math.max(0, Math.min(1, k)), bh);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    ctx.restore();
+    text(ctx, ready ? 'DASH' : `${left.toFixed(1)}s`, bx + bw + 5, by + 5, {
+      font: 'bold 8px "Courier New", monospace',
+      colour: ready ? 'rgba(159,208,224,0.85)' : 'rgba(200,190,160,0.6)',
+      align: 'left',
+    });
   }
 
   // --------------------------------------------------------------- prompt --
@@ -1177,7 +1213,12 @@ export class HUD {
   /** Rebuild the terrain layer of the minimap, but only when fog changes. */
   _miniTerrain(game) {
     const map = game.map;
-    const s = Math.min(130 / map.w, 92 / map.h);
+    // The minimap has a size, not a share of the screen: 130x92 world-relative
+    // pixels. On a narrow viewport that is a third of the picture, sitting
+    // over the corner you are fighting in, so it shrinks with the view.
+    const vw = game.vw ?? 800;
+    const k = Math.max(0.55, Math.min(1, vw / 640));
+    const s = Math.min((130 * k) / map.w, (92 * k) / map.h);
     const key = s + ':' + game.map.floor;
     this._miniScale = s;
     if (!this._miniCanvas || this._miniS !== key) {
@@ -1383,6 +1424,25 @@ export function drawTitle(ctx, game, w, h) {
 const MENU_TOP = 0.46;          // where the first row sits, as a fraction of h
 const MENU_STEP = 27;
 const MENU_HALF_W = 150;
+
+/**
+ * The front page's row grid, shared by the painter and the pointer.
+ *
+ * It used to be a constant step on a fixed 800x500 screen. The screen is now
+ * whatever shape the device is, so the step comes from the room that is left
+ * below the title: eight rows and a hint have to fit on a phone in portrait
+ * without the last one sliding under the bottom edge.
+ */
+export function menuLayout(scene, game, w, h) {
+  const rows = menuRows(scene, game).length;
+  const top = h * MENU_TOP;
+  // what is left under the first row once the hint line and a breath are
+  // taken off; on a 800x500 screen this still yields the old 27 and nothing
+  // about the front page moves
+  const room = h - top - 44;
+  const step = Math.max(18, Math.min(MENU_STEP, room / Math.max(1, rows)));
+  return { rows, top, step, half: Math.min(MENU_HALF_W, w / 2 - 24) };
+}
 const CONTROLS_TOP = 0.16;      // the controls screen is a list, not a menu
 const CONTROLS_STEP = 21;
 const CONTROLS_HALF_W = 250;
@@ -1399,7 +1459,7 @@ export const CONTROL_ROWS = [
   ['KNIFE', 'V   KNIFE'],
   ['SWAP WEAPON', 'Q   SWAP'],
   ['PICK WEAPON', '1  2   WHEEL   [ ]'],
-  ['SPRINT', 'SHIFT   DASH'],
+  ['DASH (5s)', 'SHIFT   >>'],
   ['THROWING HAND', 'G   FRAG / MOLOTOV / GAS'],
   ['PICK A SKILL', '1  2  3   ARROWS + ENTER   CLICK A CARD'],
   ['MEDKIT', 'H   KIT'],
@@ -1424,7 +1484,7 @@ export const TOUCH_CONTROL_ROWS = [
   ['WORKBENCH MENU', 'F AT THE BENCH'],
   ['RELOAD', 'R'],
   ['SWAP WEAPON', 'Q'],
-  ['SPRINT', '>>'],
+  ['DASH', '>>'],
   ['THROW FRAG / MOLOTOV / GAS', 'G'],
   ['PICK A SKILL', 'TAP A CARD'],
   ['MEDKIT', 'H'],
@@ -1655,6 +1715,165 @@ export function drawStats(ctx, game, w, h) {
   ctx.restore();
 }
 
+// ---------------------------------------------------------------------------
+//  Outfits. Ten coats, one per badge, one small edge each.
+//
+//  The page is a list because the screen it is drawn on might be a phone: a
+//  grid of paper-doll tiles reads beautifully at 800x500 and falls to pieces
+//  at 430. Every row carries the coat's colour, its name, what it does, and
+//  either who you have to be to earn it or a note that it is on you.
+// ---------------------------------------------------------------------------
+const OUTFIT_ROW = 34;
+
+export function ownedOutfitCount(game) {
+  return SKIN_ORDER.filter((id) => skinOwned(id, game?.achievements)).length;
+}
+
+export function outfitsLayout(game, w, h) {
+  const cw = Math.min(w - 20, 560);
+  const ch = Math.min(h - 20, 480);
+  const head = 56, foot = 34;
+  const rows = SKIN_ORDER.length + 1;          // + the standard kit
+  const room = Math.max(60, ch - head - foot);
+  const rowH = Math.min(OUTFIT_ROW, Math.max(22, room / rows));
+  return {
+    cw, ch, head, foot, rowH, rows,
+    x: Math.round((w - cw) / 2),
+    y: Math.round((h - ch) / 2),
+  };
+}
+
+/** Row 0 is "take it off"; 1..10 are the catalogue, in SKIN_ORDER. */
+export function outfitIdAt(game, index) {
+  if (index <= 0) return null;
+  return SKIN_ORDER[index - 1] ?? null;
+}
+
+export function outfitRowAt(game, w, h, mx, my) {
+  const L = outfitsLayout(game, w, h);
+  if (mx < L.x || mx > L.x + L.cw) return -1;
+  const rel = my - (L.y + L.head);
+  if (rel < 0 || rel >= L.rows * L.rowH) return -1;
+  return Math.min(L.rows - 1, Math.floor(rel / L.rowH));
+}
+
+/** The one line under a coat's name: its buff, or what it takes to earn it. */
+export function outfitNote(id, achievements) {
+  if (!id) return 'the uniform you were issued';
+  const skin = SKINS[id];
+  if (!skin) return '';
+  if (skinOwned(id, achievements)) return skin.buff;
+  const badge = ACHIEVEMENTS.find((a) => a.id === skin.ach);
+  return badge ? `EARN · ${badge.name} — ${badge.desc}` : 'LOCKED';
+}
+
+export function drawOutfits(ctx, game, w, h) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,7,10,0.9)';
+  ctx.fillRect(0, 0, w, h);
+
+  const L = outfitsLayout(game, w, h);
+  const { x: cx, y: cy, cw, ch, head, rowH } = L;
+  ctx.fillStyle = '#14171d';
+  ctx.fillRect(cx, cy, cw, ch);
+  ctx.strokeStyle = '#3a3f4a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  ctx.fillStyle = '#22262e';
+  ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
+
+  const owned = ownedOutfitCount(game);
+  text(ctx, 'OUTFITS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
+  text(ctx, `${owned} / ${SKIN_ORDER.length} EARNED`, cx + cw - 14, cy + 20, {
+    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  });
+
+  const sel = clamp(game.outfitIndex ?? 0, 0, L.rows - 1);
+  const selId = outfitIdAt(game, sel);
+  const wearing = game.player?.skin ?? null;
+  const m = game.input?.mouse;
+
+  // The coat you are standing in, drawn at three times the size it walks
+  // about at, in the right-hand margin beside the list. The names say what a
+  // coat does; this says what it looks like. Only when the margin exists: on
+  // a phone the list is the whole panel and a doll on top of it is a row you
+  // cannot read.
+  const wide = cw >= 470;
+  const art = buildArt();
+  const set = art.playerSets?.[wearing ?? ''] ?? null;
+  if (wide && set) {
+    const img = set.frames[0];
+    const k = 3;
+    const px = cx + cw - 40, py = cy + head + 34;
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(px, py + 2, 20, 7, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, px - (img.width * k) / 2, py - img.height * k, img.width * k, img.height * k);
+    text(ctx, 'ON YOU', px, py + 12, {
+      font: 'bold 8px "Courier New", monospace', colour: 'rgba(154,145,124,0.8)', align: 'center',
+    });
+    ctx.imageSmoothingEnabled = true;
+  }
+
+  for (let i = 0; i < L.rows; i++) {
+    const id = outfitIdAt(game, i);
+    const row = { y: cy + head + i * rowH };
+    const on = i === sel;
+    const isOn = (wearing ?? null) === (id ?? null);
+    if (on) {
+      ctx.fillStyle = 'rgba(240,217,138,0.10)';
+      ctx.fillRect(cx + 6, row.y, cw - 12, rowH - 1);
+      ctx.fillStyle = GOLD;
+      ctx.fillRect(cx + 6, row.y, 2, rowH - 1);
+    }
+    // the swatch: a coat you cannot wear yet is still shown in its colour,
+    // greyed out, so the list reads as a wardrobe and not as a teaser
+    const colour = id ? SKINS[id].colour : '#5a6142';
+    const own = !id || skinOwned(id, game.achievements);
+    ctx.save();
+    ctx.globalAlpha = own ? 1 : 0.35;
+    ctx.fillStyle = colour;
+    ctx.fillRect(cx + 16, row.y + 9, 10, 12);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx + 16.5, row.y + 9.5, 9, 11);
+    ctx.restore();
+
+    const name = id ? SKINS[id].name : 'STANDARD KIT';
+    text(ctx, name, cx + 34, row.y + 14, {
+      font: 'bold 12px "Courier New", monospace',
+      colour: own ? (on ? GOLD : INK) : 'rgba(154,145,124,0.7)',
+    });
+    // the note is the longest string on the row and the only one that can run
+    // into the state column: cut it rather than draw it underneath
+    const maxNote = Math.max(24, Math.floor((cw - (wide ? 100 : 32) - 34) / 5.2));
+    const note = outfitNote(id, game.achievements);
+    text(ctx, note.length > maxNote ? `${note.slice(0, maxNote - 1)}\u2026` : note, cx + 34, row.y + 26, {
+      font: '9px "Courier New", monospace',
+      colour: own ? 'rgba(154,145,124,0.95)' : 'rgba(120,112,96,0.75)',
+    });
+    const state = isOn ? 'WEARING' : own ? 'OWNED' : 'LOCKED';
+    text(ctx, state, cx + cw - (wide ? 86 : 18), row.y + 20, {
+      font: 'bold 9px "Courier New", monospace',
+      colour: isOn ? '#8fdc6a' : own ? INK_DIM : 'rgba(120,112,96,0.7)',
+      align: 'right',
+    });
+    if (m && i === outfitRowAt(game, w, h, m.x, m.y)) {
+      ctx.strokeStyle = 'rgba(240,217,138,0.35)';
+      ctx.strokeRect(cx + 6.5, row.y + 0.5, cw - 13, rowH - 2);
+    }
+  }
+
+  text(ctx, 'W S  ·  WHEEL  ·  CLICK TO PICK        ENTER WEARS IT        ESC / TAP BACK',
+    cx + cw / 2, cy + ch - 18, {
+      font: 'bold 9px "Courier New", monospace', colour: INK_DIM, align: 'center',
+    });
+  ctx.restore();
+}
+
 export function menuRows(scene, game) {
   if (scene === 'mp') {
     const net = game.net;
@@ -1687,6 +1906,8 @@ export function menuRows(scene, game) {
     { id: 'range', label: 'TEST RANGE', hint: 'every gun on the walls, a button per creature' },
     { id: 'mp', label: 'MULTIPLAYER', hint: 'same network, up to twelve of you' },
     { id: 'achievements', label: 'ACHIEVEMENTS', hint: `${game.achievements?.unlocked?.size ?? 0} / ${ACHIEVEMENTS.length} earned` },
+    // what you wear, and what it does for you
+    { id: 'outfits', label: 'OUTFITS', hint: `${ownedOutfitCount(game)} earned \u00b7 ten coats, ten small edges` },
     // everything every night on this machine has added up to
     { id: 'stats', label: 'STATISTICS', hint: 'the entire diary, all runs, on one page' },
     { id: 'controls', label: 'CONTROLS', hint: 'every key, and what the buttons mean' },
@@ -1696,10 +1917,9 @@ export function menuRows(scene, game) {
 
 /** Which row is under this point, or -1. */
 export function menuHitTest(scene, mx, my, game) {
+  const L = menuLayout(scene, game, game.vw ?? 800, game.vh ?? 500);
   const rows = menuRows(scene, game);
-  const top = (game.vh ?? 500) * MENU_TOP;
-  const step = MENU_STEP;
-  const half = MENU_HALF_W;
+  const { top, step, half } = L;
   for (let i = 0; i < rows.length; i++) {
     const y = top + i * step;
     if (my >= y - step * 0.5 && my < y + step * 0.5
@@ -1713,9 +1933,7 @@ export function drawMenu(ctx, game, w, h) {
   ctx.save();
 
   const rows = menuRows(game.scene, game);
-  const step = MENU_STEP;
-  const half = MENU_HALF_W;
-  const top = h * MENU_TOP;
+  const { top, step, half } = menuLayout(game.scene, game, w, h);
   const sel = clamp(game.menuIndex ?? 0, 0, rows.length - 1);
 
   for (let i = 0; i < rows.length; i++) {
@@ -1899,8 +2117,12 @@ export const DEBUG_ROW = 22;
 export const DEBUG_TABS = [
   { id: 'cheats', label: 'CHEATS' },
   { id: 'zombies', label: 'ZOMBIES' },
+  { id: 'outfits', label: 'OUTFITS' },
   { id: 'music', label: 'MUSIC' },
 ];
+
+/** The tab that shows the music library. Kept as a number: rows branch on it. */
+export const DEBUG_MUSIC_TAB = 3;
 
 /** Where the strip of tabs sits, shared by the drawing and the click test. */
 export function debugTabBar(game, w, h) {
@@ -1926,8 +2148,9 @@ export function debugTabHit(game, w, h, mx, my) {
  */
 export function debugPanel(game, w, h) {
   const rows = game.debugRows();
-  const music = game.debugTab === 2;
-  const cw = music ? 540 : 380, HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
+  const music = game.debugTab === DEBUG_MUSIC_TAB;
+  const cw = Math.min(music ? 540 : 380, w - 16);
+  const HEAD = music ? 96 : 70, FOOT = music ? 50 : 40;   // the extra 24 is the tab strip
   // rows keep arriving (the round picker, and whatever comes next): squeeze
   // them so the LAST one always lands inside the panel -- a row you cannot
   // see is a row you cannot click
@@ -1987,7 +2210,7 @@ export function drawDebug(ctx, game, w, h) {
     });
   });
 
-  if (game.debugTab === 2) {
+  if (game.debugTab === DEBUG_MUSIC_TAB) {
     const current = audio.soundtrack?.current;
     const selected = SOUNDTRACKS.find((t) => game.debugRows()[game.debugIndex]?.id === `music:${t.id}`);
     text(ctx, current ? `NOW: ${current.title}` : '20 ORIGINAL SCORES / 5-9 MIN EACH', cx + 18, cy + 68,
@@ -2026,7 +2249,7 @@ export function drawDebug(ctx, game, w, h) {
     cx + cw / 2, cy + ch - 27, {
       font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
-  text(ctx, game.debugTab === 2 ? '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE' : '` / ESC: CLOSE',
+  text(ctx, game.debugTab === DEBUG_MUSIC_TAB ? '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE' : '` / ESC: CLOSE',
     cx + cw / 2, cy + ch - 12, {
       font: '9px "Courier New", monospace', colour: INK_DIM, align: 'center',
     });
@@ -2041,8 +2264,11 @@ export function drawDebug(ctx, game, w, h) {
  */
 export function craftLayout(game, w, h) {
   const ids = recipeIds();
-  const cols = ids.length > 4 ? 2 : 1;
-  const cw = cols === 2 ? 330 : 420;
+  // two columns need 672 units of panel, plus a margin: on a portrait phone
+  // there is no room for that, and a card hanging off the screen is a
+  // blueprint you cannot pick
+  const cols = ids.length > 4 && w >= 700 ? 2 : 1;
+  const cw = cols === 2 ? 330 : Math.min(420, w - 24);
   const ch = 62, gap = 12;
   const rows = Math.max(1, Math.ceil(ids.length / cols));
   const totalW = cols * cw + (cols - 1) * gap;
@@ -2081,7 +2307,9 @@ export function settingsLayout(game, w, h) {
   const top = over > 0
     ? Math.max(0, Math.min(over, game.settingsView ?? (game.settingsIndex - Math.floor(shown / 2))))
     : 0;
-  const cw = 420, ch = HEAD + shown * ROW + FOOT;
+  // the panel is 420 wide on a normal screen and shrinks with a narrow one:
+  // a phone in portrait draws the whole game in ~430 units
+  const cw = Math.min(420, w - 24), ch = HEAD + shown * ROW + FOOT;
   const cx = Math.round((w - cw) / 2), cy = Math.round((h - ch) / 2);
   return { ROW, HEAD, FOOT, rows, shown, over, top, cw, ch, cx, cy };
 }

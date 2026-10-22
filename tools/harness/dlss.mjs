@@ -82,6 +82,10 @@ function render(supersample) {
   g.startRound(3);
   for (let i = 0; i < 90; i++) g.update(H);
   g.player.aim = 0.7;                     // a rotated sprite: the worst case
+  // The HUD is text at native resolution: it is drawn identically in both
+  // renders, so every crisp letter added to it dilutes the measurement of
+  // what DLSS5 actually does to the world. Measure the world.
+  g.hud.draw = () => {};
   const c = nc(M.VW * 2, M.VH * 2);
   const cx = c.getContext('2d');
   cx.setTransform(2, 0, 0, 2, 0, 0);

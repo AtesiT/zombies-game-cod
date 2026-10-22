@@ -14,6 +14,7 @@
 import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
 import { SKILLS, SKILL_IDS } from './skills.js';
+import { SKIN_ORDER } from './skins.js';
 import { Powerup } from './powerups.js';
 import { applyShutters } from './crafting.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
@@ -227,6 +228,13 @@ export class Net {
     this.log(want === 'host' ? 'hosting...' : 'joining...');
   }
 
+  /** Tell the host about a new coat. A no-op unless this body is a guest. */
+  sendSkin(id) {
+    if (!this.playing || this.isHost) return false;
+    this.send(this.hostId, { m: 'skin', id: id ?? null });
+    return true;
+  }
+
   /** A code nobody else is using: four letters and digits, no lookalikes. */
   makeRoomCode() {
     const abc = 'ABDEFGHJKLMNPQRSTUWXYZ23456789';
@@ -348,7 +356,7 @@ export class Net {
         this._hiT = setTimeout(() => {
           if (!this._welcomed && !this.isHost && this.state === 'open') {
             this.log('no welcome yet, asking again');
-            this.send(this.hostId, { m: 'hi', name: this.name });
+            this.send(this.hostId, { m: 'hi', name: this.name, skin: this.game?.player?.skin ?? null });
           }
         }, 2500);
         clearTimeout(this._joinT);
@@ -360,7 +368,7 @@ export class Net {
             this._status();
           }
         }, 9000);
-        this.send(this.hostId, { m: 'hi', name: this.name });
+        this.send(this.hostId, { m: 'hi', name: this.name, skin: this.game?.player?.skin ?? null });
       }
       this._status();
       return;
@@ -407,7 +415,17 @@ export class Net {
   _hostMsg(m) {
     const from = m.from;
     if (!from) return;
-    if (m.m === 'hi') { this.log(`${m.name ?? 'somebody'} is joining`); return this._admit(from, m.name); }
+    if (m.m === 'hi') {
+      this.log(`${m.name ?? 'somebody'} is joining`);
+      return this._admit(from, m.name, m.skin);
+    }
+    // a guest changed coat mid-night (the debug panel can do it): the body
+    // lives here, so the coat has to change here
+    if (m.m === 'skin') {
+      const pl = this.peers.get(from)?.player;
+      if (pl && SKIN_ORDER.includes(String(m.id ?? ''))) pl.setSkin(String(m.id));
+      return;
+    }
     if (m.m === 'who') { this.send(from, { m: 'hostis', host: this.you }); return; }
     const peer = this.peers.get(from);
     if (!peer) return;
@@ -437,7 +455,7 @@ export class Net {
   }
 
   /** Let somebody into a round that is already running. */
-  _admit(id, rawName) {
+  _admit(id, rawName, wantSkin = null) {
     const g = this.game;
     if (!g) return;
     // a room only exists once somebody has opened one, which starts a game --
@@ -464,6 +482,9 @@ export class Net {
     p.netId = id;
     p.name = name;
     p.points = 500;
+    // the coat they arrived in: validated against the catalogue here, because
+    // this string came off the wire
+    if (SKIN_ORDER.includes(wantSkin)) p.setSkin(wantSkin);
     p.floor = g.map.floor;
     p.salvage = 0;
     p.medkits = 0;
@@ -744,6 +765,9 @@ export class Net {
         pl.molotovs ?? 0, pl.gasbombs ?? 0,
         r2(pl.reloading ? clamp(1 - (pl.reloadTimer / (pl.reloadTotal || 1)), 0, 1) : 0),
         skillMask, draft,
+        // the outfit, so the other people in the room see the coat they are
+        // standing next to (255 = the standard kit, which is index -1)
+        SKIN_ORDER.indexOf(pl.skin) < 0 ? 255 : SKIN_ORDER.indexOf(pl.skin),
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -920,6 +944,7 @@ export class Net {
       t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
       t.molotovs = e[21] ?? 0; t.gasbombs = e[22] ?? 0; t.reloadK = e[23] ?? 0;
       t.skillMask = e[24] ?? 0; t.skillDraft = e[25] ?? null;
+      t.skin = SKIN_ORDER[e[26] ?? -1] ?? null;
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -1040,6 +1065,18 @@ export class Net {
       pl.applyPerks?.();
     }
     this._skillWire(pl, t);
+    this._skinWire(pl, t);
+  }
+
+  /**
+   * The outfit is cosmetic plus one small stat, but it is still a stat: a
+   * guest's body has to carry the same bonus the host is simulating, and it
+   * has to be drawn in the same coat. `setSkin` recomputes the block and does
+   * nothing at all when the id has not changed.
+   */
+  _skinWire(pl, t) {
+    if (t.skin === undefined || !pl.setSkin) return;
+    if ((pl.skin ?? null) !== (t.skin ?? null)) pl.setSkin(t.skin);
   }
 
   /**
@@ -1121,6 +1158,7 @@ export class Net {
         if (changed) pl.applyPerks?.();
       }
       this._skillWire(pl, t);
+      this._skinWire(pl, t);
       if (t.muzzle) { pl.muzzleFlash = 0.05; pl._muzzle = 1; } else pl._muzzle = 0;
       if (!this.isHost) pl.knifeAnim = Math.max(0, (pl.knifeAnim ?? 0) - dt);
       // our own barrel points where we are pointing *now*

@@ -31,6 +31,8 @@ const BUTTONS = [
   { id: 'interact', key: 'KeyF', label: 'F', colour: 0x3f6f4a },
   { id: 'reload', key: 'KeyR', label: 'R', colour: 0x4a5a6b },
   { id: 'swap', key: 'KeyQ', label: 'Q', colour: 0x4a5a6b },
+  // Shift is the dash now: one press, a five-second clock. The button keeps
+  // the same key, so the input path did not have to learn anything new.
   { id: 'sprint', key: 'ShiftLeft', label: '>>', colour: 0x6b5a3a },
   { id: 'grenade', key: 'KeyG', label: 'G', colour: 0x6b3a3a },
   // the medkit is the panic button: a bigger circle and a bigger letter,
@@ -256,6 +258,12 @@ export class TouchControls {
     if (!this.panel) return;
     const k = this._stageW / 800;
     this.panel.style.transform = `scale(${k})`;
+    // The panel is 800 wide in virtual units and, now that the stage is the
+    // whole screen rather than a letterboxed 1.6:1 strip, it has to be tall
+    // enough to hold it: the buttons are anchored to the bottom of the panel,
+    // and a 500-tall panel on an 844-tall stage put a thumb's row of circles
+    // a third of the way up the glass.
+    this.panel.style.height = `${Math.max(200, Math.round(this._stageH / (k || 1)))}px`;
     if (this._compact() !== (this._tier === 'compact')) this._measure();
     else if (this._geo) {
       // the stage changed size without crossing the tier: the thumb bump did

@@ -14,13 +14,14 @@ import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
 import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
-import { Achievements, EasterEgg, submitScore } from './achievements.js';
+import { Achievements, EasterEgg, submitScore, ACHIEVEMENTS } from './achievements.js';
 import { loadLifetime, bankRun } from './lifetime.js';
+import { SKINS, SKIN_ORDER, loadSkin, saveSkin, skinOwned } from './skins.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, skillCardAt, drawAchievements, drawStats, craftRowAt, craftLayout} from './hud.js';
+import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -284,11 +285,16 @@ export class Game {
       settingsHooked = true;
       settings.onChange(() => activeGame?.applySettings());
     }
+    // The game draws in its own units; `vw`/`vh` are how many of them fit on
+    // the screen right now. They used to be the constants 800x500 and the
+    // canvas was letterboxed into whatever the device was; main.js now picks
+    // the view from the shape of the screen, so a phone in portrait gets a
+    // tall view instead of a small box with two black bars around it.
     this.vw = VW;
     this.vh = VH;
     this.map = new GameMap();
     this.art = buildArt();
-    this.lighting = new Lighting(VW, VH, 0.5);
+    this.lighting = new Lighting(this.vw, this.vh, 0.5);
     this.hud = new HUD();
     this.achievements = new Achievements();
     this.net = new Net(this);
@@ -336,6 +342,10 @@ export class Game {
     this.player.game = this;
     this.player.netId = 0;
     this.player.name = this.net?.name || 'PLAYER';
+    // the outfit is a wardrobe, not a run: whatever was on before is on now.
+    // loadSkin refuses a coat whose badge is not earned, so a wiped list
+    // cannot leave a body wearing something it never unlocked.
+    this.player.setSkin(loadSkin(this.achievements));
     this.player.floor = this.map.floor;
     // every body in the round, local one first: the host simulates all of
     // them, a guest only ever draws them
@@ -414,6 +424,7 @@ export class Game {
     this._dbgTaps = 0;
     this._dbgTapT = -9;
     this.settingsIndex = 0;
+    this.outfitIndex = 0;    // the wardrobe's cursor: row 0 is the standard kit
     this.fps = 60;
     this.tension = 0;
     this.aimOnTarget = false;
@@ -461,8 +472,8 @@ export class Game {
     this.teleportFx = 0;
 
     this.rebuildFlow();
-    this.cam.x = clamp(this.player.pos.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(this.player.pos.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(this.player.pos.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(this.player.pos.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.revealAround(this.player.pos.x, this.player.pos.y, 14);
   }
 
@@ -570,6 +581,37 @@ export class Game {
 
   // ------------------------------------------------------------------ utils
   screenToWorld(sx, sy) { return { x: sx + this.cam.x, y: sy + this.cam.y }; }
+
+  /**
+   * How much of the world is on the screen, in world units.
+   *
+   * Called by main.js on every resize (and when the PICTURE SIZE setting
+   * moves). Everything that lays itself out -- the HUD, every panel, the
+   * camera clamp, the lighting layer -- reads `vw`/`vh`, so this is the one
+   * place that decides what "the screen" means.
+   */
+  setViewport(w, h) {
+    const mw = this.map ? this.map.w * T : 0;
+    const mh = this.map ? this.map.h * T : 0;
+    const vw = Math.round(Math.max(320, mw ? Math.min(mw, w) : w));
+    const vh = Math.round(Math.max(240, mh ? Math.min(mh, h) : h));
+    if (vw === this.vw && vh === this.vh) return false;
+    this.vw = vw;
+    this.vh = vh;
+    this.lighting?.setSize?.(vw, vh);
+    this.input?.setLogicalSize?.(vw, vh);
+    this._clampCam();
+    return true;
+  }
+
+  /** Keep the camera inside the map after the window (or the storey) changes size. */
+  _clampCam() {
+    if (!this.map) return;
+    const maxX = Math.max(0, this.map.w * T - this.vw);
+    const maxY = Math.max(0, this.map.h * T - this.vh);
+    this.cam.x = clamp(this.cam.x, 0, maxX);
+    this.cam.y = clamp(this.cam.y, 0, maxY);
+  }
 
   /** Stats for a weapon, upgraded if the player has punched it. */
   packedDef(id) { return defFor(id, this.player.packed.has(id)); }
@@ -842,14 +884,19 @@ export class Game {
     // two pockets -- buying the second one replaced the first.
     for (const pl of this.players ?? []) {
       if (!pl) continue;
+      // THE VETERAN arrives dressed and kitted: the plate is handed out at the
+      // top of a night, not every wave (that would be a free armour refill)
+      if (n === 1 && pl.skinFx?.startArmor) {
+        pl.armor = Math.max(pl.armor ?? 0, pl.skinFx.startArmor);
+      }
       // a new wave is a clean slate for anything that happens once per wave
       pl._windUsed = false;
       pl.windT = 0;
       pl.skillDraft = null;   // a draft never survives into the wave it delays
       if (!pl.ownThrow) continue;
-      const n = 2 + (pl.skillFx?.refillBonus ?? 0);
-      if (pl.refillThrowable) pl.refillThrowable(n);
-      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + n);
+      const give = 2 + (pl.skillFx?.refillBonus ?? 0) + (pl.skinFx?.refillBonus ?? 0);
+      if (pl.refillThrowable) pl.refillThrowable(give);
+      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + give);
     }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
@@ -1000,7 +1047,7 @@ export class Game {
     if (inp.wasPressed('ArrowRight', 'KeyD')) { d.index = (idx + 1) % n; audio.dryFire?.(); }
     else if (inp.wasPressed('ArrowLeft', 'KeyA')) { d.index = (idx - 1 + n) % n; audio.dryFire?.(); }
     const m = inp.mouse;
-    const hit = skillCardAt(VW, VH, m.x, m.y, n);
+    const hit = skillCardAt(this.vw, this.vh, m.x, m.y, n);
     if (hit >= 0) d.index = hit;
     // The digits are also weapon-slot keys on the wire. Take the press out of
     // the frame's set once the card has used it, or a guest would both pick a
@@ -1351,8 +1398,9 @@ export class Game {
     this.netEmit('kill', { x: Math.round(z.pos.x), y: Math.round(z.pos.y), pts, head: !!head });
     this.splat(z.pos.x, z.pos.y, 9 + Math.random() * 7, 0.5);
 
-    // salvage
-    const dropChance = SALVAGE_DROP + (z.type === 'brute' ? 0.55 : 0);
+    // salvage -- an outfit can make the pockets of the dead more generous
+    const dropChance = (SALVAGE_DROP + (z.type === 'brute' ? 0.55 : 0))
+      * (who.skinFx?.salvageMul ?? 1);
     if (Math.random() < dropChance) {
       const n = z.type === 'brute' ? randInt(2, 4) : 1;
       who.salvage = (who.salvage ?? 0) + n;
@@ -1540,7 +1588,7 @@ export class Game {
     if (kind === 'storm') {
       W.drops = [];
       for (let i = 0; i < 110; i++) {
-        W.drops.push({ x: Math.random() * VW, y: Math.random() * VH, s: randRange(340, 620), l: randRange(7, 16) });
+        W.drops.push({ x: Math.random() * this.vw, y: Math.random() * this.vh, s: randRange(340, 620), l: randRange(7, 16) });
       }
       this.say('storm');
     }
@@ -1565,8 +1613,8 @@ export class Game {
       for (const d of W.drops) {
         d.y += d.s * dt;
         d.x -= 160 * dt;                      // the rain comes in slanted
-        if (d.y > VH) { d.y = -12; d.x = Math.random() * (VW + 80); }
-        if (d.x < -20) d.x += VW + 40;
+        if (d.y > this.vh) { d.y = -12; d.x = Math.random() * (this.vw + 80); }
+        if (d.x < -20) d.x += this.vw + 40;
       }
     } else if (W.wet > 0) {
       W.wet = Math.max(0, W.wet - dt * 0.05); // the glass dries slowly
@@ -1834,7 +1882,7 @@ export class Game {
 
   /** Keep the settings window over the row the arrows just landed on. */
   _viewFollow() {
-    const L = settingsLayout(this, VW, VH);
+    const L = settingsLayout(this, this.vw, this.vh);
     if (!L.over) { this.settingsView = 0; return; }
     let v = this.settingsView ?? L.top;
     if (this.settingsIndex < v) v = this.settingsIndex;
@@ -2193,7 +2241,7 @@ export class Game {
       }
       const wasAlive = !h.z.dead;
       const mul = (h.head ? def.headMul : 1) * insta * skillMul
-        * (h.head ? (sfx.headMul ?? 1) : 1);
+        * (h.head ? (sfx.headMul ?? 1) * (shooter.skinFx?.headMul ?? 1) : 1);
       const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
       if (!wasAlive) continue;
       anyHit = true;
@@ -2839,8 +2887,8 @@ export class Game {
     this.revealAround(spot.x, spot.y, 13);
     if (this.hud) this.hud._miniDirty = true;
     this.onPlayerTeleport(from, spot);
-    this.cam.x = clamp(spot.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(spot.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(spot.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(spot.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.bannerShow(this.map.floorName, link?.name ?? '', { dur: 1.7, colour: '#9fd0f0' });
     if (n === 2) this.achievements.unlock('up_on_the_roof');
     if (n === 1) this.achievements.unlock('upstairs');
@@ -3068,7 +3116,7 @@ export class Game {
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
     );
     if (m && ids.length) {
-      const hover = craftRowAt(this, VW, VH, m.x, m.y);
+      const hover = craftRowAt(this, this.vw, this.vh, m.x, m.y);
       if (!keyed && hover >= 0 && hover !== p.craftRow) { p.craftRow = hover; audio.dryFire(); }
       if (m.pressed && hover >= 0) { build(ids[hover]); return true; }
     }
@@ -3076,7 +3124,7 @@ export class Game {
     // arrows and WASD walk the grid, Enter builds what is lit
     if (ids.length) {
       const n = ids.length;
-      const cols = craftLayout(this, VW, VH).cols;
+      const cols = craftLayout(this, this.vw, this.vh).cols;
       const move = (d) => {
         p.craftRow = clamp(((p.craftRow ?? 0) + d + n) % n, 0, n - 1);
         audio.dryFire();
@@ -3152,17 +3200,68 @@ export class Game {
     audio.growl(0.8, 0.8);
   }
 
+  /**
+   * The wardrobe tab. One row per coat, and pressing it grants *that coat's
+   * badge* -- the same one the game would hand you for doing the thing -- and
+   * puts the coat on, so a locked outfit can be checked in ten seconds instead
+   * of a night.
+   */
+  _skinRows() {
+    const wearing = this.player?.skin ?? null;
+    const rows = SKIN_ORDER.map((id) => {
+      const skin = SKINS[id];
+      const owned = skinOwned(id, this.achievements);
+      return {
+        id: `skin:${id}`,
+        label: `${skin.name}  ${skin.short}`,
+        value: owned ? (wearing === id ? 'ON' : 'GRANTED') : 'GRANT',
+        local: true,
+      };
+    });
+    rows.push({ id: 'skin:none', label: 'STANDARD KIT', value: wearing ? 'WEAR' : 'ON', local: true });
+    rows.push({ id: 'skins:all', label: 'GRANT EVERY OUTFIT', value: 'ALL', local: true });
+    return rows;
+  }
+
+  /** Grant one coat's badge (and wear it), from the debug panel. */
+  _debugSkin(id) {
+    if (id === 'skins:all') {
+      for (const key of SKIN_ORDER) this.achievements.unlock(SKINS[key].ach);
+      this.bannerShow('EVERY OUTFIT', 'all ten badges granted', { dur: 1.8, colour: '#f0d98a' });
+      return;
+    }
+    if (id === 'skin:none') {
+      this.equipSkin(null);
+      this.bannerShow('STANDARD KIT', 'nothing on', { dur: 1.4, colour: '#8fa8bd' });
+      return;
+    }
+    const key = id.slice(5);
+    const skin = SKINS[key];
+    if (!skin) return;
+    const before = skinOwned(key, this.achievements);
+    // the badge, not just the coat: `unlock` is the same call the game makes
+    // when you actually do the thing, so the wall and the wardrobe agree
+    this.achievements.unlock(skin.ach);
+    this.equipSkin(key);
+    this.bannerShow(before ? 'OUTFIT' : 'BADGE GRANTED',
+      `${skin.name} \u00b7 ${skin.buff}`, { dur: 1.8, colour: skin.colour });
+  }
+
   debugRows() {
     if (this.debugTab === 1) return this._zooRows();
-    if (this.debugTab === 2) return [
-      { id: 'music:stop', label: 'STOP / ADAPTIVE SCORE', value: 'STOP' },
-      { id: 'music:mode', label: 'AFTER THE TRACK', value: (audio.musicMode ?? 'repeat').toUpperCase() },
-      { id: 'music:volume', label: 'MUSIC VOLUME (cycle)', value: `${settings.get('music')}%` },
-      { id: 'music:victory', label: 'EVACUATION FANFARE', value: '0:18' },
-      { id: 'music:forward', label: 'SEEK FORWARD 60 SECONDS', value: '+1:00' },
-      { id: 'music:back', label: 'SEEK BACK 60 SECONDS', value: '-1:00' },
+    if (this.debugTab === 2) return this._skinRows();
+    if (this.debugTab === DEBUG_MUSIC_TAB) return [
+      // every one of these is local: a sound audition belongs to the machine
+      // whose speakers it comes out of, never to the host
+      { id: 'music:stop', label: 'STOP / ADAPTIVE SCORE', value: 'STOP', local: true },
+      { id: 'music:mode', label: 'AFTER THE TRACK', value: (audio.musicMode ?? 'repeat').toUpperCase(), local: true },
+      { id: 'music:volume', label: 'MUSIC VOLUME (cycle)', value: `${settings.get('music')}%`, local: true },
+      { id: 'music:victory', label: 'EVACUATION FANFARE', value: '0:18', local: true },
+      { id: 'music:forward', label: 'SEEK FORWARD 60 SECONDS', value: '+1:00', local: true },
+      { id: 'music:back', label: 'SEEK BACK 60 SECONDS', value: '-1:00', local: true },
       ...SOUNDTRACKS.map((t, i) => ({ id: `music:${t.id}`, label: `${String(i + 1).padStart(2, '0')} ${t.title}`,
-        value: audio.soundtrack?.current?.id === t.id ? `${musicTime(audio.soundtrack.elapsed)} / ${musicTime(t.duration)}` : musicTime(t.duration) })),
+        value: audio.soundtrack?.current?.id === t.id ? `${musicTime(audio.soundtrack.elapsed)} / ${musicTime(t.duration)}` : musicTime(t.duration),
+        local: true })),
     ];
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
@@ -3210,6 +3309,9 @@ export class Game {
     }
     const p = remote ?? this.player;
     if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
+    // the wardrobe is local storage, not world state: it runs wherever the
+    // player is standing, host or guest
+    if (id.startsWith('skin:') || id === 'skins:all') { this._debugSkin(id); return; }
     switch (id) {
       case 'where':
         this._dbgWhere = this._dbgWhere === 'front' ? 'window' : 'front';
@@ -3343,7 +3445,7 @@ export class Game {
       const m = this.input.mouse;
       const wheeled = !!this.input.wheel;
       if (wheeled) {
-        const L = settingsLayout(this, VW, VH);
+        const L = settingsLayout(this, this.vw, this.vh);
         if (L.over > 0) {
           // a list taller than the panel: the wheel scrolls the window and
           // the selection keeps its place
@@ -3359,7 +3461,7 @@ export class Game {
       // resting on the panel must not pin the keyboard's selection
       const moved = m.x !== (this._smx ?? -999) || m.y !== (this._smy ?? -999);
       this._smx = m.x; this._smy = m.y;
-      const hover = settingsRowAt(this, VW, VH, m.x, m.y);
+      const hover = settingsRowAt(this, this.vw, this.vh, m.x, m.y);
       if (!wheeled && moved && hover >= 0 && hover !== this.settingsIndex) {
         this.settingsIndex = hover;
         this._viewFollow();
@@ -3368,7 +3470,7 @@ export class Game {
       if (m.pressed && hover >= 0) {
         const d = SETTING_DEFS[hover];
         if (d.type === 'range') {
-          const { bx, bw } = settingsSliderRect(this, VW, VH);
+          const { bx, bw } = settingsSliderRect(this, this.vw, this.vh);
           if (m.x >= bx - 8 && m.x <= bx + bw + 8) {
             const k = clamp((m.x - bx) / bw, 0, 1);
             const raw = d.min + k * (d.max - d.min);
@@ -3449,7 +3551,7 @@ export class Game {
         this.debugTab = (this.debugTab + 1) % tabs;
         this.debugIndex = 0; audio.dryFire();
       }
-      const tabHit = debugTabHit(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+      const tabHit = debugTabHit(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
       if (this.input.mouse.pressed && tabHit >= 0 && tabHit !== this.debugTab) {
         this.debugTab = tabHit;
         this.debugIndex = 0;
@@ -3457,13 +3559,13 @@ export class Game {
       }
       const hit = (this.input.mouse.pressed && tabHit >= 0)
         ? -1
-        : debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+        : debugHitTest(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
       if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
         rows = this.debugRows();
         const row = rows[this.debugIndex] ?? rows[0];
         if (row) {
-          if (this.net?.playing && !this.net.isHost && !row.id.startsWith('music:')) {
+          if (this.net?.playing && !this.net.isHost && !row.local) {
             // the guest's panel is a remote control: the world lives on the
             // host, so the row runs there (GOD arms your own body only)
             this.net.send(this.net.hostId, { m: 'dbg', id: row.id });
@@ -3533,7 +3635,7 @@ export class Game {
       // the pause screen is a menu you can click (or thumb) now: the rows and
       // their geometry live in hud.js, the shortcuts still work as before
       const m = this.input.mouse;
-      const hit = pauseHitTest(this, VW, VH, m.x, m.y);
+      const hit = pauseHitTest(this, this.vw, this.vh, m.x, m.y);
       if (m.pressed && hit >= 0) {
         audio.dryFire();
         if (hit === 0) this.paused = false;
@@ -3995,10 +4097,10 @@ export class Game {
   /** Camera, lamps, HUD and banners: a guest needs all of it too. */
   _lateUpdate(dt) {
     // ---- camera ------------------------------------------------------------
-    const lookX = ((this.input?.mouse?.x ?? VW / 2) - VW / 2) * 0.22;
-    const lookY = ((this.input?.mouse?.y ?? VH / 2) - VH / 2) * 0.22;
-    const tx = clamp(this.player.pos.x + lookX - VW / 2, 0, this.map.w * T - VW);
-    const ty = clamp(this.player.pos.y + lookY - VH / 2, 0, this.map.h * T - VH);
+    const lookX = ((this.input?.mouse?.x ?? this.vw / 2) - this.vw / 2) * 0.22;
+    const lookY = ((this.input?.mouse?.y ?? this.vh / 2) - this.vh / 2) * 0.22;
+    const tx = clamp(this.player.pos.x + lookX - this.vw / 2, 0, this.map.w * T - this.vw);
+    const ty = clamp(this.player.pos.y + lookY - this.vh / 2, 0, this.map.h * T - this.vh);
     this.cam.x = damp(this.cam.x, tx, 7, dt);
     this.cam.y = damp(this.cam.y, ty, 7, dt);
 
@@ -4180,8 +4282,8 @@ export class Game {
       this.powerOnAt = -99;
     }
 
-    this.cam.x = clamp(fresh.pos.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(fresh.pos.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(fresh.pos.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(fresh.pos.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.rebuildFlow();
     if (this.hud) this.hud._miniDirty = true;
   }
@@ -4264,6 +4366,23 @@ export class Game {
   }
 
   /**
+   * Wear an outfit -- or `null` to put the standard kit back on.
+   *
+   * Refused for a coat whose badge is not earned: the wardrobe is drawn from
+   * the achievements, and this is the one function that has to agree with the
+   * drawing, whoever calls it (the menu, the debug panel, a test).
+   */
+  equipSkin(id) {
+    if (id && !skinOwned(id, this.achievements)) return false;
+    const saved = saveSkin(id);
+    const changed = this.player?.setSkin(saved) ?? false;
+    // the coat has to reach the host as well, or a guest changes in their own
+    // mirror and nobody else ever sees it
+    this.net?.sendSkin?.(saved);
+    return changed || (this.player?.skin ?? null) === (saved ?? null);
+  }
+
+  /**
    * The front door. Solo behaves exactly as it always did; multiplayer opens
    * a room on the relay and then simply starts playing, because somebody
    * walking in halfway through round nine is the whole point.
@@ -4276,6 +4395,8 @@ export class Game {
     if (this.scene === 'achievements') { this._achUpdate(dt); return; }
     // the all-time page fits without scrolling; a tap or ESC leaves it
     if (this.scene === 'stats') { this._lifeUpdate(dt); return; }
+    // the wardrobe: a list, like the achievements, but every row is a choice
+    if (this.scene === 'outfits') { this._outfitUpdate(dt); return; }
     // keep the room list alive while it is on screen, and re-ask whenever the
     // link comes up -- the first request is usually sent before the socket is
     this._roomT = (this._roomT ?? 0) - dt;
@@ -4336,6 +4457,11 @@ export class Game {
       case 'controls': this.controlsOpen = true; this._wasPaused = false; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'achievements': this.scene = 'achievements'; this.achScroll = 0; break;
+      case 'outfits':
+        this.scene = 'outfits';
+        // start with the coat you are wearing under the cursor
+        this.outfitIndex = Math.max(0, SKIN_ORDER.indexOf(this.player?.skin) + 1);
+        break;
       case 'stats': this.scene = 'stats'; break;
       case 'host': this._startHost(); break;
       case 'join':
@@ -4349,6 +4475,64 @@ export class Game {
       default:
         if (row.room) this._joinRoom(row.room);
         break;
+    }
+  }
+
+  /**
+   * The wardrobe. Row 0 takes everything off; rows 1..10 are SKIN_ORDER.
+   *
+   * A locked row is still a row -- it tells you which badge opens it, and
+   * pressing it does nothing but say so. The pointer picks and wears in one
+   * press (a phone has no Enter), the keyboard picks with W/S and wears with
+   * Enter, and ESC or a tap on the empty margin goes back to the front door.
+   */
+  _outfitUpdate(dt) {
+    const inp = this.input;
+    if (!inp) return;
+    const L = outfitsLayout(this, this.vw, this.vh);
+    const n = L.rows;
+    const m = inp.mouse;
+    const hover = m ? outfitRowAt(this, this.vw, this.vh, m.x, m.y) : -1;
+
+    if (hover >= 0 && hover !== this.outfitIndex) {
+      this.outfitIndex = hover;
+      audio.dryFire();
+    }
+    if (inp.wasPressed('ArrowUp', 'KeyW')) {
+      this.outfitIndex = (this.outfitIndex - 1 + n) % n; audio.dryFire();
+    }
+    if (inp.wasPressed('ArrowDown', 'KeyS')) {
+      this.outfitIndex = (this.outfitIndex + 1) % n; audio.dryFire();
+    }
+    const wheel = inp.wheel ?? 0;
+    if (wheel) {
+      this.outfitIndex = clamp(this.outfitIndex + Math.sign(wheel), 0, n - 1);
+      audio.dryFire();
+    }
+
+    const wear = () => {
+      const id = outfitIdAt(this, this.outfitIndex);
+      if (id && !skinOwned(id, this.achievements)) {
+        // nothing to wear yet: say so, and leave the cursor where it is
+        audio.deny?.();
+        const badge = SKINS[id] ? ACHIEVEMENTS.find((a) => a.id === SKINS[id].ach) : null;
+        this.bannerShow('NOT EARNED YET', badge ? badge.name : null,
+          { dur: 2.2, colour: '#c4463a', local: true });
+        return;
+      }
+      if (this.equipSkin(id) && id) audio.perk?.();
+      else audio.reload?.(2);
+    };
+
+    if (inp.wasPressed('Enter', 'Space')) wear();
+    else if (m?.pressed) {
+      if (hover >= 0) { this.outfitIndex = hover; wear(); }
+      else { this.scene = 'menu'; this.menuIndex = this._menuRowIndex('outfits'); audio.dryFire(); }
+    }
+    if (inp.wasPressed('Escape', 'Backspace')) {
+      this.scene = 'menu';
+      this.menuIndex = this._menuRowIndex('outfits');
+      audio.dryFire();
     }
   }
 
@@ -5092,6 +5276,7 @@ export class Game {
     else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'achievements') drawAchievements(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'stats') drawStats(ctx, this, vw, vh);
+    else if (!this.started && this.scene === 'outfits') drawOutfits(ctx, this, vw, vh);
     else if (!this.started) drawMenu(ctx, this, vw, vh);
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
@@ -5194,7 +5379,7 @@ export class Game {
     // open sky over the storey, if it has any
     const sky = SKY_LIGHT[this.map.floor];
     if (sky) {
-      L.point(VW / 2, VH / 2, Math.max(VW, VH) * 1.15, sky.power, sky.colour, sky.glow);
+      L.point(this.vw / 2, this.vh / 2, Math.max(this.vw, this.vh) * 1.15, sky.power, sky.colour, sky.glow);
     }
 
     // ceiling lamps -- the mains ones only burn once the generator is on.
@@ -5206,7 +5391,7 @@ export class Game {
       let warm = 1;
       if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const x = sx(l.x), y = sy(l.y);
-      if (x < -220 || y < -220 || x > VW + 220 || y > VH + 220) continue;
+      if (x < -220 || y < -220 || x > this.vw + 220 || y > this.vh + 220) continue;
       let f = l.flick * warm;
       if (l.mains && this.powerSurge > 0) f *= 0.4 + Math.random() * 1.4;
       L.point(x, y, 152 * f, 1.0 * f, `rgba(255,182,96,${0.40 * f})`, 0.62 * f);
@@ -5306,12 +5491,12 @@ export class Game {
     // is also the only warning you get that something is climbing in
     for (const b of this.map.barricades) {
       const bx = sx(b.cx), by = sy(b.cy);
-      if (bx < -110 || by < -110 || bx > VW + 110 || by > VH + 110) continue;
+      if (bx < -110 || by < -110 || bx > this.vw + 110 || by > this.vh + 110) continue;
       const broken = b.planks <= 0;
       L.point(bx, by, broken ? 96 : 62, broken ? 0.6 : 0.34,
         broken ? 'rgba(126,156,198,0.18)' : 'rgba(110,140,180,0.10)', broken ? 0.34 : 0.18);
     }
-    L.composite(ctx, VW, VH, this._dlss ? 1 : 0);
+    L.composite(ctx, this.vw, this.vh, this._dlss ? 1 : 0);
 
     // lamp fixtures (drawn after the darkness so they stay visible)
     ctx.save();
@@ -5320,7 +5505,7 @@ export class Game {
       let warm = 1;
       if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const lx = l.x - camX, ly = l.y - camY;
-      if (lx < -20 || ly < -20 || lx > VW + 20 || ly > VH + 20) continue;
+      if (lx < -20 || ly < -20 || lx > this.vw + 20 || ly > this.vh + 20) continue;
       ctx.globalAlpha = 0.55 * l.flick * warm;
       ctx.fillStyle = '#20211f';
       ctx.fillRect(lx - 5, ly - 2, 10, 3);
@@ -6245,7 +6430,7 @@ export class Game {
   /** Cull helper: is this world point anywhere near the visible viewport? */
   _vis(x, y, pad = 60) {
     return x > this.cam.x - pad && y > this.cam.y - pad
-      && x < this.cam.x + VW + pad && y < this.cam.y + VH + pad;
+      && x < this.cam.x + this.vw + pad && y < this.cam.y + this.vh + pad;
   }
 
   /**
@@ -6258,8 +6443,8 @@ export class Game {
     const m = this.map, T2 = T;
     const tx0 = Math.max(0, Math.floor(camX / T2) - 1);
     const ty0 = Math.max(0, Math.floor(camY / T2) - 1);
-    const tx1 = Math.min(m.w - 1, Math.ceil((camX + VW) / T2));
-    const ty1 = Math.min(m.h - 1, Math.ceil((camY + VH) / T2));
+    const tx1 = Math.min(m.w - 1, Math.ceil((camX + this.vw) / T2));
+    const ty1 = Math.min(m.h - 1, Math.ceil((camY + this.vh) / T2));
     ctx.save();
     ctx.lineWidth = 1;
     for (let ty = ty0; ty <= ty1; ty++) {
@@ -6389,8 +6574,8 @@ export class Game {
     ctx.save();
     for (const l of this.weather.leaves) {
       const sx = l.x - camX, sy = l.y - camY;
-      if (sx < -10 || sy < -10 || sx > VW + 10 || sy > VH + 10) continue;
-      if (sx < -10 || sy < -10 || sx > VW + 10 || sy > VH + 10) continue;
+      if (sx < -10 || sy < -10 || sx > this.vw + 10 || sy > this.vh + 10) continue;
+      if (sx < -10 || sy < -10 || sx > this.vw + 10 || sy > this.vh + 10) continue;
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(l.r);

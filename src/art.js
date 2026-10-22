@@ -4,6 +4,7 @@ import {
   PAL, PLAYER_UPPER, PLAYER_LEGS, ZOMBIE_UPPER, ZOMBIE_UPPER_ATTACK, ZOMBIE_LEGS,
   GUNS, GRENADE_SPRITE, PLAQUE_ART,
 } from './spriteData.js';
+import { SKINS } from './skins.js';
 import { makeRng } from './util.js';
 
 export const T = 24;                 // tile size in world pixels
@@ -21,15 +22,23 @@ export function makeCanvas(w, h) {
   return { canvas: c, ctx: x };
 }
 
-/** Build a canvas from ASCII rows + palette. */
-export function buildSprite(rows, w, h) {
+/**
+ * Build a canvas from ASCII rows + palette.
+ *
+ * `over` swaps individual palette keys for one build -- that is how ten
+ * outfits come out of a single drawing: the cut of the uniform never changes,
+ * only the cloth it is cut from. Keys it does not mention keep the stock
+ * colour, so a skin that only wants a different helmet cannot accidentally
+ * turn the soldier's face green.
+ */
+export function buildSprite(rows, w, h, over = null) {
   const { canvas, ctx } = makeCanvas(w, h);
   for (let y = 0; y < rows.length; y++) {
     const line = rows[y];
     for (let x = 0; x < line.length; x++) {
       const ch = line[x];
       if (ch === '.' || ch === ' ') continue;
-      const col = PAL[ch];
+      const col = (over && over[ch]) || PAL[ch];
       if (!col) continue;
       ctx.fillStyle = col;
       ctx.fillRect(x, y, 1, 1);
@@ -56,8 +65,8 @@ export function flatCopy(src, colour) {
   return canvas;
 }
 
-function frames(upper, legs) {
-  return legs.map((l) => buildSprite(upper.concat(l), SPRITE_W, SPRITE_H));
+function frames(upper, legs, pal = null) {
+  return legs.map((l) => buildSprite(upper.concat(l), SPRITE_W, SPRITE_H, pal));
 }
 
 // ---------------------------------------------------------------------------
@@ -230,35 +239,65 @@ export function tintCopy(src, colour, amount = 0.35) {
   return canvas;
 }
 
-function buildDog() {
-  const W = 18, H = 12;
+/**
+ * The hellhound, side on, facing east: 26x16 at two leg poses.
+ *
+ * It is the only body with a frame of its own, so it is the only one that
+ * could be drawn badly -- and it was: at 18x12, with the legs painted over by
+ * a flat slab of a body, it read as a striped insect the size of a soldier's
+ * boot. This one has a chest and a haunch that are different shapes, a deep
+ * barrel, four legs with paws, a neck that carries the head *forward* rather
+ * than out of the shoulders, ears off the skull and a red eye, so it is a dog
+ * even while it is running at your face in the dark. Two poses of the legs, so
+ * it trots instead of gliding.
+ */
+function buildDog(legs = 0) {
+  const W = 26, H = 16;
   const { canvas, ctx } = makeCanvas(W, H);
-  const D = '#2a2119';   // dark fur
+  const D = '#241c14';   // dark fur / outline
   const M = '#4a3a28';   // mid fur
-  const L = '#6b5439';   // light fur
-  const E = '#8c2a20';   // eye glow
+  const L = '#6b5439';   // light fur (the moon on its back)
+  const S = '#1a1410';   // shadow, under everything
+  const E = '#b02a1c';   // eye glow
+  const R = '#6d1a18';   // collar
   const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
 
-  // legs first so the body covers their tops (3px stubs, not stilts)
-  for (const [lx, ly] of [[7, 1], [7, 9], [12, 1], [12, 9]]) px(lx, ly, D, 2, 3);
-  // tail sweeping off to the left
-  px(3, 4, D, 3, 1); px(1, 3, D, 3, 1);
-  // body
-  px(5, 3, M, 9, 6);
-  px(5, 3, L, 9, 1);
-  px(5, 8, D, 9, 1);
-  px(6, 4, D, 3, 2);            // haunch shading
-  px(4, 4, D, 2, 4);            // rear
-  // neck + head
-  px(12, 3, M, 4, 6);
-  px(12, 3, L, 4, 1);
-  px(15, 4, M, 3, 4);           // snout
-  px(17, 5, D, 1, 2);
-  px(17, 5, '#1a1410', 1, 1);   // nose
-  px(11, 2, D, 2, 2);           // ears
-  px(14, 2, D, 2, 2);
-  px(15, 4, E, 1, 1);           // eyes
-  px(12, 4, E, 1, 1);
+  // ---- legs: four of them, and the trot is which pair is forward ------------
+  const near = legs ? [{ x: 17, y: 11 }, { x: 8, y: 11 }] : [{ x: 15, y: 11 }, { x: 10, y: 11 }];
+  const far = legs ? [{ x: 15, y: 10 }, { x: 10, y: 10 }] : [{ x: 18, y: 10 }, { x: 8, y: 10 }];
+  for (const { x, y } of far) { px(x, y, M, 2, 4); px(x, y + 4, S, 3, 1); }   // far pair, dimmer
+  for (const { x, y } of near) { px(x, y, D, 2, 4); px(x, y + 4, S, 3, 1); }
+
+  // ---- tail: up and back, the way an angry dog carries it --------------------
+  px(3, 6, D, 2, 1); px(2, 5, D, 2, 1); px(1, 3, D, 2, 2); px(1, 3, M, 1, 1);
+
+  // ---- the barrel: deep chest at the front, tucked waist at the back --------
+  px(5, 6, M, 15, 5);            // body
+  px(5, 6, L, 14, 1);            // moonlight along the spine
+  px(5, 10, D, 15, 1);           // belly in shadow
+  px(4, 7, D, 3, 3);             // rear quarter
+  px(5, 7, D, 1, 3);
+  px(17, 5, M, 5, 7);            // chest: the tallest part of the animal
+  px(17, 5, L, 4, 1);
+  px(20, 6, D, 1, 5);            // the crease between chest and shoulder
+
+  // ---- neck up to the head, collar at the throat ----------------------------
+  px(20, 4, M, 3, 3);
+  px(20, 4, L, 2, 1);
+  px(19, 6, R, 4, 2);            // collar: the one warm band on it
+  px(19, 6, '#8a2420', 4, 1);
+
+  // ---- head: skull, muzzle, jaw, ears, one red eye --------------------------
+  px(21, 2, D, 4, 5);            // skull, outlined by its own dark fur
+  px(22, 2, M, 3, 4);
+  px(21, 1, D, 1, 2);            // near ear, standing up
+  px(23, 1, D, 2, 2);
+  px(24, 4, M, 2, 3);            // muzzle
+  px(25, 4, S, 1, 1);            // nose
+  px(24, 6, '#2b1b18', 2, 1);    // open jaw
+  px(23, 3, E, 1, 1);            // eye
+  px(25, 3, E, 1, 1);
+
   return canvas;
 }
 
@@ -395,15 +434,35 @@ export function buildArt() {
     plaques[id] = buildSprite(rows, rows[0].length, rows.length);
   }
 
+  // ---- outfits ------------------------------------------------------------
+  // One sprite set per outfit, built once, plus the standard kit filed under
+  // '' so a body with no outfit (and every zombie-side call site that only
+  // knows `art.player`) has something to fall back on.
+  const playerSets = { '': { frames: player, flip: player.map(flipH) } };
+  for (const [id, skin] of Object.entries(SKINS)) {
+    const set = frames(PLAYER_UPPER, PLAYER_LEGS, skin.pal);
+    playerSets[id] = { frames: set, flip: set.map(flipH) };
+  }
+  for (const set of Object.values(playerSets)) {
+    set.white = set.frames.map((c) => flatCopy(c, '#ffffff'));
+    set.whiteFlip = set.flip.map((c) => flatCopy(c, '#ffffff'));
+  }
+
   cache = {
     player,
     playerFlip: player.map(flipH),
+    // outfit id -> { frames, flip, white, whiteFlip }; '' is the standard kit
+    playerSets,
     zombie,
     zombieFlip: zombie.map(flipH),
     zombieAtk,
     zombieAtkFlip: zombieAtk.map(flipH),
-    dog: buildDog(),
-    dogFlip: flipH(buildDog()),
+    dog: buildDog(0),
+    dogFlip: flipH(buildDog(0)),
+    // two poses so a hound trots instead of gliding, and so the size increase
+    // did not turn it into a moving cut-out
+    dogFrames: [buildDog(0), buildDog(1)],
+    dogFramesFlip: [flipH(buildDog(0)), flipH(buildDog(1))],
     // enemy variants: pale/angry runners, slab-grey brutes
     zombieRunner: zombie.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerFlip: zombie.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
@@ -526,7 +585,7 @@ export function buildArt() {
     totem: buildTotem(),
     grave: buildGrave(),
 
-    dogWhite: flatCopy(buildDog(), '#ffd9d9'),
+    dogWhite: flatCopy(buildDog(0), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),
     playerWhiteFlip: player.map((c) => flatCopy(flipH(c), '#ffffff')),
     zombieWhite: zombie.map((c) => flatCopy(c, '#ffe9e9')),

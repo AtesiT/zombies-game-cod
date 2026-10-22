@@ -755,6 +755,26 @@ export class AudioEngine {
     n.start(t); n.stop(t + 0.2);
   }
 
+  /**
+   * A dash: a short rush of air that arrives and leaves. It is built like the
+   * knife (one filtered noise burst), swept the other way -- low to a hiss --
+   * so it cannot be mistaken for a blade or a shot when both are happening.
+   */
+  dash() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(320, t);
+    f.frequency.exponentialRampToValueAtTime(2400, t + 0.16);
+    f.Q.value = 1.1;
+    n.connect(f);
+    const g = this._env(f, t, 0.16, 0.01, 0.2);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.26);
+  }
+
   dryFire() {
     if (!this.ready || this.muted) return;
     const t = this.t;

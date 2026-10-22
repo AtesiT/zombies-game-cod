@@ -3,6 +3,7 @@ import { T, BODY_ROW, HEAD_ROW, SPRITE_W, SPRITE_H, TILE, buildArt } from './art
 import { WEAPONS, WEAPON_ORDER, isAuto, shotSound, defFor, packedTracer, GRENADE_MAX } from './weapons.js';
 import { perkEffects, MAX_PERKS } from './perks.js';
 import { SKILLS, skillEffects, NO_SKILLS } from './skills.js';
+import { skinEffects } from './skins.js';
 import { clamp, dist, dist2, randRange, randInt, pick, approach, TAU, pointSegDist2 } from './util.js';
 import { audio } from './audio.js';
 
@@ -12,6 +13,13 @@ import { audio } from './audio.js';
 export const THROW_KINDS = ['frag', 'molotov', 'gas'];
 export const THROW_POCKET = Object.freeze({ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' });
 export const throwPocket = (kind) => THROW_POCKET[kind] ?? 'grenades';
+
+// Shift is a dash, not a jog: a short burst of legs with a five-second clock
+// on it. Long enough to break a bite, short enough that it never replaces the
+// walk -- and the cooldown runs in the HUD so nobody has to count.
+export const DASH_TIME = 0.18;
+export const DASH_CD = 5;
+export const DASH_SPEED = 690;
 
 const SPRITE_OX = SPRITE_W / 2;
 const SPRITE_OY = BODY_ROW;             // sprite pixel drawn at the entity origin
@@ -326,7 +334,15 @@ export class Player {
     this.knifeCd = 0;
     this.knifeAnim = 0;
     this.knifeDir = 1;
-    this.sprinting = false;
+    this.sprinting = false;      // on the wire only: a dash reads as a sprint
+    // ---- the outfit, and the dash -------------------------------------
+    // `skin` is an id from src/skins.js, or null for the standard kit.
+    this.skin = null;
+    this.skinFx = skinEffects(null);
+    this.dashT = 0;              // seconds of burst left
+    this.dashCd = 0;             // seconds until the next one
+    this.dashMax = DASH_CD;      // what this body's clock started at (HUD)
+    this.dashDir = { x: 1, y: 0 };
     this.portalCd = 0;
     this.dmTimer = 0;          // Death Machine
     this.diveT = 0;            // PhD Flopper dive
@@ -339,6 +355,15 @@ export class Player {
     // that skills exist.
     const fx = perkEffects(this.perks);
     const sk = skillEffects(this.skills);
+    const outfit = skinEffects(this.skin);
+    // three purses, one stat block: a coat is worth as much as a run skill,
+    // and both are folded in here so nothing downstream can forget them
+    fx.maxHp += outfit.bonusHp;
+    fx.speedMul *= outfit.speedMul;
+    fx.reloadMul *= outfit.reloadMul;
+    fx.regenRate *= outfit.regenRateMul;
+    fx.dashMul *= outfit.dashMul;
+    this.skinFx = outfit;
     fx.maxHp += sk.bonusHp;
     fx.reloadMul *= sk.reloadMul;
     fx.fireDelayMul *= sk.fireDelayMul;
@@ -367,6 +392,19 @@ export class Player {
   }
 
   hasSkill(id) { return this.skills.has(id); }
+
+  /**
+   * Put a different outfit on. Anything unknown falls back to the standard
+   * kit, and the stat block is recomputed immediately -- a coat that only
+   * counts after the next perk machine would be a coat you cannot trust.
+   */
+  setSkin(id) {
+    const next = id && skinEffects(id).id ? id : null;
+    if (next === this.skin) return false;
+    this.skin = next;
+    this.applyPerks();
+    return true;
+  }
 
   hasPerk(id) { return this.perks.has(id); }
 
@@ -683,6 +721,31 @@ export class Player {
     return true;
   }
 
+  /**
+   * Shift: one burst of legs, one press, five seconds before the next.
+   *
+   * It fires from a standstill as well -- a dash into the room you were
+   * aiming at is the reason to have one -- and it is refused while the body
+   * is downed, stunned, aboard the bird or in a menu. The cooldown is stored
+   * on the body, so a co-op guest's clock is theirs and the host's is theirs.
+   */
+  _dashTick(game, input, mv, moving) {
+    if (this.dashT > 0 || this.dashCd > 0) return;
+    if (game.paused || this.dead || this.downed || this.stunT > 0 || this.evac) return;
+    if (!input?.wasPressed('ShiftLeft', 'ShiftRight')) return;
+    const dir = moving ? { x: mv.x, y: mv.y } : { x: Math.cos(this.aim), y: Math.sin(this.aim) };
+    const len = Math.hypot(dir.x, dir.y) || 1;
+    this.dashDir.x = dir.x / len;
+    this.dashDir.y = dir.y / len;
+    this.dashT = DASH_TIME;
+    // the outfit can shorten the clock (THE GHOST), and so can Stamin-Up
+    this.dashMax = DASH_CD * (this.skinFx?.dashMul ?? 1) * (this.perkFx?.dashMul ?? 1);
+    this.dashCd = this.dashMax;
+    this.walkPhase += 1.2;
+    game.particles?.dust(this.pos.x, this.pos.y, Math.atan2(-this.dashDir.y, -this.dashDir.x), 9);
+    audio.dash();
+  }
+
   update(dt, game, input) {
     const d = this.def;
     this.fireTimer = Math.max(0, this.fireTimer - dt);
@@ -717,6 +780,8 @@ export class Player {
 
     // --------------------------------------------------------- timers ------
     this.dmTimer = Math.max(0, this.dmTimer - dt);
+    this.dashCd = Math.max(0, this.dashCd - dt);
+    this.dashT = Math.max(0, this.dashT - dt);
     this.portalCd = Math.max(0, this.portalCd - dt);
     this.chillT = Math.max(0, (this.chillT ?? 0) - dt);
 
@@ -748,8 +813,11 @@ export class Player {
     // ---------------------------------------------------------- movement ---
     const mv = game.paused ? { x: 0, y: 0 } : input.moveVector();
     const moving = mv.x !== 0 || mv.y !== 0;
-    this.sprinting = moving && !game.paused && !this.downed
-      && input.isDown('ShiftLeft', 'ShiftRight') && this.hp > 1;
+    // Shift used to be a hold-to-run; it is a dash now -- one burst, one
+    // press, five seconds before the next. `sprinting` survives as the wire
+    // flag the other machines read to draw the streak.
+    this._dashTick(game, input, mv, moving);
+    this.sprinting = this.dashT > 0;
     // Second Wind: one burst of legs per round, the moment the health bar
     // falls into the red. It buys distance, never immunity.
     if (this.skillFx?.secondwind) {
@@ -763,20 +831,28 @@ export class Player {
     }
     // Cold Blood: staying put for half a second (and not while being shoved
     // around) loads exactly one shot with extra punch.
-    const still = Math.hypot(this.vel.x, this.vel.y) < 8 && !this.sprinting;
+    const still = Math.hypot(this.vel.x, this.vel.y) < 8 && this.dashT <= 0;
     this._stillT = still ? (this._stillT ?? 0) + dt : 0;
     if (this.skillFx?.coolhead && this._stillT >= 0.6) this._coolReady = true;
-    this.speed = this.baseSpeed * (this.sprinting ? this.perkFx.sprintMul : 1)
+    this.speed = this.baseSpeed
       * (this.windT > 0 ? (this.skillFx?.secondwindSpeed ?? 1) : 1)
       * (this.downed ? 0.34 : 1) * (this.chillT > 0 ? 0.62 : 1);
-    const targetVx = mv.x * this.speed;
-    const targetVy = mv.y * this.speed;
-    const a = (moving ? this.accel : this.accel * 1.6) * dt;
-    this.vel.x = approach(this.vel.x, targetVx, a);
-    this.vel.y = approach(this.vel.y, targetVy, a);
-    if (!moving) {
-      const f = Math.max(0, 1 - this.friction * dt);
-      this.vel.x *= f; this.vel.y *= f;
+    if (this.dashT > 0) {
+      // a dash is not steering: all of it goes where it started, and the last
+      // third of it eases out so the stop does not read as a wall
+      const k = 0.5 + 0.5 * (this.dashT / DASH_TIME);
+      this.vel.x = this.dashDir.x * DASH_SPEED * k;
+      this.vel.y = this.dashDir.y * DASH_SPEED * k;
+    } else {
+      const targetVx = mv.x * this.speed;
+      const targetVy = mv.y * this.speed;
+      const a = (moving ? this.accel : this.accel * 1.6) * dt;
+      this.vel.x = approach(this.vel.x, targetVx, a);
+      this.vel.y = approach(this.vel.y, targetVy, a);
+      if (!moving) {
+        const f = Math.max(0, 1 - this.friction * dt);
+        this.vel.x *= f; this.vel.y *= f;
+      }
     }
     this.map.moveCircle(this.pos, this.vel.x * dt, this.vel.y * dt, this.r, this.floor);
 
@@ -868,7 +944,7 @@ export class Player {
     }
     hits.sort((a, b) => a.d - b.d);
 
-    const dmg = (260 + game.round * 22) * (this.skillFx?.dmgMul ?? 1);
+    const dmg = (260 + game.round * 22) * (this.skillFx?.dmgMul ?? 1) * (this.skinFx?.knifeMul ?? 1);
     let any = false;
     for (const h of hits.slice(0, 2)) {
       const z = h.z;
@@ -974,7 +1050,13 @@ export class Player {
     ctx.restore();
 
     const frame = Math.floor(this.walkPhase * 2) % 4;
-    let body = flip ? art.playerFlip[frame] : art.player[frame];
+    // The outfit: one sprite set per coat, built once in art.js. A body with
+    // no outfit (or one that arrived from an older guest) wears the standard
+    // kit, which is filed under ''.
+    const set = art.playerSets?.[this.skin ?? ''] ?? null;
+    const setFlip = set?.flip ?? art.playerFlip;
+    const setBody = set?.frames ?? art.player;
+    let body = flip ? setFlip[frame] : setBody[frame];
     // the shot pushes the whole soldier back a step, and the gun further
     const kv = this.kickVis;
     const bx = -Math.cos(this.aim) * kv * 1.1, by = -Math.sin(this.aim) * kv * 1.1;
@@ -982,6 +1064,19 @@ export class Player {
 
     if (this.invuln > 0 && Math.floor(this.invuln * 22) % 2 === 0) {
       ctx.globalAlpha = 0.75;
+    }
+    // the streak: two after-images of the coat, further back the faster the
+    // body is going. A guest sees this too -- `sprinting` is what the wire
+    // carries for it, so a dash reads at a glance in a shared room.
+    if (this.sprinting || this.dashT > 0) {
+      const sp = Math.hypot(this.vel.x, this.vel.y);
+      const k = Math.min(1, sp / DASH_SPEED);
+      for (let i = 2; i >= 1; i--) {
+        const back = i * 7 * k;
+        ctx.globalAlpha = 0.16 * (3 - i) * k;
+        ctx.drawImage(body, gx - this.dashDir.x * back, gy - this.dashDir.y * back);
+      }
+      ctx.globalAlpha = 1;
     }
     ctx.drawImage(body, gx, gy);
     ctx.globalAlpha = 1;
@@ -1017,7 +1112,8 @@ export class Player {
       ctx.save();
       ctx.globalAlpha = this.hurtFlash * 0.5;
       ctx.globalCompositeOperation = 'lighter';
-      const w = flip ? art.playerWhiteFlip[frame] : art.playerWhite[frame];
+      const w = flip ? (set?.whiteFlip ?? art.playerWhiteFlip)[frame]
+        : (set?.white ?? art.playerWhite)[frame];
       ctx.drawImage(w, gx, gy);
       ctx.restore();
     }
@@ -1055,12 +1151,13 @@ export const ENEMY_TYPES = {
     chew: 3.4, points: 1.7, set: 'brute', headOff: 1.25, smash: true,
   },
   dog: {
-    // A hound is a big animal, not a lap dog. The sprite is a side-on 18x12
+    // A hound is a big animal, not a lap dog. The sprite is a side-on 22x14
     // drawing, so on a 20x22 human it read as a puppy at scale 1: it now sits
-    // at 1.7 and its collision radius grew with it. `hitScale` keeps the
+    // at 1.75 -- 38 px nose to tail, taller at the shoulder than a crawling
+    // body -- and its collision radius grew with it. `hitScale` keeps the
     // bullets honest -- a bigger body is a bigger target, or the picture lies.
-    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 8.6, scale: 1.7,
-    hitScale: 1.6, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
+    id: 'dog', name: 'Hellhound', hp: 0.5, speed: 1.95, dmg: 0.7, r: 10.5, scale: 1.75,
+    hitScale: 1.9, chew: 0.45, points: 1.35, set: 'dog', headOff: 0.45,
     sprinty: true, four: true,
   },
   crawler: {
@@ -2052,7 +2149,12 @@ export class Zombie {
     // the cloud is drawn as a cluster of bodies, never as one sprite; this is
     // only the fallback so the shared draw path still has an image to hold
     if (s === 'swarmling') s = 'swarmlet';
-    if (s === 'dog') return { img: flip ? art.dogFlip : art.dog, framed: false };
+    if (s === 'dog') {
+      const trot = Math.floor(this.walkPhase * 2) % 2;
+      const frames = flip ? art.dogFramesFlip : art.dogFrames;
+      const img = frames?.[trot] ?? (flip ? art.dogFlip : art.dog);
+      return { img, framed: false };
+    }
     if (s === 'crawler') {
       return { img: (flip ? art.crawlerFlip : art.crawler)[this._frame(false)], framed: true };
     }
