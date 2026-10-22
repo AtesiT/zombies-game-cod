@@ -2024,9 +2024,12 @@ function _drawAchievements(ctx, game, w, h) {
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
   const unlocked = game.achievements?.unlocked ?? new Set();
-  text(ctx, 'ACHIEVEMENTS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
-  text(ctx, `${unlocked.size} / ${ACHIEVEMENTS.length}`, cx + cw - 14, cy + 20, {
-    font: 'bold 11px "Courier New", monospace', colour: GOLD, align: 'right',
+  const hat = chipCorner(w, cw);
+  text(ctx, 'ACHIEVEMENTS', cx + 14, hat ? cy + 18 : cy + 20, {
+    font: `bold ${hat ? 14 : 16}px "Courier New", monospace`, colour: GOLD,
+  });
+  text(ctx, `${unlocked.size} / ${ACHIEVEMENTS.length}`, cx + cw - 14, hat ? cy + 28 : cy + 20, {
+    font: `bold ${hat ? 9 : 11}px "Courier New", monospace`, colour: GOLD, align: 'right',
   });
 
   // visible window
@@ -2123,8 +2126,9 @@ function _drawStats(ctx, game, w, h) {
     font: `bold ${narrow ? 13 : 16}px "Courier New", monospace`, colour: GOLD,
   });
   if (!narrow) {
-    text(ctx, 'THIS MACHINE', cx + cw - 14, cy + 20, {
-      font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+    const hat = chipCorner(w, cw);
+    text(ctx, 'THIS MACHINE', cx + cw - 14, hat ? cy + 28 : cy + 20, {
+      font: `bold ${hat ? 8.5 : 10}px "Courier New", monospace`, colour: INK_DIM, align: 'right',
     });
   }
 
@@ -2327,9 +2331,12 @@ function _drawOutfits(ctx, game, w, h) {
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 30);
 
   const owned = ownedOutfitCount(game);
-  text(ctx, 'OUTFITS', cx + 14, cy + 20, { font: 'bold 16px "Courier New", monospace', colour: GOLD });
-  text(ctx, `${owned} / ${SKIN_ORDER.length} EARNED`, cx + cw - 14, cy + 20, {
-    font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'right',
+  const hat = chipCorner(w, cw);
+  text(ctx, 'OUTFITS', cx + 14, hat ? cy + 18 : cy + 20, {
+    font: `bold ${hat ? 14 : 16}px "Courier New", monospace`, colour: GOLD,
+  });
+  text(ctx, `${owned} / ${SKIN_ORDER.length} EARNED`, cx + cw - 14, hat ? cy + 28 : cy + 20, {
+    font: `bold ${hat ? 8.5 : 10}px "Courier New", monospace`, colour: INK_DIM, align: 'right',
   });
 
   const sel = clamp(game.outfitIndex ?? 0, 0, L.rows - 1);
@@ -2788,18 +2795,21 @@ function _drawPause(ctx, game, w, h) {
     // row (a landscape phone) a fixed baseline printed under the box
     const ty = rc.y + rc.h / 2 + L.font * 0.35;
     text(ctx, r.label, rc.x + 18, ty, { font: labelFont, colour: hot ? GOLD : INK, align: 'left' });
-    if (r.hint && L.font > 11) {
+    // the key beside a row is a reminder for hands on a keyboard; on glass it
+    // is a letter that means nothing and a thumb target that reads worse
+    if (r.hint && L.font > 11 && !isTouchDevice()) {
       text(ctx, r.hint, rc.x + rc.w - 18, ty, { font: hintFont, colour: INK_DIM, align: 'right' });
     }
   });
   // the hint line is the first thing given up: a line drawn over the health bar
   // is worse than no line
   if (L.hintShown) {
-    const text_ = 'ARROWS + ENTER WORK HERE';
+    // a phone has no arrow keys, and the rows are thumb targets: say the thing
+    // a thumb can do
+    const text_ = isTouchDevice() ? 'TAP A ROW TO PICK' : 'ARROWS + ENTER WORK HERE';
     const font = 'bold 10px "Courier New", monospace';
-    text(ctx, textWidth(text_, font) <= w - 20 ? text_ : 'ARROWS + ENTER', w / 2, L.hintY, {
-      font, colour: INK_DIM, align: 'center',
-    });
+    text(ctx, textWidth(text_, font) <= w - 20 ? text_ : (isTouchDevice() ? 'TAP A ROW' : 'ARROWS + ENTER'),
+      w / 2, L.hintY, { font, colour: INK_DIM, align: 'center' });
   }
   ctx.restore();
 }
@@ -2924,8 +2934,16 @@ function _drawDebug(ctx, game, w, h) {
   ctx.fillStyle = '#22262e';
   ctx.fillRect(cx + 1, cy + 1, cw - 2, 28);
 
-  text(ctx, 'DEBUG — FOR TESTING', cx + 14, cy + 19, {
-    font: 'bold 15px "Courier New", monospace', colour: GOLD,
+  // the way-out chip sits over this header's right corner on a phone, so the
+  // title is measured: 'DEBUG — FOR TESTING' is 19 characters of the panel
+  const dbgTitles = ['DEBUG — FOR TESTING', 'DEBUG FOR TESTING', 'DEBUG PANEL', 'DEBUG'];
+  const dbgFont = (px) => `bold ${px}px "Courier New", monospace`;
+  const dbgRoom = cw - (chipCorner(w, cw) ? 104 : 20);
+  let dbgPx = cw < 300 ? 13 : 15;
+  let dbgTitle = dbgTitles.find((t) => textWidth(t, dbgFont(dbgPx)) <= dbgRoom) ?? 'DEBUG';
+  while (dbgPx > 10 && textWidth(dbgTitle, dbgFont(dbgPx)) > dbgRoom) dbgPx -= 1;
+  text(ctx, dbgTitle, cx + 14, cy + (cw < 300 ? 18 : 19), {
+    font: dbgFont(dbgPx), colour: GOLD,
   });
 
   // ---- tabs -------------------------------------------------------------
@@ -3016,15 +3034,21 @@ function _drawDebug(ctx, game, w, h) {
       });
   }
 
-  const dbgFoot = cw >= 380
-    ? 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO'
-    : 'W S PICK   ·   L/R TAB   ·   ENTER DO';
+  // a phone cannot press ENTER or TAB; it taps, so the footer says so
+  const touch = isTouchDevice();
+  const dbgFoot = touch
+    ? (cw >= 380 ? 'TAP A ROW TO DO IT   ·   TAP A TAB TO SWITCH' : 'TAP A ROW   ·   TAP A TAB')
+    : cw >= 380
+      ? 'W/S: PICK   LEFT/RIGHT: TAB   ENTER: PLAY / DO'
+      : 'W S PICK   ·   L/R TAB   ·   ENTER DO';
   // the footer of the music tab is two thoughts in one line: on a narrow panel
   // the second one moves to a line of its own rather than off the glass, and
   // the line above it moves up to make room
   const footFont = '9px "Courier New", monospace';
-  const musicFoot = '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE';
-  const closeFoot = '` / ESC: CLOSE';
+  const musicFoot = touch
+    ? '× CLOSES     STOP: RETURN TO ADAPTIVE SCORE'
+    : '` / ESC: CLOSE     STOP: RETURN TO ADAPTIVE SCORE';
+  const closeFoot = touch ? '× IN THE CORNER CLOSES' : '` / ESC: CLOSE';
   const twoLines = game.debugTab === DEBUG_MUSIC_TAB && textWidth(musicFoot, footFont) > cw - 12;
   text(ctx, dbgFoot, cx + cw / 2, cy + ch - (twoLines ? 34 : 27), {
     font: 'bold 10px "Courier New", monospace', colour: INK_DIM, align: 'center',
@@ -3235,8 +3259,10 @@ function _drawSettings(ctx, game, w, h, k = 1) {
       // measured against the panel: at the menu scale a 360-pixel phone gives
       // the settings panel 240 units and this line is 242 of them
       const hf = 'bold 9px "Courier New", monospace';
-      const full = 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE';
-      const half = 'DRAG TO SCROLL   ·   W S / A D';
+      const full = isTouchDevice()
+        ? 'DRAG TO SCROLL   ·   TAP A ROW   ·   DRAG A SLIDER'
+        : 'DRAG TO SCROLL   ·   W S PICK   ·   A D CHANGE';
+      const half = isTouchDevice() ? 'DRAG TO SCROLL   ·   TAP TO PICK' : 'DRAG TO SCROLL   ·   W S / A D';
       const hintText = textWidth(full, hf) <= cw - 16 ? full
         : textWidth(half, hf) <= cw - 16 ? half : 'DRAG TO SCROLL';
       text(ctx, hintText, cx + cw / 2, cy + 44, {
@@ -3377,6 +3403,16 @@ export function backChipRect(w, h) {
 }
 
 /** Is this point on the way-out chip? Screen units, like the pointer. */
+/**
+ * Is this panel's top-right corner under the way-out chip?
+ *
+ * The chip is drawn in screen units, over a panel drawn in menu units, and a
+ * panel that is nearly as wide as the screen puts its header -- and the counter
+ * that lives at the right of it -- exactly where the chip lands. Such a panel
+ * stacks its header on two lines instead of one.
+ */
+function chipCorner(w, cw) { return cw > w - 30; }
+
 export function backChipAt(w, h, mx, my) {
   const r = backChipRect(w, h);
   return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;

@@ -525,6 +525,23 @@ turning the panels into numbers.
   at 15 pixels each, and the statistics page turns its long column into two
   when the panel is wide and short. The title screen's key list falls back to
   short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The way-out chip was printed over the corner of the panel under it.** It
+  lives in the top-right of the *screen*, in screen units; the panels are drawn
+  in menu units and centered, so on any screen where a panel is nearly as wide
+  as the glass its header lands underneath. That was every phone: the
+  achievements counter ("0 / 36"), the outfits counter ("0 / 10 EARNED"), the
+  debug title and "THIS MACHINE" all had the chip across their last letters.
+  Those panels now stack the counter under the title when their corner is under
+  the chip, and the debug title is measured down to a shorter one
+  ("DEBUG PANEL" on a phone). A test walks each panel and fails on any label
+  inside the chip.
+- **The menus told a phone to press keys it does not have.** "ARROWS + ENTER
+  WORK HERE" on the pause menu, "` / ESC: CLOSE" and "W/S: PICK  ENTER: DO" in
+  the debug panel, "W S PICK · A D CHANGE" in settings -- and the one key that
+  mattered, the backtick that opens DEBUG, was invisible on glass. A touch
+  device now reads "TAP A ROW TO PICK", "TAP A ROW · TAP A TAB",
+  "× IN THE CORNER CLOSES" and "TAP A ROW · DRAG A SLIDER", and the per-row key
+  letters are not drawn at all.
 - **The Colonel was the Warden's helm with a cap drawn on top.** Two wardens,
   a hundred rounds apart, in the same silhouette and the same green -- and
   because the helm covers the zombie's own head, the cap had nothing to sit on.
@@ -567,19 +584,21 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **146/146** and the historical regression **48/48**.
-Twenty-two of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
+Validation: `npm test` **148/148** and the historical regression **48/48**.
+Twenty-four of the tests are new: `tools/harness/roster.test.mjs` (14 — the warden
 line from 10 to 55 and its wrap, the second-cycle health bonus, no two wardens
 sharing a sprite set, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
 venom's clock and its place on the HUD, the warden's banner, the banner queue)
-and `tools/harness/menutext.test.mjs` (6 — every label on every panel turned
+and `tools/harness/menutext.test.mjs` (8 — every label on every panel turned
 into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
 off screen at eight screen sizes -- the two a phone gets at MAX PICTURE SIZE
 and a phone held sideways -- plus a state-by-state sweep of the HUD's two edge
 bands, a check that the all-time page never has to cut a label, and a
 landscape-phone pass that walks every menu and pause row through its own hit
-test: the row that is drawn is the row that is pressed), and
+test: the row that is drawn is the row that is pressed, no label under the
+way-out chip, and a faked touch device checking that the menus stop naming
+keys), and
 `tools/harness/toast.test.mjs` (2 -- the achievement card and the round banner
 stay on the glass and off the map, the chip and the floor tag). A label is
 off screen when any of its letters is: a wordmark clipped at the top of the

@@ -23,6 +23,7 @@ import { nc, load } from './stub.mjs';
 
 const { Game, Input, VW, VH } = await load();
 const HUD = await import('../../src/hud.js');
+const touch = await import('../../src/touch.js');
 
 const H = 1 / 60;
 const clearStorage = () => { for (const k of Object.keys(localStorage._d)) delete localStorage._d[k]; };
@@ -303,6 +304,79 @@ test('the front page, the pause menu and the all-time page hold a landscape phon
       const hit = HUD.pauseHitTest(g, g.vw, g.vh, r.x + r.w / 2, r.y + r.h / 2);
       assert.equal(hit, i, `${w}x${h}: pause row ${i} is drawn but not pressed`);
     }
+    clearStorage();
+  }
+});
+
+// The way out of a menu is drawn by the game over the panel: a chip in the
+// top-right corner of the *screen*, in screen units, over a panel drawn in
+// menu units. A panel as wide as the screen therefore puts its header -- and
+// the counter that lives at the right of it -- underneath that chip. It did,
+// on every phone: ACHIEVEMENTS 0 / 36, OUTfits 0 / 10 EARNED and the debug
+// title all had the chip printed across their last letters.
+const CHIP_PANELS = ['settings', 'debug', 'zoo', 'music', 'achievements', 'stats', 'outfits', 'gameover'];
+
+test('no label is printed under the way-out chip', () => {
+  clearStorage();
+  for (const [w, h] of SIZES) {
+    for (const name of CHIP_PANELS) {
+      const g = fresh(w, h);
+      g.startRound(3);
+      g.scene = 'game';
+      g.paused = true;
+      if (name === 'gameover') { g.gameOver = true; g.started = true; g.overT = 3; }
+      const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+      PANELS[name](ctx, g, g.vw, g.vh);
+      const chip = HUD.backChipRect(g.vw, g.vh);
+      const under = items.filter((it) => it.x1 > chip.x - 2 && it.x0 < chip.x + chip.w + 2
+        && it.y1 > chip.y - 2 && it.y0 < chip.y + chip.h + 2);
+      assert.deepEqual(under.map((it) => it.str), [],
+        `${name} at ${w}x${h}: ${under.map((it) => `"${it.str}" at ${it.x0.toFixed(0)},${it.y0.toFixed(0)}`).join(', ')} under the chip at ${chip.x},${chip.y}`);
+      clearStorage();
+    }
+  }
+});
+
+test('the phone reads its own instructions, not a keyboard it does not have', () => {
+  clearStorage();
+  const had = globalThis.matchMedia;
+  globalThis.matchMedia = (q) => ({ matches: /coarse/.test(String(q)), addEventListener() {}, removeEventListener() {} });
+  try {
+    assert.equal(touch.isTouchDevice(), true, 'the fake phone is not seen as touch');
+    const [w, h] = [360, 640];
+    const paused = fresh(w, h);
+    paused.startRound(3);
+    paused.scene = 'game';
+    paused.paused = true;
+    const pause = recordingContext(nc(paused.vw, paused.vh).getContext('2d'));
+    HUD.drawPause(pause.ctx, paused, paused.vw, paused.vh);
+    const labels = pause.items.map((it) => it.str);
+    // the key beside a row is gone: a phone has no P, O, C, R or backtick
+    assert.deepEqual(labels.filter((s) => /^[A-Z`/]$/.test(s)), [], 'a single key hint survived on a phone');
+    assert.ok(labels.some((s) => s.includes('TAP A ROW')), 'the pause menu does not say how to use it');
+    assert.ok(!labels.some((s) => s.includes('ARROWS')), 'the pause menu still points at the arrow keys');
+
+    const dbg = fresh(w, h);
+    dbg.startRound(3);
+    dbg.debugTab = 1;
+    const d = recordingContext(nc(dbg.vw, dbg.vh).getContext('2d'));
+    HUD.drawDebug(d.ctx, dbg, dbg.vw, dbg.vh);
+    const dl = d.items.map((it) => it.str);
+    assert.ok(dl.some((s) => s.includes('TAP A ROW')), 'the debug list does not say how to use it');
+    assert.ok(dl.some((s) => s.includes('×')), 'the debug list does not say how to close it');
+    assert.ok(!dl.some((s) => s.includes('ESC') || s.includes('ENTER') || s.includes('W/S')),
+      `the debug list still names a key: ${dl.join(' | ')}`);
+
+    const set = fresh(w, h);
+    set.startRound(3);
+    const st = recordingContext(nc(set.vw, set.vh).getContext('2d'));
+    HUD.drawSettings(st.ctx, set, set.vw, set.vh);
+    const sl = st.items.map((it) => it.str);
+    assert.ok(sl.some((s) => s.includes('TAP')), 'the settings page does not say how to pick a row');
+    assert.ok(!sl.some((s) => /W S|MOUSE|WHEEL/.test(s)), `the settings page still names a mouse: ${sl.join(' | ')}`);
+  } finally {
+    if (had === undefined) delete globalThis.matchMedia;
+    else globalThis.matchMedia = had;
     clearStorage();
   }
 });
