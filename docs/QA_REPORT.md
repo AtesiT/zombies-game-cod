@@ -525,6 +525,14 @@ turning the panels into numbers.
   at 15 pixels each, and the statistics page turns its long column into two
   when the panel is wide and short. The title screen's key list falls back to
   short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The achievement card was printed over the corner of the screen.** It was
+  a fixed 360 x 72 rectangle whose left edge was `w - 374`: on a phone with 360
+  units of drawing space the card *started* outside the glass, and on a laptop
+  it covered the bottom of the minimap, the SOUND IS OFF chip and the floor
+  tag. The card now measures itself, sits under the map and the chip, steps
+  under a live round banner rather than printing through it, and the floor tag
+  steps under *it*. A round banner's title is measured down to the glass too:
+  THE BELLRINGER at 46 px is 386 units on a 360-unit phone.
 - **The death screen ran off the bottom of a small phone.** At MAX PICTURE SIZE
   on a 360 x 560 canvas the one-column ledger (22 rows at a fixed 15) went
   through the prompt and the last six rows were painted off the glass, and the
@@ -549,8 +557,8 @@ turning the panels into numbers.
   never counts as a press, and one wheel notch is one row
   (`tools/harness/phoneexit.test.mjs`, 9 tests).
 
-Validation: `npm test` **142/142** and the historical regression **48/48**.
-Eighteen of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
+Validation: `npm test` **144/144** and the historical regression **48/48**.
+Twenty of the tests are new: `tools/harness/roster.test.mjs` (12 — the warden
 line from 10 to 55 and its wrap, escort sizing, every arrival round, four
 sprites per body, the verb table, the hive and its bees, shootable silk, the
 venom's clock and its place on the HUD, the warden's banner, the banner queue)
@@ -558,7 +566,11 @@ and `tools/harness/menutext.test.mjs` (6 — every label on every panel turned
 into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
 off screen at eight screen sizes -- the two a phone gets at MAX PICTURE SIZE
 and a phone held sideways -- plus a state-by-state sweep of the HUD's two edge
-bands and a check that the all-time page never has to cut a label). A label is
+bands, a check that the all-time page never has to cut a label, and a
+landscape-phone pass that walks every menu and pause row through its own hit
+test: the row that is drawn is the row that is pressed), and
+`tools/harness/toast.test.mjs` (2 -- the achievement card and the round banner
+stay on the glass and off the map, the chip and the floor tag). A label is
 off screen when any of its letters is: a wordmark clipped at the top of the
 glass is the same bug as a row printed through the footer. The menutext sweep was written
 against the bugs above and was checked against the old behaviour twice:
@@ -573,7 +585,9 @@ controls list with its short-form key column and its footer, the pause menu
 fitting inside a phone, the DEBUG zoo list with its scroll rail and counter, the
 boss bar clear of the sound chip and the map, the pause chip and the map in
 their corners, the death screen's cut-down ledger, the all-time page with no cut
-labels, and the new archer and drummer sprites at gameplay scale.
+labels, the achievement card clear of the minimap, the sound chip and the
+round banner on a phone, a laptop and a phone on its side, and the new archer
+and drummer sprites at gameplay scale.
 
 Not claimed: a real phone or browser run; drag physics on real glass; audio
 output.
