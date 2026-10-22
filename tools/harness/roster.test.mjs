@@ -321,3 +321,50 @@ test('the venom is on the health bar, and the regen holds while it works', () =>
   assert.ok(p.hp > 60, 'the body does not recover once the venom is out');
   clearStorage();
 });
+
+// ---------------------------------------------------------------------------
+//  The round says the warden's name
+// ---------------------------------------------------------------------------
+test('a warden round announces the warden, not the radio', () => {
+  clearStorage();
+  for (const r of [10, 15, 20, 25, 30, 35, 40, 45, 50, 55]) {
+    const g = fresh();
+    g.startRound(r);
+    const want = ENEMY_TYPES[bossForRound(r)].name.toUpperCase();
+    assert.equal(g.banner?.title, want, `round ${r} announced "${g.banner?.title}", not ${want}`);
+    // it stays up long enough to read: the warden's own banner, not a 2 s one
+    assert.ok(g.banner.max >= 3, `the warden banner lasts ${g.banner.max} s`);
+    // and the quiet banners that would have covered it are behind it
+    const seen = [g.banner.title];
+    for (let i = 0; i < 60 * 8; i++) {
+      g.update(H);
+      const t = g.banner?.title;
+      if (t && t !== seen[seen.length - 1]) seen.push(t);
+    }
+    assert.equal(seen[0], want, `round ${r} opened with ${seen[0]}`);
+    assert.ok(!seen.slice(1).includes(want), 'the warden had to be announced twice');
+    clearStorage();
+  }
+});
+
+test('a plain round still announces its number, and the queue is bounded', () => {
+  clearStorage();
+  const g = fresh();
+  g.startRound(24);
+  assert.equal(g.banner?.title, 'ROUND 24');
+  // nothing may pile up in the queue: three is the room behind the banner
+  for (let i = 0; i < 6; i++) {
+    g.bannerShow('ONE', null, { queue: true });
+    g.bannerShow('TWO', null, { queue: true });
+    g.bannerShow('THREE', null, { queue: true });
+    g.bannerShow('FOUR', null, { queue: true });
+  }
+  assert.ok(g.bannerQueue.length <= 3, `${g.bannerQueue.length} banners are waiting`);
+  assert.equal(g.banner.title, 'ROUND 24', 'a queued banner jumped the one being read');
+  // and every queued one is shown, one at a time, in order
+  g.banner.t = 0.01;
+  for (let i = 0; i < 60 * 20; i++) g.update(H);
+  assert.equal(g.banner, null, 'a banner never left the screen');
+  assert.equal(g.bannerQueue.length, 0, 'a banner never got its turn');
+  clearStorage();
+});

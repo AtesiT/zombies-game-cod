@@ -473,3 +473,50 @@ changed module.
 Not claimed: a real browser or phone run (none in this sandbox); window blur
 and `visibilitychange` firing order across browsers is covered by the method's
 own rule, not by a live window.
+
+## Pass: the roster, the wardens and a phone UI that can be left — 2026-10-22
+
+Found by playing the build on a 430 × 930 layout and by reading the tables:
+
+- **The widow's venom did nothing.** Regen healed 30 a second straight through a
+  4-a-second bleed, so nine seconds of poison left the bar exactly where it
+  started; the one thing the bite was meant to cost — the next few seconds —
+  cost nothing. Regen now holds while `venomT > 0` and the bleed stops at a
+  fifth of the bar (`hp > floor` rather than a clamp: the clamp version healed a
+  body already under the floor back up to it, which is the worst possible bug
+  in a poison). The HUD shows the clock as a green strip under the health bar
+  and `VENOM Ns` where `RECOVERING` would be, because a held regen with no
+  explanation reads as a bug.
+- **The First had no `boss` flag** while `bossForRound(25)` handed it a warden
+  round. That is deliberate — it also walks in the ordinary horde from round
+  18 — so `_spawnBoss` sets `z.boss` on the body it spawns and the bar, the
+  revive pips and the banner read the flag on the zombie, not the type. The
+  roster test asserts the eight warden-only types carry `boss: true`.
+- **Every warden round hid the warden's name.** `_spawnBoss` puts the name up
+  for four seconds; `startRound` then showed `ROUND N — something is out there`
+  in the same frame (every warden round is also a fifth round, so every one of
+  them is a dog round), and on most of them the radio's `THE RADIO` banner
+  followed a few lines later. The result was that the one thing a warden round
+  is about was the one thing never said. `bannerShow` now takes `queue: true`
+  for quiet banners, which wait behind whatever is being read (max three), and
+  the round banner stands down on a warden round.
+- **A beekeeper's hive was reachable only if the keeper was close enough to
+  kneel in the 60–520 px band**; the test that spawned it 200 px away across a
+  wall never saw a box in 20 s. The rule is right (it has to arrive to place
+  it); the test was wrong, and now spawns one keeper at 70 px for 45 s.
+- Phone: every panel has a visible way out, DEBUG sits in the pause menu, the
+  pause chip is top left, flick-scroll never counts as a press, and one wheel
+  notch is one row. Covered by `tools/harness/phoneexit.test.mjs` (9 tests).
+
+Validation: `npm test` **136/136** (124 before; +12 in
+`tools/harness/roster.test.mjs` — the warden line and its wrap, escort sizing,
+every arrival round, four sprites per body, the verb table, the hive and its
+bees, shootable silk, the venom's clock, the venom on the HUD, the warden's
+banner, and the banner queue) and the
+historical regression **48/48**. Native renders inspected at 800 × 500 and
+430 × 930: the venom strip and label under the health bar in both, the boss bar
+clear of the sound chip and the map, the pause chip and the map in their
+corners.
+
+Not claimed: a real phone or browser run; drag physics on real glass; audio
+output.

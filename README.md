@@ -339,13 +339,41 @@ under room A's north windows (80 dps, shocks them rigid) and a *Steam Vent* at t
 room B → D doorway (75 dps, scalds, slows and shoves them back out through the door). Only ever
 hurts zombies — and 15 trap kills in one run is an achievement.
 
-**Enemies — 26 types.** Walkers, **Runners** (fast, frail, round 6), **Brutes** (2.7× HP, smashes
-three planks at a time, round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
+**Enemies — 44 types**, nine of which are the wardens below. Walkers, **Runners**
+(fast, frail, round 6), **Brutes** (2.7× HP, smashes three planks at a time,
+round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
 **Hellhounds** (every fifth round is a dog round — a 26 × 16 dog, drawn at 1:1,
 about one tile nose to tail), **Helmeted** (a steel pot with a brim, a riveted
 band and a chin strap, plates on both shoulders), **Napalm**, **Gasbags**,
 **Miners** (come up through the floor), **Mimics**, **Field Medics**, **Bonewrights**,
 **Swarmlings**, **Jammers**, and **Amalgams**.
+
+The second wave, each arriving on its own round so the early game stays quiet:
+
+| round | who | what it does |
+| --- | --- | --- |
+| 7 | **Beekeeper** | kneels once and leaves a hive you can shoot down; its bees come out of the box and never count towards the round |
+| 8 | **Weaver** | leaves knots of silk that take your legs — shoot them, cut them, or dash through one that starts outside it |
+| 9 | **Bone Archer** | a telegraphed three-arrow fan, then a long reload |
+| 11 | **Bulwark** | a plank shield turned towards you: shots on it do a fifth of their damage, and it re-aims with a third of a second of lag — go round it, do not feed it bullets |
+| 12 | **Widow** | one bite, nine seconds of venom that runs its own clock and stops at a fifth of the bar |
+| 13 | **Drummer** | beats every two seconds: everything within 300 units walks and bites a fifth faster; the aura is drawn, so you can see where it comes from |
+| 14 | **Sapper** | a crawler with a bundle of charges: 260 damage inside 96 units, and it takes the rest of the round with it — shoot it early, and never let it reach you |
+| 16 | **Porter** | slow, fat, and carrying a sac of brood: it sets a handful of swarmlets down every few seconds, and the sac bursts when it dies |
+| 18 | **The First** | gets up again — twice, quicker and angrier each time |
+
+**Wardens.** Every fifth round from ten — 10, 15, 20 … 50 — belongs to one of
+nine, in this order; on round 55 the cycle starts again with every warden 35 %
+heavier: **The Warden** (plated, and it calls the walkers in),
+**The Organist** (keeps its distance and screams — the ring staggers you and
+hastes the rest), **The Butcher** (plants its feet, then crosses the room in a
+straight line with a cleaver; the line is the telegraph), **The First**
+(reassembles twice), **The Mother** (broods swarmlets), **The Queen** (two hives at
+once), **The Gravedigger** (two graves, and the bells do not stop while it
+stands), **The Bellringer** (its bell is the bolt, and every ring brings the horde
+with it) and **The Colonel** (plate, a cap that used to mean something, and a
+whistle that brings the knights). A warden round is an escort, not an army: half
+the bodies, and never more than 22 alive at once.
 
 The haunt roster arrives from round 12 up: **Snowmen** lob snowballs (badly — on purpose) that
 chill your legs for three seconds, and roll double in a storm; **Arsonists** throw fire bottles

@@ -351,6 +351,10 @@ export class Game {
 
   reset() {
     audio.stopSoundtrack();
+    // a banner that was waiting behind another belongs to the night that just
+    // ended: it may not walk into the front door
+    this.banner = null;
+    if (this.bannerQueue) this.bannerQueue.length = 0;
     this._evacAudioPlayed = false;
     this.roundMetrics = newRoundMetrics();
     this.runMetrics = newRoundMetrics();
@@ -441,6 +445,7 @@ export class Game {
     this.gameOver = false;
     this.overT = 0;
     this.banner = null;
+    this.bannerQueue = [];
     this.interaction = null;
     this.muzzleFlash = null;
     this.settingsOpen = false;
@@ -657,10 +662,20 @@ export class Game {
   }
 
   bannerShow(title, sub, opts = {}) {
-    this.banner = { title, sub, t: opts.dur ?? 2.2, max: opts.dur ?? 2.2, big: !!opts.big, colour: opts.colour };
+    const dur = opts.dur ?? 2.2;
+    const b = { title, sub, t: dur, max: dur, big: !!opts.big, colour: opts.colour, net: !opts.local };
+    // A banner that would wipe one still being read waits its turn. The
+    // warden's name went up on a fifth round and the radio replaced it in the
+    // same second, which is why nobody ever saw the name of the thing that
+    // owned the room. Only quiet banners ask for this (`queue`).
+    if (opts.queue && this.banner && this.banner.t > 0.6) {
+      if (this.bannerQueue.length < 3) this.bannerQueue.push(b);
+      return;
+    }
+    this.banner = b;
     // guests see the same banner: rounds, perks, the power coming on. A note
     // about *this machine's* speakers is local -- it is not news downstairs.
-    if (!opts.local) this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
+    if (b.net) this.net?.emit('banner', { title, sub, colour: opts.colour, dur });
   }
 
   /**
@@ -1048,7 +1063,14 @@ export class Game {
     this._fusionCd = 6;
     this.workbench.onRoundStart();
     if (this.roofRadio?.fixed && n % 2 === 0 && !this.rangeMode) this.dropRoofSupply();
-    if (plan.dog) {
+    if (plan.boss) {
+      // The warden's own name is the round's announcement. `_spawnBoss` put it
+      // up a moment ago, and a second banner here replaced it in the same
+      // frame -- so on every warden round (and they are all fifth rounds, so
+      // they are all dog rounds too) the one thing the round is about was the
+      // one thing never said. The hounds still howl for their own round.
+      if (plan.dog) audio.dogRound(); else audio.roundSting(true);
+    } else if (plan.dog) {
       this.bannerShow(`ROUND ${n}`, 'something is out there', { dur: 2.6, big: true, colour: '#e0705a' });
       audio.dogRound();
     } else {
@@ -2024,7 +2046,9 @@ export class Game {
     audio.radioStart();
     this._speak(ev.text(this));
     if (ev.fx) ev.fx(this);
-    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0' });
+    // queued: the radio is atmosphere, and the warden it would have covered
+    // for four seconds is not
+    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0', queue: true });
   }
 
   /**
@@ -4612,6 +4636,12 @@ export class Game {
     if (this.banner) {
       this.banner.t -= dt;
       if (this.banner.t <= 0) this.banner = null;
+    }
+    // whatever was waiting behind it has the screen now
+    if (!this.banner && this.bannerQueue.length) {
+      const next = this.bannerQueue.shift();
+      this.banner = next;
+      if (next.net) this.net?.emit('banner', { title: next.title, sub: next.sub, colour: next.colour, dur: next.max });
     }
   }
 
