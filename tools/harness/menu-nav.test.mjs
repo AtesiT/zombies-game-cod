@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { nc, load } from './stub.mjs';
 
 const M = await load();
+const { menuMetrics } = await import('../../src/hud.js');
+const { uiView } = await import('../../src/ui.js');
 const H = 1 / 60;
 
 const fresh = () => new M.Game(new M.Input(nc(800, 500)));
@@ -16,6 +18,21 @@ const press = (g, code) => {
   g.input.endFrame();
 };
 const indexOf = (g, scene, id) => M.menuRows(scene, g).findIndex((r) => r.id === id);
+
+test('the SOLO row clears the title block on desktop and small screens', () => {
+  const g = fresh();
+  for (const [w, h] of [[800, 500], [640, 360], [360, 640]]) {
+    g.setViewport(w, h);
+    const U = uiView(w, h);
+    const title = menuMetrics(U.w, U.h);
+    const layout = M.menuLayout('menu', g, w, h);
+    const soloTop = layout.top / U.k - layout.step / U.k / 2;
+    assert.ok(soloTop - title.ruleY >= 16,
+      `${w}x${h}: the SOLO button is crowding the title rule`);
+    assert.equal(M.menuHitTest('menu', w / 2, layout.top, g), 0,
+      `${w}x${h}: the moved SOLO row no longer matches its hit target`);
+  }
+});
 
 test('closing a page leaves the cursor on the row that opened it', () => {
   const g = fresh();

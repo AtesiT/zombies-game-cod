@@ -103,6 +103,23 @@ test('third debug tab is reachable by keyboard/click, every row fits, and guest 
   cleanup(); window.AudioContext = undefined;
 });
 
+test('the title and a new run start scores from the existing library automatically', () => {
+  window.AudioContext = Clock;
+  audio.stopSoundtrack(); audio.init();
+  const g = new M.Game(new M.Input(nc(800, 500)));
+  g.update(1 / 60);
+  assert.ok(['home', 'lantern', 'roof', 'rain', 'dawn'].includes(audio.soundtrack?.current?.id),
+    'the title screen should have a quiet score');
+  const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+  const expectedRunTrack = runTracks[(g.lifetime?.runs ?? 0) % runTracks.length].id;
+  g.begin();
+  assert.equal(audio.soundtrack?.current?.id, expectedRunTrack, 'SOLO should switch to a run score');
+  g._debugRun('music:stop');
+  g.update(1 / 60);
+  assert.equal(audio.soundtrack.current, null, 'manual STOP should not immediately restart itself');
+  cleanup(); window.AudioContext = undefined;
+});
+
 test('selected scores suppress adaptive music, honour faders and stop for an upbeat evacuation cue', () => {
   window.AudioContext = Clock;
   const a = new AudioEngine(); a.init(); a.setVolumes({ master: 80, music: 35, sfx: 0 });

@@ -704,5 +704,29 @@ labels, the achievement card clear of the minimap, the sound chip and the
 round banner on a phone, a laptop and a phone on its side, and the new archer
 and drummer sprites at gameplay scale.
 
-Not claimed: a real phone or browser run; drag physics on real glass; audio
-output.
+Not claimed: a real phone or browser run or drag physics on real glass. The
+player has since confirmed that sound is audible on their laptop; this sandbox
+still cannot verify a physical speaker output.
+
+## Follow-up: wardrobe, upper-floor drops, flare smoke and background music
+
+- Compact outfit rows now keep the selected coat's effect visible in the footer;
+  full rows show both the effect and, while locked, the badge to earn. The narrow
+  wardrobe rendering test checks the actual painted text.
+- Radio supply crates are now routed to the ground-floor supply area, including
+  crates called in after repairing the roof radio. Flare smoke particles carry
+  the helipad's floor explicitly, so they cannot be painted on the first or
+  second floor because another entity last set the particle-system floor.
+- The in-game title and browser title are **Top-Down Zombie Shooter**. The menu
+  sits lower under its title block; the single SOLO hit row and its visual row
+  are tested together on desktop, portrait and landscape sizes.
+- The existing procedural score library now supplies a rotating title-screen
+  score and a different run score; the music fader and the debug STOP control
+  remain in charge. A run's full score and the adaptive layers do not compete.
+- `node server.mjs` still starts one listener on `0.0.0.0`; its startup list now
+  labels each usable interface address instead of making two addresses look
+  like two servers.
+
+Validation for this follow-up: `npm test` **171/171**; focused outfit, menu,
+heli/radio, soundtrack and boot harnesses pass. The complete historical
+regression runner was also rerun after updating its radio/music expectations.

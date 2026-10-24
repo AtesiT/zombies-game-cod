@@ -1,4 +1,4 @@
-# Nacht der Untoten — top-down CoD zombies
+# Top-Down Zombie Shooter
 
 A 2D top-down survival wave shooter in the spirit of the very first *Call of Duty: World at War*
 zombies map, **Nacht der Untoten**. Hand-written vanilla JavaScript + HTML5 Canvas — no build
@@ -35,9 +35,14 @@ The bundled server doubles as a relay, so co-op needs no extra software:
 
 ```bash
 node server.mjs 8080
-# it prints the addresses it is listening on, e.g.
-#   on your network:  http://192.168.1.5:8080/   (multiplayer ready)
+# it prints one address per usable network adapter, each marked by its name
+#   Wi-Fi: http://192.168.1.5:8080/   (multiplayer ready)
 ```
+
+Those are **not separate game servers**: one process listens on all interfaces
+(`0.0.0.0`). A laptop can have Wi-Fi, Ethernet, VPN and virtual adapters at
+once, so choose the address reachable from the other players' network (usually
+the Wi-Fi address). The game itself stays dependency-free.
 
 1. Whoever runs the server picks **MULTIPLAYER → HOST A GAME** and starts playing.
 2. Everybody else — laptops, phones, tablets on the same wi-fi — opens that address
@@ -280,8 +285,9 @@ One big level instead of a second map:
 - **Attic** — the board shack on the roof holds the **workbench**: anything you
   want built, you carry the scrap up three storeys for.
 - **Roof radio** (east roof block) — a dead set with a bent mast from night one.
-  **25 scrap** straightens the mast: from then on, every second round a supply
-  crate drops onto the pad (points, salvage, every magazine topped up).
+  **25 scrap** straightens the mast: from then on, every second round the radio
+  calls a crate down to the ground-floor supply area (points, salvage, every
+  magazine topped up), keeping radio supplies off the upper storeys.
 - **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
   A burnt-out car sits at the bottom of the field and a gutted tank at the bottom
@@ -549,11 +555,14 @@ runtime assets; repository metadata and developer tools are not public files.
 
 ## Music listening room and round reports
 
-Open debug (backquote, or five taps on the round counter while paused on a
-phone), then select the fourth **MUSIC** tab (CHEATS · ZOMBIES · OUTFITS · MUSIC). It contains **20 original procedural
-scores, 5–9 minutes each** (~2 h 22 min total), repeat/playlist/once modes, volume,
-minute-seeking and an evacuation-fanfare preview. Closing debug keeps the chosen
-score playing; STOP returns to the adaptive score. Selection is local in co-op.
+The title screen and each new run now start a different existing original score
+from the twenty-track procedural library; they are synthesized locally through
+WebAudio, not downloaded. Music follows its own settings fader. Open debug
+(backquote, or five taps on the round counter while paused on a phone), then
+select the fourth **MUSIC** tab (CHEATS · ZOMBIES · OUTFITS · MUSIC) to choose a
+track, set repeat/playlist/once, seek by a minute, or preview the evacuation
+fanfare. Closing debug keeps the chosen score playing; STOP returns to the
+adaptive score. Selection is local in co-op.
 
 A completed wave is announced as `ROUND N CLEARED` and nothing else: the
 twenty-metric panel that used to open on every intermission is gone. All of it —

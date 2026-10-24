@@ -50,6 +50,23 @@ test('ten outfits, one per badge, and every badge really exists', () => {
   assert.equal(new Set(badges).size, badges.length, 'two outfits share a badge');
 });
 
+test('outfit bonuses remain visible in compact and full wardrobe layouts', () => {
+  clearStorage();
+  const g = fresh();
+  const compact = HUD.outfitCompactNote('scout', g.achievements);
+  assert.match(compact, /\+8% SPEED/, 'the compact wardrobe must show the outfit characteristic');
+  assert.match(compact, /EARN TEN DEEP/i, 'the compact row must keep its unlock hint too');
+
+  g.outfitIndex = 1;
+  const c = nc(360, 640), ctx = c.getContext('2d'), labels = [];
+  const fillText = ctx.fillText.bind(ctx);
+  ctx.fillText = (label, ...args) => { labels.push(String(label)); return fillText(label, ...args); };
+  HUD.drawOutfits(ctx, g, 360, 640);
+  assert.ok(labels.some((label) => label.includes('+8% SPEED')),
+    'the selected outfit effect was not painted on a narrow screen');
+  clearStorage();
+});
+
 test('every bonus is real, small, and lands in the stat block', () => {
   const neutral = skinEffects(null);
   for (const id of SKIN_ORDER) {

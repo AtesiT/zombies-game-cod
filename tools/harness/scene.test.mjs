@@ -6,7 +6,7 @@ const { MAX_THROW_SPEED } = await import('../../src/game.js');
 const { T, TILE } = await import('../../src/art.js');
 const { FLOORS } = await import('../../src/mapData.js');
 const { GRENADE_MAX } = await import('../../src/weapons.js');
-const { Player } = await import('../../src/entities.js');
+const { Player, Particles } = await import('../../src/entities.js');
 const fresh = () => { const g = new M.Game(new M.Input(nc(800, 500))); g.begin(); return g; };
 
 test('closed doors face the fixed camera; open doors leave the aperture empty on both axes', () => {
@@ -37,6 +37,29 @@ test('every real door remains a collision gate and clears when bought', () => {
     }
   }
   assert.ok(count >= 8);
+});
+
+test('radio supplies stay on the ground floor and flare smoke belongs only to the roof', () => {
+  const g = fresh();
+  g.dropRoofSupply();
+  assert.equal(g.supplies.at(-1).f, 0, 'the roof radio may not place crates on upper floors');
+
+  const particles = new Particles();
+  particles.floor = 1;                       // deliberately stale from another body
+  particles.smoke(100, 100, 1, 2);          // the flare explicitly owns roof floor 2
+  assert.equal(particles.items[0].f, 2);
+  assert.equal(particles.items.filter((p) => p.f === 1).length, 0);
+
+  g.heli.phase = 2; g.heli.flare = true; g.heli.t = 0; g.map.floor = 1;
+  g._fxOn({ floor: 1 });
+  const random = Math.random;
+  try {
+    Math.random = () => 0;
+    g._heliStep(1 / 60);
+  } finally { Math.random = random; }
+  const flareSmoke = g.particles.items.filter((p) => p.type === 'smoke');
+  assert.ok(flareSmoke.length > 0);
+  assert.ok(flareSmoke.every((p) => p.f === 2), 'flare smoke leaked onto the floor being drawn');
 });
 
 test('throwable shops keep one hand: the same kind stacks, another kind replaces it', () => {

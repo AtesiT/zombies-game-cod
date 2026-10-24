@@ -470,8 +470,8 @@ drawGameOver(nc(M.VW, M.VH).getContext('2d'), g, M.VW, M.VH);   // must not thro
     `the radio took the scrap: fixed=${g6.roofRadio.fixed} salvage=${g6.player.salvage}`);
   const crates0 = g6.supplies.length;
   g6.startRound(g6.round + 1);                       // an even round: a crate
-  ok(g6.supplies.length === crates0 + 1 && g6.supplies[g6.supplies.length - 1].f === 2,
-    'the even round brought no crate to the roof');
+  ok(g6.supplies.length === crates0 + 1 && g6.supplies[g6.supplies.length - 1].f === 0,
+    'the even round did not bring its crate to the ground-floor supply area');
   g6.startRound(g6.round + 1);                       // an odd round: silence
   ok(g6.supplies.length === crates0 + 1, 'a crate fell on an odd round');
   g6.map.setFloor(2); g6.useFloor(2); g6.player.floor = 2;

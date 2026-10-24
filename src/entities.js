@@ -128,10 +128,10 @@ export class Particles {
     }
   }
 
-  smoke(x, y, amount = 3) {
+  smoke(x, y, amount = 3, floor = this.floor) {
     for (let i = 0; i < amount; i++) {
       this.add({
-        type: 'smoke', x, y,
+        type: 'smoke', x, y, f: floor,
         vx: randRange(-18, 18), vy: randRange(-34, -8),
         life: randRange(0.4, 1.0), size: randRange(2, 5),
         drag: 1.4, colour: 'rgba(190,185,175,0.20)',

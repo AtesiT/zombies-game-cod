@@ -351,6 +351,7 @@ export class Game {
 
   reset() {
     audio.stopSoundtrack();
+    this._musicStoppedByUser = false;
     // a banner that was waiting behind another belongs to the night that just
     // ended: it may not walk into the front door
     this.banner = null;
@@ -2100,7 +2101,7 @@ export class Game {
       // the smoke thins as the wings come in over the west trees
       const thin = H.t < 108 ? 1 : Math.max(0, (116 - H.t) / 8);
       if (H.flare && thin > 0 && Math.random() < dt * 26 * thin) {
-        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1);
+        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1, HELI_PAD.f);
       }
       this._heliSnd = H.t > 108;
       if (this._heliSnd) audio.heli(Math.min(1, 0.25 + (H.t - 108) / 12));
@@ -2136,7 +2137,7 @@ export class Game {
       if (s.taken) { this.supplies.splice(i, 1); continue; }
       if (s.t <= s.fall) continue;                 // still under the canopy
       s.life -= dt;
-      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1);
+      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1, s.f ?? 0);
       if (s.life <= 0) { this.supplies.splice(i, 1); continue; }   // the night takes it back
       if (!auth) continue;                          // the host hands out the contents
       for (const pl of this.players ?? [this.player]) {
@@ -2212,7 +2213,7 @@ export class Game {
     H.phase = 2; H.t = 0; H.flare = true; H._said60 = 0; H._said108 = 0;
     this.shake(3, 0.8);
     audio.powerUp();
-    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1);
+    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1, HELI_PAD.f);
     this.bannerShow('FLARE LIT', 'green smoke over the roof -- the bird lands in 2:00', { dur: 4.2, colour: '#8fdc6a' });
     this._speak('Green over the roof, we see it. Two minutes out -- keep the pad clear and your heads down.');
     this.net?.emit('flare', {});
@@ -2236,14 +2237,17 @@ export class Game {
     this.net?.emit('radiofix', {});
   }
 
-  /** The crate the roof radio called in: it lands on the pad, under canopy. */
+  /** The roof radio calls a crate to the ground-floor supply area. */
   dropRoofSupply() {
+    const ground = this.map.floors?.[0] ?? this.map;
+    const spots = ground.boxSpots ?? [];
+    const spot = spots.length ? spots[randInt(0, spots.length - 1)] : this.map.playerStart;
     this.supplies.push({
-      x: HELI_PAD.x + randRange(-46, 46),
-      y: HELI_PAD.y + randRange(-30, 30),
-      f: HELI_PAD.f, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
+      x: clamp(spot.x + randRange(-30, 30), T, this.map.w * T - T),
+      y: clamp(spot.y + randRange(-30, 30), T, this.map.h * T - T),
+      f: 0, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
     });
-    this.bannerShow('SUPPLY RUN', 'the roof radio called it in -- crate on the pad', { dur: 2.8, colour: '#f2e26a' });
+    this.bannerShow('SUPPLY RUN', 'radio drop on the ground floor -- crate by the boxes', { dur: 2.8, colour: '#f2e26a' });
     audio.radioStart();
   }
 
@@ -3690,8 +3694,8 @@ export class Game {
     if (id.startsWith('music:')) {
       if (remote) return; // auditions are always local, never a remote cheat
       const choice = id.slice(6);
-      if (choice === 'stop') audio.stopSoundtrack();
-      else if (choice === 'victory') { audio.resume(); audio.victory(); }
+      if (choice === 'stop') { this._musicStoppedByUser = true; audio.stopSoundtrack(); }
+      else if (choice === 'victory') { this._musicStoppedByUser = true; audio.resume(); audio.victory(); }
       else if (choice === 'forward' || choice === 'back') {
         audio.soundtrack?.seek(audio.soundtrack.elapsed + (choice === 'forward' ? 60 : -60));
       } else if (choice === 'mode') {
@@ -3701,7 +3705,7 @@ export class Game {
       } else if (choice === 'volume') {
         settings.set('music', (Math.floor(settings.get('music') / 25) * 25 + 25) % 125);
         audio.setVolumes({ music: settings.get('music') });
-      } else audio.playSoundtrack(choice);
+      } else { this._musicStoppedByUser = false; audio.playSoundtrack(choice); }
       return;
     }
     const p = remote ?? this.player;
@@ -3848,6 +3852,7 @@ export class Game {
   update(dt) {
     this.time += dt;
     this._phase = 'update';
+    this._ensureBackgroundMusic();
     // one pointer-moved answer per frame, for every list to share (see
     // `_pointerMoved`)
     const pm = this.input?.mouse;
@@ -4948,7 +4953,24 @@ export class Game {
       { dur: 3.2, colour: '#9fd0f0' });
   }
 
+  /** Start a quiet existing score on the title screen and a separate one for each run. */
+  _ensureBackgroundMusic() {
+    if (!audio.ready || this._musicStoppedByUser || audio.soundtrack?.current
+      || audio.t < (audio._victoryUntil ?? 0)) return;
+    if (this.started) {
+      if (this.gameOver || this.evacuated) return;
+      const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+      const index = Math.max(0, this.lifetime?.runs ?? 0) % runTracks.length;
+      audio.playSoundtrack(runTracks[index]?.id ?? 'ash');
+    } else {
+      const menuTracks = ['home', 'lantern', 'roof', 'rain', 'dawn'];
+      const index = Math.max(0, this.lifetime?.runs ?? 0) % menuTracks.length;
+      audio.playSoundtrack(menuTracks[index]);
+    }
+  }
+
   begin() {
+    this._musicStoppedByUser = false;
     this.started = true;
     this.scene = null;
     // whichever door led here -- the front page, the test range, a hosted
@@ -4958,6 +4980,9 @@ export class Game {
     this.applySettings();
     audio.init();
     audio.resume();
+    const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+    const score = runTracks[Math.max(0, this.lifetime?.runs ?? 0) % runTracks.length];
+    if (score) audio.playSoundtrack(score.id);
     this.startRound(1);
     // After the round banner, not before it: startRound announces ROUND 1 and
     // would overwrite a warning shown a line earlier. If the browser still has

@@ -14,6 +14,7 @@
 // hand instead of importing main.js, so it never ran the line that broke.
 import { createCanvas } from './node_modules/@napi-rs/canvas/index.js';
 import { fileURLToPath } from 'node:url';
+import { menuLayout } from '../../src/hud.js';
 import { dirname, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -208,7 +209,7 @@ game.settings.set('view', 1);                   // back to NORMAL for the rest
 // ------------------------------------------------------------- press SOLO ----
 // the way a thumb or a mouse would, through the input the real loop is reading
 input.mouse.x = VW / 2;
-input.mouse.y = VH * 0.46;
+input.mouse.y = menuLayout('menu', game, VW, VH).top;
 input.mouse.pressed = true;
 frames(3);
 ok(game.started === true, 'clicking SOLO did not start the game');

@@ -305,12 +305,23 @@ server.on('upgrade', (req, socket, head) => {
 
 server.listen(port, '0.0.0.0', () => {
   const nets = [];
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const n of list ?? []) if (n.family === 'IPv4' && !n.internal) nets.push(n.address);
+  const seen = new Set();
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      // Each non-loopback adapter gets the same server; list usable IPv4
+      // addresses once and name the adapter so VPN / virtual adapters are not
+      // mistaken for extra game servers.
+      if (n.family !== 'IPv4' || n.internal || n.address.startsWith('169.254.') || seen.has(n.address)) continue;
+      seen.add(n.address);
+      nets.push({ name, address: n.address });
+    }
   }
   const boundPort = server.address().port;
-  console.log(`zombies running at http://localhost:${boundPort}/`);
-  for (const ip of nets) console.log(`  on your network:  http://${ip}:${boundPort}/   (multiplayer ready)`);
+  console.log(`Top-Down Zombie Shooter running at http://localhost:${boundPort}/`);
+  if (nets.length) {
+    console.log('One game server, listening on all network adapters. Use the address reachable by your other players:');
+    for (const n of nets) console.log(`  ${n.name}: http://${n.address}:${boundPort}/   (multiplayer ready)`);
+  }
 });
 
 // a dead room (everybody closed the tab) should not linger in the list

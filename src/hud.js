@@ -1768,15 +1768,15 @@ export function menuMetrics(w, h) {
   // eight rows and a footer have nowhere to go
   const tiny = h < 240;
   // the wordmark needs its own ascender above the baseline: a 30px cap at
-  // cy - 22 put the top of NACHT exactly on the glass and it read as cut off
+  // cy - 22 put the top of TOP-DOWN exactly on the glass and it read as cut off
   const cy = tiny ? 34 : compact ? 56 : h * 0.24;
-  // the wordmark is measured too: "DER UNTOTEN" at 34px is 372 units wide,
-  // which is 558 pixels on a 360-pixel phone (the menu scale is 1.5)
+  // the wordmark is measured too: "ZOMBIE SHOOTER" at 34px is the widest line in the wordmark,
+  // so it is measured before the title is drawn on a narrow phone
   let big = tiny ? 20 : compact ? 30 : 52;
   let small = tiny ? 12 : compact ? 18 : 34;
-  const fits = (px) => textWidth('DER UNTOTEN', `bold ${px}px "Courier New", monospace`) <= w - 16
-    && textWidth('NACHT', `bold ${Math.min(52, px * 1.5)}px "Courier New", monospace`) <= w - 16;
-  const k = Math.min(1, Math.max(0.3, (w - 16) / textWidth('DER UNTOTEN', `bold ${small}px "Courier New", monospace`)));
+  const fits = (px) => textWidth('ZOMBIE SHOOTER', `bold ${px}px "Courier New", monospace`) <= w - 16
+    && textWidth('TOP-DOWN', `bold ${Math.min(52, px * 1.5)}px "Courier New", monospace`) <= w - 16;
+  const k = Math.min(1, Math.max(0.3, (w - 16) / textWidth('ZOMBIE SHOOTER', `bold ${small}px "Courier New", monospace`)));
   if (!fits(small)) { small = Math.max(14, Math.floor(small * k)); big = Math.min(big, Math.round(small * 1.6)); }
   return {
     compact, tiny, cy,
@@ -1809,10 +1809,10 @@ export function titleBackdrop(ctx, game, w, h) {
   const M = menuMetrics(w, h);
 
   ctx.globalAlpha = 0.9 + Math.sin(t * 1.6) * 0.1;
-  text(ctx, 'NACHT', w / 2, M.bigY, {
+  text(ctx, 'TOP-DOWN', w / 2, M.bigY, {
     font: `bold ${M.big}px "Courier New", monospace`, colour: '#e2d8b8', align: 'center',
   });
-  text(ctx, 'DER UNTOTEN', w / 2, M.smallY, {
+  text(ctx, 'ZOMBIE SHOOTER', w / 2, M.smallY, {
     font: `bold ${M.small}px "Courier New", monospace`, colour: '#c2503c', align: 'center',
   });
   ctx.globalAlpha = 1;
@@ -1871,7 +1871,7 @@ export function drawTitle(ctx, game, w, h) {
 //  Rows are data, so the keyboard and the mouse cannot disagree about what
 //  is selected -- both go through the same list.
 // ---------------------------------------------------------------------------
-const MENU_TOP = 0.46;          // where the first row sits, as a fraction of h
+const MENU_TOP = 0.49;          // where the first row sits, as a fraction of h
 const MENU_STEP = 27;
 const MENU_HALF_W = 150;
 
@@ -2386,14 +2386,25 @@ export function outfitRowAt(game, w, h, mx, my) {
   return Math.min(L.rows - 1, Math.floor(rel / L.rowH));
 }
 
-/** The one line under a coat's name: its buff, or what it takes to earn it. */
+/** The one line under a coat's name: its buff and, while locked, its badge. */
 export function outfitNote(id, achievements) {
   if (!id) return 'the uniform you were issued';
   const skin = SKINS[id];
   if (!skin) return '';
   if (skinOwned(id, achievements)) return skin.buff;
   const badge = ACHIEVEMENTS.find((a) => a.id === skin.ach);
-  return badge ? `EARN · ${badge.name} — ${badge.desc}` : 'LOCKED';
+  return badge ? `${skin.buff} · EARN ${badge.name}` : `${skin.buff} · LOCKED`;
+}
+
+/** Compact screens still show the actual bonus, not just the unlock prompt. */
+export function outfitCompactNote(id, achievements) {
+  if (!id) return 'STANDARD KIT · NO BONUS';
+  const skin = SKINS[id];
+  if (!skin) return '';
+  const badge = ACHIEVEMENTS.find((a) => a.id === skin.ach);
+  return skinOwned(id, achievements)
+    ? `${skin.short} · OWNED`
+    : `${skin.short} · EARN ${badge?.name ?? 'BADGE'}`;
 }
 
 /** Which coat the pointer is on, in screen units -- see `pauseHoverRow`. */
@@ -2503,8 +2514,10 @@ function _drawOutfits(ctx, game, w, h, hover = -1) {
     const noteFont = '9px "Courier New", monospace';
     const noteRoom = wide ? cw - 100 - 34 : cw - 34 - 22;
     const note = outfitNote(id, game.achievements);
-    // one line a row means the note is what goes, not the name: a coat you
-    // cannot identify is worse than a coat without its sales pitch
+    // In the two-line layout every row gets its full description. A compact
+    // one-line list has no safe space under each name, so the selected coat's
+    // full note is printed in the footer below rather than silently dropping
+    // its characteristic altogether.
     if (!tight) {
       text(ctx, clipText(note, noteRoom, noteFont), cx + 34, row.y + 26, {
         font: noteFont,
@@ -2529,9 +2542,19 @@ function _drawOutfits(ctx, game, w, h, hover = -1) {
   const nf = 'TAP A ROW   ·   X TO GO BACK';
   const footFont = 'bold 9px "Courier New", monospace';
   const foot = textWidth(wf, footFont) <= cw - 16 ? wf : nf;
-  text(ctx, foot, cx + cw / 2, cy + ch - 18, {
-    font: footFont, colour: INK_DIM, align: 'center',
-  });
+  if (tight) {
+    const detailId = outfitIdAt(game, hover >= 0 ? hover : sel);
+    const detail = outfitCompactNote(detailId, game.achievements);
+    const detailFont = 'bold 8px "Courier New", monospace';
+    text(ctx, clipText(detail, cw - 18, detailFont), cx + cw / 2, cy + ch - 8, {
+      font: detailFont, colour: detailId && !skinOwned(detailId, game.achievements)
+        ? 'rgba(120,112,96,0.92)' : 'rgba(240,217,138,0.92)', align: 'center',
+    });
+  } else {
+    text(ctx, foot, cx + cw / 2, cy + ch - 18, {
+      font: footFont, colour: INK_DIM, align: 'center',
+    });
+  }
   ctx.restore();
 }
 
