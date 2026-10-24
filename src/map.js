@@ -266,13 +266,20 @@ export class GameMap {
       });
     });
 
-    // the creature buttons run down the west side IN TWO COLUMNS, controls on
-    // the east: the roster outgrew one column (26 faces at two tiles a button
-    // walked the last six straight off the bottom of the floor)
+    // The creature buttons run down the west side in two columns, controls on
+    // the east. They were pitched at exactly two tiles, which was fine for 26
+    // faces and walked the last of them straight off the floor once the
+    // roster grew -- so the pitch is measured now, not assumed: the longest
+    // column has to fit between the door and the south wall, and a button is
+    // still a whole tile of elbow room away from the next.
     const rangeTypes = Object.keys(ENEMY_TYPES);
     const rangeHalf = Math.ceil(rangeTypes.length / 2);
+    const padTop = 8, padBottom = this.h - 7;
+    const pitch = rangeHalf > 1
+      ? Math.min(2, Math.max(1.5, (padBottom - padTop) / (rangeHalf - 1)))
+      : 2;
     F.rangePads = rangeTypes.map((t, i) => ({
-      x: (i < rangeHalf ? 4.5 : 8.5) * T, y: (8 + (i % rangeHalf) * 2 + 0.5) * T, type: t,
+      x: (i < rangeHalf ? 4.5 : 8.5) * T, y: (padTop + (i % rangeHalf) * pitch + 0.5) * T, type: t,
     }));
     F.rangePads.push({ x: 65.5 * T, y: 8.5 * T, pad: 'clear' });
     F.rangePads.push({ x: 65.5 * T, y: 10.5 * T, pad: 'freeze' });

@@ -19,7 +19,7 @@ export const PERKS = {
   },
   staminup: {
     id: 'staminup', name: "Stamin-Up", price: 2000, colour: '#f5e04a', short: 'STM',
-    desc: 'Run 25% faster, for longer.',
+    desc: 'Dash again in three seconds instead of five.',
   },
   phdflopper: {
     id: 'phdflopper', name: 'PhD Flopper', price: 2000, colour: '#e07ab0', short: 'PHD',
@@ -46,8 +46,12 @@ export function perkEffects(perks) {
     maxHp: 100 + (has('juggernog') ? 100 : 0),
     reloadMul: has('speedcola') ? 0.5 : 1,
     fireDelayMul: has('doubletap') ? 0.67 : 1,
-    speedMul: has('staminup') ? 1.25 : 1,
-    sprintMul: has('staminup') ? 1.15 : 1,
+    // Stamin-Up used to be a faster walk; with Shift turned into a dash it is
+    // the dash clock that it opens up, which is the same promise (get out of
+    // trouble twice as often) in the movement the game actually has.
+    speedMul: 1,
+    sprintMul: 1,
+    dashMul: has('staminup') ? 0.6 : 1,
     regenDelay: has('quickrevive') ? 2.4 : 5.0,
     regenRate: has('quickrevive') ? 58 : 30,
     splashImmune: has('phdflopper'),

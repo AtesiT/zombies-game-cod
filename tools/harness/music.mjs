@@ -98,7 +98,10 @@ ok(audio._music.combat.gain.value < 0.01, 'the fight layer will not go away agai
     audio.setMusic = real;
   }
   ok(calls >= 4, `the game only touched the music ${calls} times in two seconds`);
-  ok((audio._musicMix?.calm ?? 0) > 0, 'the game left the calm layer at nothing');
+  ok(!!audio.soundtrack?.current, 'the game did not start one of its background scores');
+  ok(Object.values(audio._musicMix ?? {}).every((v) => v === 0),
+    'the adaptive layers should yield cleanly while a full background score is playing');
+  audio.stopSoundtrack();
 }
 
 if (fails.length) {

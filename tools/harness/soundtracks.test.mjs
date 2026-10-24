@@ -5,7 +5,7 @@ import { AudioContext } from './webaudio.mjs';
 import { SOUNDTRACKS, scoreBar, musicTime, SoundtrackPlayer } from '../../src/soundtracks.js';
 const M = await load();
 const { audio, AudioEngine } = await import('../../src/audio.js');
-const { DEBUG_TABS, debugPanel, debugHitTest, debugTabBar, debugTabHit, drawDebug, drawGameOver, roundReportRows } = await import('../../src/hud.js');
+const { DEBUG_TABS, DEBUG_MUSIC_TAB, debugPanel, debugHitTest, debugTabBar, debugTabHit, drawDebug, drawGameOver, roundReportRows } = await import('../../src/hud.js');
 class Clock extends AudioContext {
   constructor() { super(); this.all = []; }
   createOscillator() {
@@ -75,14 +75,23 @@ test('third debug tab is reachable by keyboard/click, every row fits, and guest 
   window.AudioContext = Clock;
   const g = fresh(); g.debugOpen = true; g.paused = true;
   const key = (code) => { g.input.pressed.add(code); g.update(1 / 60); g.input.endFrame(); };
-  key('ArrowRight'); key('ArrowRight'); assert.equal(g.debugTab, 2); assert.equal(DEBUG_TABS[2].id, 'music');
+  // CHEATS, ZOMBIES, OUTFITS, MUSIC: walk right to the last tab
+  for (let i = 0; i < DEBUG_MUSIC_TAB; i++) key('ArrowRight');
+  assert.equal(g.debugTab, DEBUG_MUSIC_TAB); assert.equal(DEBUG_TABS[DEBUG_MUSIC_TAB].id, 'music');
   const p = debugPanel(g, 800, 500), b = debugTabBar(g, 800, 500);
   assert.ok(p.y >= 8 && p.y + p.ch <= 492);
-  assert.equal(debugTabHit(g, 800, 500, b.x + b.w * 5 / 6, b.y + 10), 2);
-  p.rows.forEach((r, i) => {
-    const y = p.y + p.head + (i + 0.5) * p.rowH;
-    assert.ok(y < p.y + p.ch - 40); assert.equal(debugHitTest(g, 800, 500, p.x + 40, y), i);
-  });
+  assert.equal(debugTabHit(g, 800, 500, b.x + (b.w * (DEBUG_MUSIC_TAB + 0.5)) / DEBUG_TABS.length, b.y + 10), DEBUG_MUSIC_TAB);
+  // The panel scrolls now (47 rows in a panel that shows 17), so the check is
+  // per row: put the cursor on it, and the window follows -- then the row is
+  // on screen, inside the panel, and the hit test lands back on that row.
+  for (let i = 0; i < p.rows.length; i++) {
+    g.debugIndex = i;
+    const q = debugPanel(g, 800, 500);
+    assert.ok(i >= q.top && i < q.top + q.shown, `row ${i} is off the scrolled window`);
+    const y = q.y + q.head + (i - q.top + 0.5) * q.rowH;
+    assert.ok(y < q.y + q.ch - 40, `row ${i} runs under the footer`);
+    assert.equal(debugHitTest(g, 800, 500, q.x + 40, y), i);
+  }
   assert.equal(p.rows.filter((r) => SOUNDTRACKS.some((t) => r.id === `music:${t.id}`)).length, 20);
   const canvas = nc(800, 500); assert.doesNotThrow(() => drawDebug(canvas.getContext('2d'), g, 800, 500));
   g.net.role = 'guest'; g.net.isHost = false; g.net.state = 'open';
@@ -91,6 +100,23 @@ test('third debug tab is reachable by keyboard/click, every row fits, and guest 
   assert.equal(audio.soundtrack.current.id, 'ash'); assert.equal(sent.length, 0);
   key('Escape'); assert.equal(g.debugOpen, false); assert.equal(audio.soundtrack.current.id, 'ash');
   g._debugRun('music:stop'); assert.equal(audio.soundtrack.current, null);
+  cleanup(); window.AudioContext = undefined;
+});
+
+test('the title and a new run start scores from the existing library automatically', () => {
+  window.AudioContext = Clock;
+  audio.stopSoundtrack(); audio.init();
+  const g = new M.Game(new M.Input(nc(800, 500)));
+  g.update(1 / 60);
+  assert.ok(['home', 'lantern', 'roof', 'rain', 'dawn'].includes(audio.soundtrack?.current?.id),
+    'the title screen should have a quiet score');
+  const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+  const expectedRunTrack = runTracks[(g.lifetime?.runs ?? 0) % runTracks.length].id;
+  g.begin();
+  assert.equal(audio.soundtrack?.current?.id, expectedRunTrack, 'SOLO should switch to a run score');
+  g._debugRun('music:stop');
+  g.update(1 / 60);
+  assert.equal(audio.soundtrack.current, null, 'manual STOP should not immediately restart itself');
   cleanup(); window.AudioContext = undefined;
 });
 
@@ -116,15 +142,19 @@ test('wave metrics are independent snapshots; intermission support only affects 
   g.recordRound('seconds', 63.5); g.recordRound('points', 1500); g.recordRound('planks', 2);
   g.recordRound('kills', NaN); g.recordRound('damage', -4);
   g.endRound(); assert.equal(g.intermission, 12);
-  const report = g.roundReport; assert.equal(report.kills, 8); assert.equal(report.accuracy, 70); assert.equal(report.headshotRate, 38);
-  g.endRound(); assert.equal(g.roundReport, report);
-  g.recordRound('crafted'); assert.equal(report.crafted, 0); assert.equal(g.runMetrics.crafted, 1);
+  assert.equal(g.roundActive, false);
+  const wave = { ...g.roundMetrics };
+  g.recordRound('crafted'); assert.equal(g.runMetrics.crafted, 1);
+  assert.equal(g.roundMetrics.crafted, 0, 'a finished wave takes no more numbers');
   g.startRound(2); assert.equal(g.roundMetrics.kills, 0); assert.equal(g.runMetrics.kills, 8);
-  g.recordRound('kills'); assert.equal(report.kills, 8);
-  assert.equal(roundReportRows(report).length, 20);
-  assert.doesNotThrow(() => g.hud._roundReport(nc(800, 500).getContext('2d'), { ...g, roundActive: false, intermission: 10 }, 800, 500));
+  g.recordRound('kills'); assert.equal(g.roundMetrics.kills, 1); assert.equal(g.runMetrics.kills, 9);
+  // the end-of-run ledger reads the same shape the old per-wave panel used
+  // one row per number the ledger keeps, and it grew a row when the nine
+  // wardens landed -- the count is asserted so that a forgotten field shows up
+  // here rather than as a blank line on the death screen
+  assert.equal(roundReportRows({ ...wave, accuracy: 70, headshotRate: 38 }).length, 21);
   g.rangeMode = true; g.recordRound('kills', 100); assert.equal(g.runMetrics.kills, 9);
-  g.reset(); assert.equal(g.roundReport, null); assert.equal(g.runMetrics.kills, 0); assert.equal(g._evacAudioPlayed, false);
+  g.reset(); assert.equal(g.runMetrics.kills, 0); assert.equal(g._evacAudioPlayed, false);
   cleanup();
 });
 
@@ -138,14 +168,14 @@ test('real damage, armour, throws and points feed the ledger; piercing accuracy 
   g.zombies = [350, 400].map((x) => { const z = g.makeZombie({ x, y: 300 }, 'walker'); z.pos = { x, y: 300 }; return z; });
   g.fireHitscan(300, 300, 0, def, { x: 300, y: 300 });
   assert.equal(g.roundMetrics.rays, 1); assert.equal(g.roundMetrics.hitRays, 1);
-  g.endRound(); assert.equal(g.roundReport.accuracy, 100); cleanup();
+  g.endRound(); assert.equal(g.roundMetrics.hitRays, 1); cleanup();
 });
 
 test('reports and run totals reach guests; evacuation celebration plays once, including late snapshots', () => {
   const host = fresh(), guest = fresh();
   host.recordRound('kills', 12); host.recordRound('revives', 2); host.endRound();
   guest.net._apply(host.net.snapshot(), true);
-  assert.deepEqual(guest.roundReport, host.roundReport); assert.equal(guest.runMetrics.revives, 2);
+  assert.equal(guest.runMetrics.revives, 2);
   let cues = 0; const victory = audio.victory; audio.victory = () => cues++;
   try {
     host.heli.phase = 4; const snap = host.net.snapshot();
@@ -156,16 +186,17 @@ test('reports and run totals reach guests; evacuation celebration plays once, in
   } finally { audio.victory = victory; cleanup(); }
 });
 
-test('round reports can be hidden with Tab or their close button, without firing a shot', () => {
+test('a cleared round leaves only the number on screen; the ledger waits for the end', () => {
   const g = fresh(); g.recordRound('kills', 2); g.endRound();
-  g.input.pressed.add('Tab'); g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, g.round);
-  g.input.pressed.add('Tab'); g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, null);
+  assert.equal(g.roundActive, false);
+  assert.equal(g.banner.title, 'ROUND 1 CLEARED');
+  assert.equal(g.banner.sub, null, 'no "catch your breath", no rows');
+  assert.equal(g.roundReport, undefined);
+  // nothing at the old report panel's geometry can swallow a click any more
   const before = g.stats.shots;
   Object.assign(g.input.mouse, { x: 692, y: 145, pressed: true, down: true });
   g.update(1 / 60); g.input.endFrame();
-  assert.equal(g._reportHidden, g.round); assert.equal(g.stats.shots, before);
+  assert.notEqual(g.stats.shots, before, 'the click belongs to the world, not a panel');
   const seconds = g.runMetrics.seconds; g.debugOpen = true; g.paused = true;
   g.update(3); assert.equal(g.runMetrics.seconds, seconds, 'paused time is not combat time');
   cleanup();

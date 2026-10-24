@@ -1,6 +1,14 @@
 // Keyboard + mouse state. Coordinates are reported in *internal canvas*
 // pixels (the game renders at a fixed low resolution and is CSS-upscaled).
 
+// A notch of a real mouse wheel, in deltaY units, is one row of a list.
+const WHEEL_STEP = 100;
+// and this is as much unspent distance as is ever kept between frames: a
+// trackpad flick that arrives all at once still scrolls, just not to the end
+// of the world in one frame
+const WHEEL_KEEP = 800;
+const clampNum = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
 export class Input {
   /** The resolution the game thinks in, whatever size the canvas really is. */
   setLogicalSize(w, h) { this.vw = w; this.vh = h; }
@@ -17,6 +25,8 @@ export class Input {
     this.released = new Set();
     this.mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false, pressed: false, released: false, rdown: false };
     this.wheel = 0;
+    this._wheelPx = 0;          // raw wheel distance, in hundredths of a notch
+    this.pointer = 'mouse';     // 'mouse' | 'touch', for the drawn cursor
     this.anyInput = false;
     // set by a full-screen list that wants the movement keys for itself
     this.menuLock = false;
@@ -42,7 +52,7 @@ export class Input {
       this.keys.clear(); this.pressed.clear(); this.released.clear();
       this.mouse.down = this.mouse.rdown = this.mouse.pressed = this.mouse.released = false;
       this.stick.x = this.stick.y = 0;
-      this.wheel = 0; this.anyInput = false;
+      this.wheel = 0; this._wheelPx = 0; this.anyInput = false;
     });
 
     const toLocal = (e) => {
@@ -66,7 +76,16 @@ export class Input {
       if (e.button === 2) this.mouse.rdown = false;
     });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
-    window.addEventListener('wheel', (e) => { this.wheel += Math.sign(e.deltaY); }, { passive: true });
+    // The wheel used to add one row per *event*, and a trackpad sends thirty
+    // events for one flick: a two-inch swipe went through a whole menu. What
+    // is accumulated now is the distance the wheel actually turned, and a
+    // notch of a real mouse is 100 of it, so a mouse moves one row and a
+    // trackpad moves in proportion to the hand.
+    window.addEventListener('wheel', (e) => {
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      this._wheelPx = clampNum(this._wheelPx + e.deltaY * unit, -WHEEL_KEEP, WHEEL_KEEP);
+      this.anyInput = true;
+    }, { passive: true });
   }
 
   isDown(...codes) { return codes.some((c) => this.keys.has(c)); }
@@ -99,7 +118,12 @@ export class Input {
     this.released.clear();
     this.mouse.pressed = false;
     this.mouse.released = false;
-    this.wheel = 0;
+    // one row for a mouse notch, and a ceiling of one row per frame for a
+    // flick: the remainder stays in the accumulator, so nothing is lost and
+    // nothing teleports
+    this.wheel = Math.max(-1, Math.min(1, Math.trunc((this._wheelPx ?? 0) / WHEEL_STEP)));
+    if (this.wheel) this._wheelPx -= this.wheel * WHEEL_STEP;
+    this._wheelPx = clampNum(this._wheelPx, -WHEEL_KEEP, WHEEL_KEEP);
     this.anyInput = false;
   }
 }

@@ -97,6 +97,14 @@ async function connect(game, name, room, want) {
 // ------------------------------------------------------------------ set up --
 const host = new Game(fakeInput());
 const guest = new Game(fakeInput());
+// The coat: each machine wears one, and each machine must see the other's.
+// The badges are granted locally first, because equipSkin is not allowed to
+// take a coat nobody earned -- the wire, later, is.
+const { SKINS } = await import(SRC + '/skins.js');
+host.achievements.unlock(SKINS.scout.ach);
+host.equipSkin('scout');
+guest.achievements.unlock(SKINS.medic.ach);
+guest.equipSkin('medic');
 host.applySettings();
 guest.applySettings();
 host.begin();
@@ -154,11 +162,20 @@ ok(Math.abs(guest.zombies.filter((z) => !z.dead).length - hz.length) <= 2,
   `the guest sees ${guest.zombies.filter((z) => !z.dead).length} walkers, the host has ${hz.length}`);
 
 // ---- the guest's hands have to reach the host -------------------------------
+// Four directions, not one. The body spawns against a wall about as often as
+// not, and a guest who walked into a doorframe moved 6 pixels while the wire
+// was working perfectly -- which made this check a coin toss rather than a
+// test of the network.
 if (mate && px0) {
-  guest.input.keys.add('KeyD');
-  await tick(90);
-  guest.input.keys.delete('KeyD');
-  const walked = Math.hypot(mate.pos.x - px0.x, mate.pos.y - px0.y);
+  let walked = 0;
+  for (const key of ['KeyD', 'KeyW', 'KeyA', 'KeyS']) {
+    const from = { x: mate.pos.x, y: mate.pos.y };
+    guest.input.keys.add(key);
+    await tick(45);
+    guest.input.keys.delete(key);
+    walked = Math.max(walked, Math.hypot(mate.pos.x - from.x, mate.pos.y - from.y));
+    if (walked > 12) break;
+  }
   ok(walked > 12, `a keyboard guest moved its body ${walked.toFixed(1)}px over the real wire`);
 
   // and the body the guest is driving has to be where the host put it
@@ -166,6 +183,27 @@ if (mate && px0) {
   const off = gp ? Math.hypot(gp.pos.x - mate.pos.x, gp.pos.y - mate.pos.y) : 9999;
   ok(off < 24, `the guest's own body is ${off.toFixed(1)}px from where the host says it is`);
 }
+
+// ---- the outfits both ways --------------------------------------------------
+// The coat is part of the body now: a guest that arrives in a field-medic's
+// whites has to be wearing them on the host's screen (and be simulated with
+// their bonus), and the host's coat has to be on the guest's screen too.
+const hostSeesGuest = host.players.find((pl) => pl !== host.player);
+const guestSeesHost = guest.players.find((pl) => pl.netId !== guest.player?.netId);
+ok(!!hostSeesGuest, 'the host has no second body to look at');
+ok(hostSeesGuest?.skin === 'medic',
+  `the host sees the guest in '${hostSeesGuest?.skin ?? 'nothing'}', not the whites of the field medic`);
+ok(guestSeesHost?.skin === 'scout',
+  `the guest sees the host in '${guestSeesHost?.skin ?? 'nothing'}', not the greens of the scout`);
+
+// a change mid-night reaches the other machine, and so does the stat block
+host.achievements.unlock(SKINS.hoarder.ach);
+host.equipSkin('hoarder');
+await tick(40);
+ok(guestSeesHost?.skin === 'hoarder',
+  `a coat changed mid-night never reached the guest ('${guestSeesHost?.skin}')`);
+ok(hostSeesGuest?.skinFx?.regenRateMul > 1,
+  'the host is simulating the guest without the bonus of that coat');
 
 // ---- sizes on the wire, for the record --------------------------------------
 const biggest = Math.max(0, ...linked.flatMap((l) => l.sizes));

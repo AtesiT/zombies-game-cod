@@ -40,7 +40,7 @@ export async function load() {
     RECIPES: craft.RECIPES, recipeIds: craft.recipeIds, SHELVED_RECIPES: craft.SHELVED_RECIPES,
     Workbench: craft.Workbench, craftRefusal: craft.craftRefusal, craftRowNote: craft.craftRowNote,
     ACHIEVEMENTS: ach.ACHIEVEMENTS,
-    menuRows: hud.menuRows, menuHitTest: hud.menuHitTest, CONTROL_ROWS: hud.CONTROL_ROWS,
+    menuRows: hud.menuRows, menuLayout: hud.menuLayout, menuHitTest: hud.menuHitTest, CONTROL_ROWS: hud.CONTROL_ROWS,
     craftLayout: hud.craftLayout, craftRowAt: hud.craftRowAt,
   };
 }

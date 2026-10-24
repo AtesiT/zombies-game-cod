@@ -113,6 +113,24 @@ export class Lighting {
 
   setAmbient(rgb, alpha) { this.ambient = rgb; this.ambientAlpha = alpha; }
 
+  /**
+   * A new viewport. The layers are cut from the view size, so a device that
+   * turned from portrait to landscape (or a player who pressed BIGGER) gets
+   * the darkness re-cut for the picture it is actually on. `setScale` is the
+   * quality dial and bails out when the number has not moved, which is why
+   * this cannot simply call it.
+   */
+  setSize(w, h) {
+    const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(h));
+    if (W === this.baseW && H === this.baseH) return false;
+    this.baseW = W;
+    this.baseH = H;
+    const s = this.scale;
+    this.scale = -1;          // force the re-cut below
+    this.setScale(s);
+    return true;
+  }
+
   /** Re-cut the layers at a new resolution -- the quality switch, live. */
   setScale(scale) {
     if (scale === this.scale) return;

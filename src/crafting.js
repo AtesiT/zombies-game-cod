@@ -41,7 +41,7 @@
 //  went first and the clamp happened after, so the player paid for air. Every
 //  new recipe that tops something up owes the bench one of these.
 
-import { WEAPON_ORDER, defFor } from './weapons.js';
+import { WEAPON_ORDER, defFor, GRENADE_MAX } from './weapons.js';
 
 export const RECIPES = {};
 
@@ -230,10 +230,16 @@ export const SHELVED_RECIPES = {
   fragkit: {
     id: 'fragkit', name: 'Frag Bundle', salvage: 6, points: 250,
     colour: '#8fa0b0', glyph: 'o',
-    desc: 'Two more Mk2 frag grenades.',
-    useful: (game, p) => (p.grenades ?? 0) < 9,
+    desc: 'Two frag grenades for the throwing hand (replaces bottles or gas).',
+    useful: (game, p) => {
+      const kind = p.throwableKind?.() ?? 'frag';
+      return kind !== 'frag' || (p.throwableCount?.() ?? p.grenades ?? 0) < GRENADE_MAX;
+    },
     full: 'GRANADES FULL',
-    apply: (game, p) => { p.grenades = Math.min(9, (p.grenades ?? 0) + 2); },
+    apply: (game, p) => {
+      if (p.giveThrowable) p.giveThrowable('frag', 2);
+      else p.grenades = Math.min(GRENADE_MAX, (p.grenades ?? 0) + 2);
+    },
   },
   ammocrate: {
     id: 'ammocrate', name: 'Ammo Crate', salvage: 10, points: 0,

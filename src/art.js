@@ -4,7 +4,8 @@ import {
   PAL, PLAYER_UPPER, PLAYER_LEGS, ZOMBIE_UPPER, ZOMBIE_UPPER_ATTACK, ZOMBIE_LEGS,
   GUNS, GRENADE_SPRITE, PLAQUE_ART,
 } from './spriteData.js';
-import { makeRng } from './util.js';
+import { SKINS } from './skins.js';
+import { makeRng, TAU } from './util.js';
 
 export const T = 24;                 // tile size in world pixels
 export const SPRITE_W = 20;
@@ -21,15 +22,23 @@ export function makeCanvas(w, h) {
   return { canvas: c, ctx: x };
 }
 
-/** Build a canvas from ASCII rows + palette. */
-export function buildSprite(rows, w, h) {
+/**
+ * Build a canvas from ASCII rows + palette.
+ *
+ * `over` swaps individual palette keys for one build -- that is how ten
+ * outfits come out of a single drawing: the cut of the uniform never changes,
+ * only the cloth it is cut from. Keys it does not mention keep the stock
+ * colour, so a skin that only wants a different helmet cannot accidentally
+ * turn the soldier's face green.
+ */
+export function buildSprite(rows, w, h, over = null) {
   const { canvas, ctx } = makeCanvas(w, h);
   for (let y = 0; y < rows.length; y++) {
     const line = rows[y];
     for (let x = 0; x < line.length; x++) {
       const ch = line[x];
       if (ch === '.' || ch === ' ') continue;
-      const col = PAL[ch];
+      const col = (over && over[ch]) || PAL[ch];
       if (!col) continue;
       ctx.fillStyle = col;
       ctx.fillRect(x, y, 1, 1);
@@ -56,8 +65,8 @@ export function flatCopy(src, colour) {
   return canvas;
 }
 
-function frames(upper, legs) {
-  return legs.map((l) => buildSprite(upper.concat(l), SPRITE_W, SPRITE_H));
+function frames(upper, legs, pal = null) {
+  return legs.map((l) => buildSprite(upper.concat(l), SPRITE_W, SPRITE_H, pal));
 }
 
 // ---------------------------------------------------------------------------
@@ -230,39 +239,292 @@ export function tintCopy(src, colour, amount = 0.35) {
   return canvas;
 }
 
-function buildDog() {
-  const W = 18, H = 12;
-  const { canvas, ctx } = makeCanvas(W, H);
-  const D = '#2a2119';   // dark fur
-  const M = '#4a3a28';   // mid fur
-  const L = '#6b5439';   // light fur
-  const E = '#8c2a20';   // eye glow
+/**
+ * The armoured walker: a steel pot on a grey corpse.
+ *
+ * The old one was a plain tint of the ordinary body, and a flat recolour of a
+ * bald head reads as a lump: nothing on it says "armour", so the eye settles
+ * on the shape, and the shape is a skull. This draws the helmet instead of
+ * recolouring the head -- a domed pot with a brim, a riveted band, a chin
+ * strap and a shoulder plate on each side -- so the thing on its head is
+ * something, and the face underneath is still a face.
+ */
+function buildHelmeted(src, steel = 0.42) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  ctx.drawImage(tintCopy(src, '#7c8a94', steel), 0, 0);
   const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
-
-  // legs first so the body covers their tops (3px stubs, not stilts)
-  for (const [lx, ly] of [[7, 1], [7, 9], [12, 1], [12, 9]]) px(lx, ly, D, 2, 3);
-  // tail sweeping off to the left
-  px(3, 4, D, 3, 1); px(1, 3, D, 3, 1);
-  // body
-  px(5, 3, M, 9, 6);
-  px(5, 3, L, 9, 1);
-  px(5, 8, D, 9, 1);
-  px(6, 4, D, 3, 2);            // haunch shading
-  px(4, 4, D, 2, 4);            // rear
-  // neck + head
-  px(12, 3, M, 4, 6);
-  px(12, 3, L, 4, 1);
-  px(15, 4, M, 3, 4);           // snout
-  px(17, 5, D, 1, 2);
-  px(17, 5, '#1a1410', 1, 1);   // nose
-  px(11, 2, D, 2, 2);           // ears
-  px(14, 2, D, 2, 2);
-  px(15, 4, E, 1, 1);           // eyes
-  px(12, 4, E, 1, 1);
+  const DARK = '#48525b';     // the shell's edge, and the shadow under the brim
+  const MID = '#7c8b96';      // the pot itself
+  const LIT = '#a9b7c0';      // moonlight on the crown
+  // ---- the pot: a dome, two pixels wide at the top and eight at the brim ----
+  px(9, 1, DARK, 2, 1);
+  px(8, 2, DARK, 4, 1);
+  px(7, 3, DARK, 6, 1);
+  px(6, 4, DARK, 8, 1);
+  px(9, 1, MID, 2, 1);
+  px(8, 2, MID, 4, 1);
+  px(7, 3, MID, 6, 1);
+  px(6, 4, MID, 8, 1);
+  px(8, 2, LIT, 2, 1);        // one highlight, on the crown only
+  px(9, 3, LIT, 1, 1);
+  // ---- the brim: one row, the same width as the shell, so it is a helmet
+  //      and not a hat; a shadow under it hides everything but the face ----
+  px(6, 5, DARK, 8, 1);
+  px(7, 5, MID, 6, 1);
+  px(8, 5, LIT, 4, 1);
+  px(7, 6, '#2b3238', 6, 1);
+  // ---- chin strap, so the pot is worn rather than balanced ------------------
+  px(6, 6, '#59636b', 1, 3);
+  px(13, 6, '#59636b', 1, 3);
+  // ---- shoulder plates: the armour continues where a coat would -------------
+  px(2, 11, DARK, 4, 2);
+  px(3, 11, MID, 3, 1);
+  px(14, 11, DARK, 4, 2);
+  px(14, 11, MID, 3, 1);
+  px(8, 13, DARK, 4, 1);                            // a breastplate seam
   return canvas;
 }
 
+/**
+ * The hellhound, side on, facing east: 26x16 at two leg poses.
+ *
+ * It is the only body with a frame of its own, so it is the only one that
+ * could be drawn badly -- and it was: at 18x12, with the legs painted over by
+ * a flat slab of a body, it read as a striped insect the size of a soldier's
+ * boot. This one has a chest and a haunch that are different shapes, a deep
+ * barrel, four legs with paws, a neck that carries the head *forward* rather
+ * than out of the shoulders, ears off the skull and a red eye, so it is a dog
+ * even while it is running at your face in the dark. Two poses of the legs, so
+ * it trots instead of gliding.
+ */
+function buildDog(legs = 0) {
+  const W = 26, H = 16;
+  const { canvas, ctx } = makeCanvas(W, H);
+  // The fur is lit a shade above the old coat: at 1.75 the body was big enough
+  // to read in a dark room by its silhouette alone, and at 1:1 a near-black
+  // dog in a near-black room is a pair of eyes and nothing else.
+  const D = '#33261a';   // dark fur / outline
+  const M = '#634c33';   // mid fur
+  const L = '#8a6c48';   // light fur (the moon on its back)
+  const S = '#1a1410';   // shadow, under everything
+  const E = '#b02a1c';   // eye glow
+  const R = '#6d1a18';   // collar
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+
+  // ---- legs: four of them, and the trot is which pair is forward ------------
+  const near = legs ? [{ x: 17, y: 11 }, { x: 8, y: 11 }] : [{ x: 15, y: 11 }, { x: 10, y: 11 }];
+  const far = legs ? [{ x: 15, y: 10 }, { x: 10, y: 10 }] : [{ x: 18, y: 10 }, { x: 8, y: 10 }];
+  for (const { x, y } of far) { px(x, y, M, 2, 4); px(x, y + 4, S, 3, 1); }   // far pair, dimmer
+  for (const { x, y } of near) { px(x, y, D, 2, 4); px(x, y + 4, S, 3, 1); }
+
+  // ---- tail: up and back, the way an angry dog carries it --------------------
+  px(3, 6, D, 2, 1); px(2, 5, D, 2, 1); px(1, 3, D, 2, 2); px(1, 3, M, 1, 1);
+
+  // ---- the barrel: deep chest at the front, tucked waist at the back --------
+  px(5, 6, M, 15, 5);            // body
+  px(5, 6, L, 14, 1);            // moonlight along the spine
+  px(5, 10, D, 15, 1);           // belly in shadow
+  px(4, 7, D, 3, 3);             // rear quarter
+  px(5, 7, D, 1, 3);
+  px(17, 5, M, 5, 7);            // chest: the tallest part of the animal
+  px(17, 5, L, 4, 1);
+  px(20, 6, D, 1, 5);            // the crease between chest and shoulder
+
+  // ---- neck up to the head, collar at the throat ----------------------------
+  px(20, 4, M, 3, 3);
+  px(20, 4, L, 2, 1);
+  px(19, 6, R, 4, 2);            // collar: the one warm band on it
+  px(19, 6, '#8a2420', 4, 1);
+
+  // ---- head: skull, muzzle, jaw, ears, one red eye --------------------------
+  px(21, 2, D, 4, 5);            // skull, outlined by its own dark fur
+  px(22, 2, M, 3, 4);
+  px(21, 1, D, 1, 2);            // near ear, standing up
+  px(23, 1, D, 2, 2);
+  px(24, 4, M, 2, 3);            // muzzle
+  px(25, 4, S, 1, 1);            // nose
+  px(24, 6, '#2b1b18', 2, 1);    // open jaw
+  px(23, 3, E, 1, 1);            // eye
+  px(25, 3, E, 1, 1);
+
+  return canvas;
+}
+
+/**
+ * A prop layer: wash a base body and then paint on top of it.
+ *
+ * Nine of the things in this file are the same corpse with a different life
+ * painted over it, and writing that out nine times is how the head ends up
+ * three pixels to the left in one of them. Everything here goes through this:
+ * one wash, one painter, one place to fix.
+ */
+function painted(src, tint, amount, paint) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  ctx.drawImage(tintCopy(src, tint, amount), 0, 0);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  paint(px, ctx);
+  return canvas;
+}
+
+/**
+ * The Knight's helm.
+ *
+ * The armoured walker wears a pot with a brim, and the Knight was wearing the
+ * same pot: a thing you could not tell from the walker's at a glance, on a
+ * body three times as heavy, and with the corpse's own face still showing
+ * through the middle of it. That face is what read as "something on its head".
+ * This is a great helm instead -- flat crown, a cross-shaped visor slit, a
+ * riveted band, vents punched along the jaw, and a rust-coloured crest along
+ * the top which is the only thing you need to see in the dark to know that
+ * this one is not a walker with a hat.
+ */
+function buildKnightHead(src, plate = 0.6) {
+  return painted(src, '#6d7783', plate, (px) => {
+    const D = '#20262d';       // the shell's edge, near black
+    const M = '#4c5763';       // the steel, a cold blue-grey
+    const L = '#8795a5';       // the moon on it
+    const H = '#c4ced8';       // the one bright edge the eye follows
+    const K = '#0b0e12';       // inside the helm
+    // ---- the crest: a low rust ridge, the tell in the dark ------------------
+    px(7, 0, '#5a2419', 1, 1);
+    px(8, 0, '#9c4530', 4, 1);
+    px(12, 0, '#7d3527', 1, 1);
+    // ---- the bucket: flat crown, square shoulders, a jaw that closes in -----
+    px(7, 1, D, 7, 1);
+    px(6, 2, D, 9, 1);
+    px(5, 3, D, 11, 5);        // the face plate, y3..y7
+    px(6, 8, D, 9, 1);         // the jaw, one row in on each side
+    px(7, 9, D, 7, 1);         // and the chin
+    px(8, 1, M, 5, 1);
+    px(7, 2, M, 7, 1);
+    px(6, 3, M, 9, 5);
+    px(7, 8, M, 7, 1);
+    // The light comes from the left: the crown and the near edge catch it and
+    // the far side stays in shadow, so the helm reads as round, not as a box.
+    px(8, 1, L, 4, 1);
+    px(7, 2, L, 4, 1);
+    px(6, 3, H, 1, 1);
+    px(6, 4, L, 1, 3);
+    px(7, 8, L, 5, 1);
+    px(13, 3, D, 1, 5);
+    px(14, 3, M, 1, 4);
+    // ---- one dark slot across the face, and nothing else that could be a face
+    px(6, 5, K, 8, 1);
+    px(6, 5, M, 1, 1); px(13, 5, M, 1, 1);    // cut short of the edge
+    // ---- the vents: two a side, at the very edge of the jaw, in shadow -----
+    px(6, 7, K, 1, 1); px(13, 7, K, 1, 1);
+    px(6, 8, D, 1, 1); px(13, 8, D, 1, 1);
+  });
+}
+
+/** The knight's body: plate over the corpse, a pauldron each side, a seam. */
+function buildKnight(src) {
+  return painted(buildKnightHead(src, 0.66), '#59636e', 0.3, (px) => {
+    const D = '#20262d';       // the edges, as on the helm
+    const P = '#5d6874';       // the plate
+    const L = '#8795a5';       // the moon on it
+    // ---- pauldrons: a slab over each shoulder, one row proud of the body ---
+    px(4, 11, D, 4, 2); px(5, 11, P, 3, 1);
+    px(12, 11, D, 4, 2); px(13, 11, P, 3, 1);
+    // ---- the breastplate: a V of plate from the gorget down to the belt -----
+    // The chest was mostly its own outline: at the scale the game draws it the
+    // knight came out as a helm on a black shape. Plate first, edge around it.
+    px(7, 12, D, 6, 1);
+    px(8, 13, D, 6, 1);
+    px(9, 14, D, 3, 2);
+    px(8, 12, P, 4, 1);
+    px(9, 13, P, 4, 1);
+    px(10, 14, P, 1, 2);
+    px(8, 12, L, 3, 1);        // the gorget catches the same light as the helm
+    px(8, 13, L, 1, 1);        // and the light runs down the near edge
+    px(9, 15, '#3f4853', 2, 1);   // the belt, in shadow under the plate
+    // ---- greaves: the same plate on the legs, or the body is a black lump.
+    // The legs are three pixels wide; a wider greave made the knight stand
+    // like a tripod, so the plate goes *on* the leg, not around it ----------
+    px(5, 16, '#4c5661', 1, 3); px(6, 16, '#3b434d', 2, 3); px(5, 16, '#6d7a88', 1, 1);
+    px(12, 16, '#3b434d', 2, 3); px(14, 16, '#31383f', 1, 3);
+    px(5, 19, '#3b434d', 3, 1); px(12, 19, '#31383f', 3, 1);
+    // ---- a seam down each thigh: mail under the plate, not bare leg --------
+    px(7, 20, D, 2, 1);
+    px(11, 20, D, 2, 1);
+  });
+}
+
 /** Crawler: the zombie sprite chopped down to a dragging torso + arms. */
+/**
+ * The skeleton a Bonewright sews out of the floor.
+ *
+ * It used to be the ordinary corpse with a chalk tint on it: a *white zombie*,
+ * which at gameplay scale read as "a zombie someone turned the brightness up
+ * on" rather than as bones. A skeleton has to lose the bulk, not the colour,
+ * so this one is drawn from nothing: a skull with two sockets, a spine, four
+ * ribs with light through them, and limbs that are one pixel wide.
+ *
+ * Same 20x22 box and the same body row as every other body, so it stands on
+ * the floor the way the walker does -- and it is `headless` in the table, so
+ * the empty space above the ribs is not a headshot waiting to happen.
+ */
+function buildSkeleton(src) {
+  const { canvas, ctx } = makeCanvas(src.width, src.height);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  const BONE = '#e2dcc4';      // the lit side of a bone
+  const BONE2 = '#b3ab90';     // and its shadow
+  const D = '#2b271f';         // the gap between bones: this is what makes it read
+  const HOLE = '#12100c';      // a socket
+
+  // ---- the skull: a narrow box, wider at the crown than the jaw ------------
+  // Bone, not outline: the first pass was a black frame with white inside it,
+  // which at gameplay scale read as a man in a dark cap.
+  px(7, 2, BONE, 6, 1);        // the crown
+  px(6, 3, BONE, 8, 1);        // and the brow, one wider each side
+  px(6, 2, BONE2, 1, 1); px(13, 2, BONE2, 1, 1);
+  px(6, 4, BONE, 8, 4);        // the face plate
+  px(6, 4, BONE2, 1, 4);       // the far side of it in shadow
+  px(7, 5, HOLE, 2, 2);        // sockets, deep enough to read at a glance
+  px(11, 5, HOLE, 2, 2);
+  px(9, 6, BONE2, 2, 1);
+  px(9, 7, D, 2, 1);           // the nasal hole
+  px(7, 8, BONE, 6, 1);        // the upper jaw
+  px(6, 8, D, 1, 1); px(13, 8, D, 1, 1);
+  px(8, 9, BONE2, 4, 1);       // and the teeth, in shadow under it
+
+  // ---- the spine and the ribs: bars of bone with light between them -------
+  px(9, 10, BONE, 2, 1);
+  for (const y of [11, 12, 13, 14]) {
+    px(9, y, BONE2, 2, 1);     // the vertebra
+    px(7, y, BONE, 2, 1);      // the rib, left
+    px(11, y, BONE, 2, 1);     // and right
+    px(8, y, D, 1, 1);         // the gaps that stop it being a slab
+    px(11, y, D, 1, 1);
+  }
+  px(6, 12, BONE2, 1, 1);      // the tips of the lowest pair
+  px(13, 12, BONE2, 1, 1);
+
+  // ---- the pelvis, and a hip joint each side -----------------------------
+  px(7, 15, BONE, 6, 1);
+  px(8, 16, BONE2, 4, 1);
+
+  // ---- arms: one bone, hanging, with a wrist and a hand ------------------
+  px(4, 11, BONE, 1, 5);       // the near arm, down the side
+  px(5, 11, BONE2, 1, 1);      // the shoulder
+  px(4, 16, BONE, 2, 1);       // the hand
+  px(4, 12, D, 1, 1);          // the elbow's shadow, so it is not a stick
+  px(15, 11, BONE2, 1, 4);     // the far arm, darker: further away
+  px(14, 11, BONE, 1, 1);
+  px(15, 15, BONE2, 2, 1);
+
+  // ---- legs: two bones each, because a femur is not a plank -------------
+  px(7, 17, BONE, 1, 5);
+  px(8, 17, D, 1, 5);
+  px(8, 17, BONE2, 1, 1);      // the knee
+  px(7, 21, BONE, 2, 1);       // the foot
+  px(11, 17, D, 1, 5);
+  px(12, 17, BONE2, 1, 5);
+  px(11, 17, BONE2, 1, 1);
+  px(11, 21, BONE2, 2, 1);
+  return canvas;
+}
+
 function buildCrawler(src) {
   const { canvas, ctx } = makeCanvas(src.width, src.height);
   // draw only the lower two thirds, squashed, so it reads as "dragging itself"
@@ -293,7 +555,413 @@ function buildCorpse(src) {
   return canvas;
 }
 
+// ---------------------------------------------------------------------------
+//  The apiary, the barrow and the web: the second wave of bodies.
+//
+//  Every one of these is the same 20x22 corpse with one thing painted on it,
+//  because that is how the roster stays readable: you learn the silhouette of
+//  the human body once, then you learn nine hats. The exception is the spider,
+//  which is not a person at all and is drawn from scratch -- and the bee,
+//  which is nine pixels wide and has to be.
+// ---------------------------------------------------------------------------
+
+/** A beekeeper: cream suit, mesh veil, gloves, and a hive on its back. */
+function buildBeekeeper(src) {
+  return painted(src, '#d8cfae', 0.62, (px) => {
+    // ---- the broad brim, one row wider than the head on each side ----------
+    px(3, 2, '#6a5c3a', 14, 1);
+    px(4, 3, '#4e4329', 12, 1);
+    // ---- the veil: a pale mesh box, dark enough that the face behind it is
+    //      a suggestion rather than a face, which is what a veil is ----------
+    px(6, 4, '#a89e80', 9, 6);
+    px(6, 4, '#c8bf9e', 1, 6);          // the light down one edge
+    px(14, 4, '#8a8066', 1, 6);
+    for (const y of [6, 8]) for (const x of [7, 9, 11, 13]) px(x, y, '#6e6650', 1, 1);
+    px(8, 5, '#2a2620', 1, 1);          // two eyes behind the mesh
+    px(11, 5, '#2a2620', 1, 1);
+    px(8, 7, '#4a4436', 4, 1);          // the line where the mouth is
+    // ---- hive boxes strapped to its back ----------------------------------
+    px(16, 10, '#7a5c30', 4, 4);
+    px(16, 11, '#5c4422', 4, 1);
+    px(16, 13, '#5c4422', 4, 1);
+    px(17, 11, '#e0b04a', 1, 1);      // the seam of honey showing through
+    // ---- gauntlets: it does not want to be stung either --------------------
+    px(0, 12, '#e6e0c6', 3, 2);
+    px(17, 12, '#e6e0c6', 3, 2);
+  });
+}
+
+/** An archer: a bow held out to the side, and a quiver over one shoulder. */
+function buildArcher(src) {
+  // A bow is a curve with a string across it, and on a 20-pixel corpse a curve
+  // is three rows of two pixels. The first version was a straight stick with a
+  // gap beside it, which read as a walking stick. This one leans out over the
+  // hand -- top, belly and bottom all step away from the body -- and the string
+  // runs back to the shoulder, so the whole shape is a D.
+  return painted(src, '#e8e4d2', 0.86, (px) => {
+    // ---- the stave: one pixel where it is thin, three where it bends ------
+    px(16, 3, '#6a4a24', 1, 1);        // the top nock
+    px(17, 4, '#8a6338', 1, 3);        // the upper limb, stepping out
+    px(18, 7, '#8a6338', 1, 3);        // the belly
+    px(17, 10, '#8a6338', 1, 3);       // the lower limb, stepping back in
+    px(16, 13, '#6a4a24', 1, 2);       // the bottom nock
+    px(18, 7, '#a87a44', 1, 1);        // the lit shoulder of the belly
+    // ---- the string, straight down the inside of the curve ----------------
+    px(15, 3, '#c8c2a8', 1, 12);
+    // ---- the nocked shaft, across it and at you --------------------------
+    px(11, 8, '#d8d2bc', 8, 1);
+    px(11, 7, '#8a8a7a', 1, 3);        // the barb
+    // ---- a quiver of arrows over the shoulder -----------------------------
+    px(2, 8, '#4e3a22', 2, 6);
+    px(2, 7, '#c8c2a8', 1, 1);
+    px(3, 6, '#c8c2a8', 1, 2);
+    // ---- a skull with an eye socket in it ---------------------------------
+    px(8, 5, '#2a2620', 1, 1);
+    px(11, 5, '#2a2620', 1, 1);
+  });
+}
+
+/** A bulwark: a plank shield held out in front, iron boss in the middle. */
+function buildBulwark(src) {
+  return painted(src, '#e8e4d2', 0.86, (px) => {
+    px(14, 7, '#4a3a24', 5, 10);
+    px(15, 8, '#6a5232', 4, 8);
+    px(15, 9, '#5a462a', 4, 1);
+    px(15, 12, '#5a462a', 4, 1);
+    px(16, 10, '#8d949a', 2, 3);       // the boss
+    px(16, 11, '#c8d2da', 1, 1);
+    // an iron rim, so it is a shield and not a door
+    px(14, 7, '#2e2a22', 5, 1);
+    px(14, 16, '#2e2a22', 5, 1);
+  });
+}
+
+/** A drummer: a drum on its belly and two raised sticks. */
+function buildDrummer(src) {
+  return painted(src, '#e8e4d2', 0.86, (px) => {
+    // ---- the drum: slung across the front of the body, not carried at the
+    // side. The first version hung it off the right hip, where it read as a
+    // box the corpse had picked up; a drum has to be on the belly and it has
+    // to be the widest thing in the silhouette.
+    px(4, 11, '#3a1612', 13, 1);       // the iron rim, top
+    px(4, 16, '#3a1612', 13, 1);       // ...and bottom
+    px(5, 12, '#7a3228', 11, 4);       // the shell
+    px(5, 13, '#8a3a2e', 11, 2);       // its lit face
+    px(5, 12, '#e0d8bc', 11, 1);       // the skin, catching the light
+    px(5, 15, '#c8bda0', 11, 1);
+    // the rope over one shoulder, holding it up
+    px(7, 6, '#8a7038', 1, 6);
+    px(8, 6, '#a8874a', 1, 6);
+    // ---- sticks, up over the shoulders -----------------------------------
+    px(3, 3, '#c8b48a', 1, 6);
+    px(2, 2, '#e0cfa8', 2, 1);
+    px(16, 4, '#c8b48a', 1, 5);
+    px(15, 3, '#e0cfa8', 2, 1);
+  });
+}
+
+/** A sapper: a crawling body with a bundle of charges roped to its back. */
+function buildSapper(src) {
+  return painted(src, '#8a7a52', 0.5, (px) => {
+    // it is drawn over the crawler's own shape, so the bundle sits high
+    px(6, 3, '#3a3a30', 9, 6);
+    px(7, 4, '#5a5040', 7, 4);
+    px(7, 5, '#8a6a3a', 1, 1);
+    px(10, 4, '#8a6a3a', 1, 1);
+    px(12, 6, '#8a6a3a', 1, 1);
+    px(9, 2, '#c8b48a', 2, 1);         // the fuse
+    px(11, 1, '#e0a03a', 1, 1);
+  });
+}
+
+/** The First: a rib cage for a crown and a tabard over the bones. */
+function buildFirst(src) {
+  return painted(src, '#efe9d2', 0.9, (px) => {
+    // the crown: five ribs off the skull
+    for (let i = 0; i < 5; i++) px(6 + i * 2, 1 - (i % 2), '#d8cfae', 1, 2);
+    px(6, 2, '#b8ae90', 9, 1);
+    // the tabard
+    px(7, 11, '#6a2420', 7, 5);
+    px(9, 11, '#8a3a2a', 3, 3);
+    px(8, 15, '#6a2420', 5, 1);
+    // empty sockets, so it is a skull and not a face
+    px(8, 5, '#1e1c16', 1, 1);
+    px(11, 5, '#1e1c16', 1, 1);
+    px(9, 7, '#1e1c16', 2, 1);
+  });
+}
+
+/**
+ * The spider: 24x18, side on, facing east. Four legs a side in two poses, an
+ * abdomen wide enough to carry a mark, and eyes where you would expect them.
+ * The weaver is dust-brown, the widow is black with a pale cross, the porter
+ * is a fat thing with an egg sac slung under it.
+ */
+const SPIDER_SKIN = {
+  weaver: { d: '#241c14', m: '#4c3c26', l: '#6e5a3a', eye: '#d8c070' },
+  widow: { d: '#141118', m: '#332a3c', l: '#57495f', eye: '#e05a6a' },
+  porter: { d: '#1d1710', m: '#3d2f20', l: '#5c4a30', eye: '#c8a04a' },
+};
+
+function buildSpider(kind = 'weaver', step = 0) {
+  const W = 24, H = 18;
+  const { canvas, ctx } = makeCanvas(W, H);
+  const S = SPIDER_SKIN[kind] ?? SPIDER_SKIN.weaver;
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  // a one-pixel line, because eight legs made of scattered dots read as dirt
+  const seg = (x0, y0, x1, y1, c) => {
+    const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+    for (let i = 0; i <= n; i++) {
+      const k = n ? i / n : 0;
+      px(Math.round(x0 + (x1 - x0) * k), Math.round(y0 + (y1 - y0) * k), c);
+    }
+  };
+  // ---- legs: four pairs, each with a knee up above the body and a foot on
+  //      the floor. The far side is a shade darker and a pixel higher; the
+  //      trot is which of the two poses the knee is in. ---------------------
+  const AX = 14, AY = 9;
+  const upLegs = [[20, 3, 23, 5], [21, 6, 24, 8], [21, 12, 24, 14], [19, 15, 21, 17]];
+  const downLegs = [[20, 3, 23, 5], [21, 6, 24, 8], [21, 12, 24, 14], [19, 15, 21, 17]];
+  for (let i = 0; i < 4; i++) {
+    const lift = step && i % 2 === 0 ? 1 : 0;
+    for (const [side, col, off] of [[1, S.d, 0], [-1, S.m, 1]]) {
+      const [kx, ky, fx, fy] = upLegs[i];
+      const kx2 = kx + off, ky2 = side > 0 ? ky - lift - off : H - 1 - ky + lift + off;
+      const fx2 = fx + off, fy2 = side > 0 ? fy - lift - off : H - 1 - fy + lift + off;
+      const sy = side > 0 ? AY - 2 + (i > 1 ? i - 1 : 0) : AY + 2 - (i > 1 ? i - 1 : 0);
+      seg(AX - 1, sy, kx2, ky2, col);
+      seg(kx2, ky2, fx2, fy2, col);
+      px(fx2, fy2, col, 2, 1);
+    }
+  }
+  // ---- the abdomen, low and round, with whatever is written on it ----------
+  ctx.fillStyle = S.d;
+  ctx.beginPath(); ctx.ellipse(9, 9, 5.6, 4.6, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = S.m;
+  ctx.beginPath(); ctx.ellipse(9, 9, 4.6, 3.7, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = S.l;
+  ctx.beginPath(); ctx.ellipse(8.5, 7.6, 3.2, 1.6, 0, 0, TAU); ctx.fill();
+  if (kind === 'widow') {
+    // the pale cross that says what bit you
+    px(8, 7, '#efe9d2', 1, 5);
+    px(6, 9, '#efe9d2', 5, 1);
+  } else if (kind === 'porter') {
+    // the egg sac, slung low and pale, with the brood showing through it
+    ctx.fillStyle = '#cfc2a4';
+    ctx.beginPath(); ctx.ellipse(9, 13.2, 4.2, 2.4, 0, 0, TAU); ctx.fill();
+    px(7, 13, '#efe6cc', 1, 1); px(10, 13, '#efe6cc', 1, 1); px(9, 11, '#8a7a5a', 1, 1);
+  } else {
+    // a weaver's spinners, and the thread running back out of them
+    px(4, 9, S.l, 2, 1);
+    seg(4, 9, 1, 12, '#b8ae90');
+  }
+  // ---- the cephalothorax and the eyes -------------------------------------
+  ctx.fillStyle = S.d;
+  ctx.beginPath(); ctx.ellipse(AX, AY, 3.6, 3.1, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = S.m;
+  ctx.beginPath(); ctx.ellipse(AX, AY, 2.7, 2.2, 0, 0, TAU); ctx.fill();
+  px(15, 7, S.l, 2, 1);
+  px(16, 7, S.eye, 1, 1);
+  px(15, 10, S.eye, 1, 1);
+  px(17, 9, S.eye, 1, 1);
+  // fangs, and the two feelers in front of them
+  px(17, 10, S.d, 2, 1);
+  seg(16, 8, 20, 6, S.d);
+  seg(16, 10, 20, 12, S.d);
+  return canvas;
+}
+
+/**
+ * The hive: a stacked box of comb on a stump, with the bees' door in the
+ * front and a warm glow in it. 16x22, so it stands about waist-high on a
+ * soldier and reads as furniture you could shoot.
+ */
+function buildHive() {
+  const { canvas, ctx } = makeCanvas(16, 22);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  // the stump it was put down on
+  px(4, 19, '#3a2c1c', 8, 3);
+  px(5, 19, '#4e3b26', 6, 2);
+  // three stacked boxes, each a shade apart, each with a seam
+  for (const [y, top, body] of [[12, '#8a6a34', '#6e5326'], [7, '#96743a', '#7a5c2c'], [2, '#a07c40', '#84632f']]) {
+    px(3, y, top, 10, 1);
+    px(3, y + 1, body, 10, 4);
+    px(3, y + 4, '#4e3c1e', 10, 1);
+    px(12, y + 1, '#5c4622', 1, 3);
+  }
+  // the door, and the light in it
+  px(6, 18, '#2a2010', 4, 2);
+  px(7, 18, '#e0b04a', 2, 1);
+  // a couple of bees already on the landing board
+  px(5, 16, '#2a2118', 1, 1);
+  px(9, 15, '#e0b040', 1, 1);
+  // the roof, with a lip
+  px(2, 0, '#4e3c1e', 12, 1);
+  px(3, 1, '#6a5228', 10, 1);
+  return canvas;
+}
+
+/**
+ * The bee: 9x8, side on. Nine pixels is not much, so it is three things and
+ * nothing else -- a striped abdomen, a wing, and an eye.
+ */
+function buildBee(frame = 0) {
+  const { canvas, ctx } = makeCanvas(9, 8);
+  const px = (x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  const hi = frame ? 1 : 0;
+  px(2, 3, '#2a2118', 5, 4);        // abdomen
+  px(3, 3, '#e0b040', 1, 4);        // stripes
+  px(5, 3, '#e0b040', 1, 4);
+  px(7, 3, '#2a2118', 1, 3);        // head
+  px(8, 4, '#f0e0a0', 1, 1);        // eye
+  px(4, 1 + hi, '#cfe0ee', 3, 2);   // wing
+  px(5, 0 + hi, '#eef6fa', 2, 1);
+  px(2, 7, '#1a1410', 1, 1);        // the leg it is hanging from
+  return canvas;
+}
+
 let cache = null;
+
+/**
+ * One painter, four frames: the standing pose, its mirror, the attack pose and
+ * that one mirrored. Every enemy set in the table below is built this way, so
+ * a body can never be missing a frame it needs when it turns round or reaches
+ * for you.
+ */
+function fillSet(out, name, paint, base) {
+  const { idle, atk } = base;
+  out[name] = idle.map(paint);
+  out[name + 'Flip'] = idle.map((c) => paint(flipH(c)));
+  out[name + 'Atk'] = atk.map(paint);
+  out[name + 'AtkFlip'] = atk.map((c) => paint(flipH(c)));
+}
+
+// ---- the nine wardens ------------------------------------------------------
+// A mini-boss is the same corpse with its old job still on it. They are meant
+// to be read in one glance from the other side of a room: a light, a blade, a
+// cap, a crown.
+function buildWarden(src) {
+  return painted(buildKnightHead(src, 0.62), '#4a5a3a', 0.18, (px) => {
+    // a bull's-eye lantern in the off hand, and the keys at the belt
+    px(1, 14, '#8a7a3a', 4, 4);
+    px(2, 15, '#f0d98a', 2, 2);
+    px(1, 18, '#4a4326', 4, 1);
+    px(11, 16, '#c8b48a', 1, 2);
+    px(10, 17, '#c8b48a', 1, 1);
+    px(12, 17, '#c8b48a', 1, 1);
+  });
+}
+
+function buildOrganist(src) {
+  return painted(src, '#6a4a86', 0.62, (px) => {
+    // a high collar, and the rope it pulls with both hands
+    px(5, 9, '#efe6d0', 2, 3);
+    px(13, 9, '#efe6d0', 2, 3);
+    px(10, 12, '#d8c8a8', 1, 6);
+    px(9, 18, '#b0a080', 3, 1);
+    // and the mouth it sings through is not a mouth any more
+    px(8, 7, '#2a1020', 4, 2);
+    px(9, 6, '#3a1830', 2, 1);
+  });
+}
+
+function buildButcher(src) {
+  return painted(src, '#8a4a3a', 0.5, (px) => {
+    // the apron, and the cleaver hanging off the hand
+    px(6, 12, '#d8d0bc', 8, 4);
+    px(7, 12, '#8a3a2a', 2, 2);
+    px(16, 8, '#9aa4ac', 4, 6);
+    px(16, 8, '#c8d2da', 4, 1);
+    px(17, 10, '#5a646c', 2, 2);
+    px(15, 13, '#4a3424', 2, 2);
+  });
+}
+
+function buildQueen(src) {
+  return painted(buildBeekeeper(src), '#c8a03a', 0.22, (px) => {
+    // a crown of honeycomb, and the drones she carries
+    for (let i = 0; i < 5; i++) px(6 + i * 2, 0, '#e0b04a', 1, 2);
+    px(6, 1, '#f0d060', 9, 1);
+    px(2, 4, '#e0b040', 1, 1);
+    px(16, 5, '#e0b040', 1, 1);
+    px(9, 14, '#e0b040', 2, 2);
+  });
+}
+
+function buildGravedigger(src) {
+  return painted(src, '#4e5a4a', 0.6, (px) => {
+    // a shovel over one shoulder and a heap of earth at the feet
+    px(15, 3, '#8a6338', 1, 12);
+    px(14, 2, '#9aa4ac', 3, 4);
+    px(15, 1, '#c8d2da', 1, 1);
+    px(14, 15, '#4a3a24', 3, 2);
+    px(3, 18, '#5a4a30', 5, 2);
+  });
+}
+
+function buildBellringer(src) {
+  return painted(src, '#3a6a8a', 0.55, (px) => {
+    // a hand bell, and the collar that goes with it
+    px(15, 10, '#b0a040', 4, 4);
+    px(16, 10, '#e0c860', 2, 1);
+    px(16, 14, '#7a6a20', 2, 1);
+    px(17, 15, '#c8b048', 1, 1);
+    px(6, 10, '#d8d2bc', 8, 1);
+  });
+}
+
+/**
+ * The Colonel: the last of the nine, and the only one that is not a corpse
+ * wearing its old job.
+ *
+ * He used to be the Warden's helm with a cap drawn on top of it, which made the
+ * first warden and the last one the same silhouette in the same green -- and the
+ * helm sits over the zombie's own head, so the cap had nothing to sit on. He has
+ * a head of his own now: a bare jaw under a peaked cap, gold braid on the
+ * shoulder, a sabre up in the right hand. Round fifty should not look like
+ * round ten.
+ */
+function buildColonel(src) {
+  return painted(src, '#4a4a3a', 0.22, (px) => {
+    const CAP = '#2e3526';     // the crown, dark olive
+    const BAND = '#171c12';    // the band and the peak, near black
+    const LIT = '#5a6142';     // the moon on the crown
+    const GOLD = '#c8b048';
+    // ---- the peaked cap: crown, band, and a peak that juts forward ---------
+    px(5, 1, CAP, 9, 2);       // crown, rows 1..2
+    px(4, 2, CAP, 11, 1);      // it flares out over the head
+    px(5, 1, LIT, 6, 1);       // the crown catches the light from the left
+    px(4, 3, BAND, 12, 1);     // the band
+    px(4, 4, BAND, 13, 1);     // and the peak, one row proud of the face
+    px(17, 4, BAND, 1, 1);     // the point of it
+    // the badge, and the braid looped over the band
+    px(9, 1, GOLD, 2, 1);
+    px(9, 3, GOLD, 1, 1);
+    px(11, 3, GOLD, 1, 1);
+    px(13, 3, GOLD, 1, 1);
+    // ---- the jaw, shut: a line of teeth under the shadow of the peak ------
+    px(6, 8, '#2a2018', 7, 1);
+    px(7, 9, '#c8b48a', 5, 1);
+    // ---- the cuirass under the tunic: he is still plated, just not helmed --
+    px(7, 12, '#9aa4ac', 1, 3);       // the near edge catches the light
+    px(6, 12, '#6f7985', 1, 3);
+    px(8, 12, '#8a94a0', 4, 1);       // the breastplate
+    px(8, 13, '#7c8794', 4, 2);
+    px(12, 12, '#5a646c', 1, 3);      // and the far side in shadow
+    px(9, 12, GOLD, 1, 1);            // buttons down the seam
+    px(11, 14, GOLD, 1, 1);
+    // ---- gold braid on the shoulder, and the ribbon of the last campaign ---
+    px(2, 11, GOLD, 4, 1);
+    px(2, 12, '#8a7a30', 4, 1);
+    px(14, 12, '#c85a3a', 1, 2);
+    px(14, 14, GOLD, 1, 1);
+    // ---- the sabre: held in the forward hand, blade up past the shoulder --
+    px(18, 3, '#c8d2da', 1, 9);      // the blade
+    px(18, 2, '#eef3f8', 1, 1);      // the point of it
+    px(17, 12, GOLD, 3, 1);          // the guard, over the hand that holds it
+    px(18, 13, '#3a2c1c', 1, 1);     // the grip, under the guard
+  });
+}
 
 /**
  * The totem: a wrapped pole with a small lit skull on top. Drawn once, used
@@ -363,6 +1031,34 @@ function buildGrave() {
   return canvas;
 }
 
+/**
+ * Every canvas in a bundle, once each -- the sprite sheets, their flipped and
+ * flashed copies, the painted floors.
+ *
+ * A browser only turns a canvas into a texture the first time something draws
+ * it, so a game that builds fifteen hundred sprites and then draws the first
+ * one inside its first gameplay frame pays for all of them in that frame. This
+ * is the list the boot-time warm-up walks (see src/main.js).
+ */
+export function allCanvases(root) {
+  const out = [];
+  const seen = new Set();
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 8) return;
+    if (Array.isArray(node)) { for (const v of node) walk(v, depth + 1); return; }
+    // anything that quacks like a canvas: a numeric size and a 2D context
+    if (typeof node.getContext === 'function' && typeof node.width === 'number'
+      && typeof node.height === 'number') {
+      if (!seen.has(node)) { seen.add(node); out.push(node); }
+      return;
+    }
+    if (node instanceof Set) { for (const v of node) walk(v, depth + 1); return; }
+    for (const k of Object.keys(node)) walk(node[k], depth + 1);
+  };
+  walk(root, 0);
+  return out;
+}
+
 export function buildArt() {
   if (cache) return cache;
 
@@ -395,26 +1091,46 @@ export function buildArt() {
     plaques[id] = buildSprite(rows, rows[0].length, rows.length);
   }
 
+  // ---- outfits ------------------------------------------------------------
+  // One sprite set per outfit, built once, plus the standard kit filed under
+  // '' so a body with no outfit (and every zombie-side call site that only
+  // knows `art.player`) has something to fall back on.
+  const playerSets = { '': { frames: player, flip: player.map(flipH) } };
+  for (const [id, skin] of Object.entries(SKINS)) {
+    const set = frames(PLAYER_UPPER, PLAYER_LEGS, skin.pal);
+    playerSets[id] = { frames: set, flip: set.map(flipH) };
+  }
+  for (const set of Object.values(playerSets)) {
+    set.white = set.frames.map((c) => flatCopy(c, '#ffffff'));
+    set.whiteFlip = set.flip.map((c) => flatCopy(c, '#ffffff'));
+  }
+
   cache = {
     player,
     playerFlip: player.map(flipH),
+    // outfit id -> { frames, flip, white, whiteFlip }; '' is the standard kit
+    playerSets,
     zombie,
     zombieFlip: zombie.map(flipH),
     zombieAtk,
     zombieAtkFlip: zombieAtk.map(flipH),
-    dog: buildDog(),
-    dogFlip: flipH(buildDog()),
+    dog: buildDog(0),
+    dogFlip: flipH(buildDog(0)),
+    // two poses so a hound trots instead of gliding, and so the size increase
+    // did not turn it into a moving cut-out
+    dogFrames: [buildDog(0), buildDog(1)],
+    dogFramesFlip: [flipH(buildDog(0)), flipH(buildDog(1))],
     // enemy variants: pale/angry runners, slab-grey brutes
     zombieRunner: zombie.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerFlip: zombie.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
     zombieRunnerAtk: zombieAtk.map((c) => tintCopy(c, '#c86a5a', 0.42)),
     zombieRunnerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#c86a5a', 0.42)),
     zombieBrute: zombie.map((c) => tintCopy(c, '#6b7a6a', 0.50)),
-    // helmeted: steel pot over the skull, heavy coat
-    helmet: zombie.map((c) => tintCopy(c, '#7c8a94', 0.42)),
-    helmetFlip: zombie.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
-    helmetAtk: zombieAtk.map((c) => tintCopy(c, '#7c8a94', 0.42)),
-    helmetAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#7c8a94', 0.42)),
+    // helmeted: a steel pot with a brim and a strap, plates on both shoulders
+    helmet: zombie.map((c) => buildHelmeted(c)),
+    helmetFlip: zombie.map((c) => buildHelmeted(flipH(c))),
+    helmetAtk: zombieAtk.map((c) => buildHelmeted(c)),
+    helmetAtkFlip: zombieAtk.map((c) => buildHelmeted(flipH(c))),
     // napalm: charred, glowing from the inside
     napalm: zombie.map((c) => tintCopy(c, '#c4461c', 0.62)),
     napalmFlip: zombie.map((c) => tintCopy(flipH(c), '#c4461c', 0.62)),
@@ -466,11 +1182,12 @@ export function buildArt() {
     bonewrightFlip: zombie.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
     bonewrightAtk: zombieAtk.map((c) => tintCopy(c, '#cfc9b4', 0.74)),
     bonewrightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#cfc9b4', 0.74)),
-    // skeletons: what it sews out of the dirt -- chalk white and much thinner
-    skeleton: zombie.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
-    skeletonFlip: zombie.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
-    skeletonAtk: zombieAtk.map((c) => tintCopy(c, '#e8e4d2', 0.88)),
-    skeletonAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#e8e4d2', 0.88)),
+    // skeletons: what it sews out of the dirt. Not a tinted corpse -- a corpse
+    // with the meat taken off it (see buildSkeleton), so it reads as bones.
+    skeleton: zombie.map((c) => buildSkeleton(c)),
+    skeletonFlip: zombie.map((c) => flipH(buildSkeleton(c))),
+    skeletonAtk: zombieAtk.map((c) => buildSkeleton(c)),
+    skeletonAtkFlip: zombieAtk.map((c) => flipH(buildSkeleton(c))),
     // swarmling's scattered halves: chitin, small and dark
     swarmlet: zombie.map((c) => tintCopy(c, '#4a3a2c', 0.66)),
     swarmletFlip: zombie.map((c) => tintCopy(flipH(c), '#4a3a2c', 0.66)),
@@ -518,15 +1235,16 @@ export function buildArt() {
     shockerFlip: zombie.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
     shockerAtk: zombieAtk.map((c) => tintCopy(c, '#3a7ab0', 0.55)),
     shockerAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#3a7ab0', 0.55)),
-    // knight: old steel, no colour left anywhere
-    knight: zombie.map((c) => tintCopy(c, '#77838d', 0.5)),
-    knightFlip: zombie.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
-    knightAtk: zombieAtk.map((c) => tintCopy(c, '#77838d', 0.5)),
-    knightAtkFlip: zombieAtk.map((c) => tintCopy(flipH(c), '#77838d', 0.5)),
+    // knight: a great helm on a suit of plate, which is the one thing you
+    // have to be able to see from the other side of the room
+    knight: zombie.map(buildKnight),
+    knightFlip: zombie.map((c) => buildKnight(flipH(c))),
+    knightAtk: zombieAtk.map(buildKnight),
+    knightAtkFlip: zombieAtk.map((c) => buildKnight(flipH(c))),
     totem: buildTotem(),
     grave: buildGrave(),
 
-    dogWhite: flatCopy(buildDog(), '#ffd9d9'),
+    dogWhite: flatCopy(buildDog(0), '#ffd9d9'),
     playerWhite: player.map((c) => flatCopy(c, '#ffffff')),
     playerWhiteFlip: player.map((c) => flatCopy(flipH(c), '#ffffff')),
     zombieWhite: zombie.map((c) => flatCopy(c, '#ffe9e9')),
@@ -536,6 +1254,38 @@ export function buildArt() {
     monkeybomb: guns.monkeybomb.img,
     grenade: buildSprite(GRENADE_SPRITE.rows, GRENADE_SPRITE.w, GRENADE_SPRITE.h),
   };
+  // ---- the second wave: the apiary, the barrow and the web ----------------
+  // `fillSet` writes the four frames every walking body needs, in one call,
+  // so a new creature is one line here and cannot be missing a pose.
+  const BODY = { idle: zombie, atk: zombieAtk };
+  fillSet(cache, 'beekeeper', buildBeekeeper, BODY);
+  fillSet(cache, 'archer', buildArcher, BODY);
+  fillSet(cache, 'bulwark', buildBulwark, BODY);
+  fillSet(cache, 'drummer', buildDrummer, BODY);
+  fillSet(cache, 'first', buildFirst, BODY);
+  // a sapper is a crawler with a bundle on its back, so it is drawn from the
+  // crawler's chopped-down shape rather than the full corpse
+  fillSet(cache, 'sapper', (c) => buildSapper(buildCrawler(c)), BODY);
+  // the spiders are their own frames, in two leg poses
+  for (const k of ['weaver', 'widow', 'porter']) {
+    cache[k] = [buildSpider(k, 0), buildSpider(k, 1)];
+    cache[k + 'Flip'] = [flipH(cache[k][0]), flipH(cache[k][1])];
+    cache[k + 'Atk'] = cache[k];
+    cache[k + 'AtkFlip'] = cache[k + 'Flip'];
+  }
+  cache.hive = buildHive();
+  cache.bee = [buildBee(0), buildBee(1)];
+  cache.beeFlip = [flipH(cache.bee[0]), flipH(cache.bee[1])];
+  // ---- the nine wardens ---------------------------------------------------
+  fillSet(cache, 'warden', buildWarden, BODY);
+  fillSet(cache, 'organist', buildOrganist, BODY);
+  fillSet(cache, 'butcher', buildButcher, BODY);
+  fillSet(cache, 'queen', buildQueen, BODY);
+  fillSet(cache, 'gravedigger', buildGravedigger, BODY);
+  fillSet(cache, 'bellringer', buildBellringer, BODY);
+  fillSet(cache, 'colonel', buildColonel, BODY);
+  // the mother is a porter grown enormous: same frames, twice the body, which
+  // is the point of her -- you have met this shape before and it was small
   return cache;
 }
 

@@ -84,10 +84,14 @@ export const SETTING_DEFS = [
     hint: 'With a touch stick held empty, the barrel finds the nearest walker',
   },
   {
-    id: 'screen', label: 'SCREEN', type: 'range',
-    min: 0, max: 1, step: 1, def: 0,
-    fmt: (v) => (v === 1 ? 'FILL' : 'FIT'),
-    hint: 'FILL crops the edges to use every pixel of the screen; FIT keeps the whole picture in view',
+    // The game is not a fixed 800x500 box any more: how much world is on the
+    // screen is derived from the shape of the display, and this row decides
+    // how much of it. BIGGER shows less world, larger -- which on a phone is
+    // the difference between reading a zombie and guessing at one.
+    id: 'view', label: 'PICTURE SIZE', type: 'range',
+    min: 0, max: 3, step: 1, def: 1,
+    fmt: (v) => ['SMALLER', 'NORMAL', 'BIGGER', 'BIGGEST'][v] ?? 'NORMAL',
+    hint: 'Zooms the whole game in or out \u2014 BIGGER (or BIGGEST) is the one to try on a phone',
   },
   {
     id: 'touchSize', label: 'CONTROL SIZE', type: 'range',

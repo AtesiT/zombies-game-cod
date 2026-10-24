@@ -6,7 +6,7 @@ const { MAX_THROW_SPEED } = await import('../../src/game.js');
 const { T, TILE } = await import('../../src/art.js');
 const { FLOORS } = await import('../../src/mapData.js');
 const { GRENADE_MAX } = await import('../../src/weapons.js');
-const { Player } = await import('../../src/entities.js');
+const { Player, Particles } = await import('../../src/entities.js');
 const fresh = () => { const g = new M.Game(new M.Input(nc(800, 500))); g.begin(); return g; };
 
 test('closed doors face the fixed camera; open doors leave the aperture empty on both axes', () => {
@@ -39,23 +39,69 @@ test('every real door remains a collision gate and clears when bought', () => {
   assert.ok(count >= 8);
 });
 
-test('throwable shops retain types on every floor, fill the correct pocket and respect cap', () => {
+test('radio supplies stay on the ground floor and flare smoke belongs only to the roof', () => {
+  const g = fresh();
+  g.dropRoofSupply();
+  assert.equal(g.supplies.at(-1).f, 0, 'the roof radio may not place crates on upper floors');
+
+  const particles = new Particles();
+  particles.floor = 1;                       // deliberately stale from another body
+  particles.smoke(100, 100, 1, 2);          // the flare explicitly owns roof floor 2
+  assert.equal(particles.items[0].f, 2);
+  assert.equal(particles.items.filter((p) => p.f === 1).length, 0);
+
+  g.heli.phase = 2; g.heli.flare = true; g.heli.t = 0; g.map.floor = 1;
+  g._fxOn({ floor: 1 });
+  const random = Math.random;
+  try {
+    Math.random = () => 0;
+    g._heliStep(1 / 60);
+  } finally { Math.random = random; }
+  const flareSmoke = g.particles.items.filter((p) => p.type === 'smoke');
+  assert.ok(flareSmoke.length > 0);
+  assert.ok(flareSmoke.every((p) => p.f === 2), 'flare smoke leaked onto the floor being drawn');
+});
+
+test('throwable shops keep one hand: the same kind stacks, another kind replaces it', () => {
   const g = fresh(), seen = new Set();
-  g.player.points = 100000;
+  const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' };
+  const p = g.player;
+  p.points = 100000;
   for (let f = 0; f < g.map.floors.length; f++) {
     for (const crate of g.map.floors[f].grenadeCrates) {
       const kind = crate.kind; seen.add(kind);
-      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-      assert.ok(pocket);
-      const p = g.player; p.floor = f; p.pos = { x: crate.x, y: crate.y };
-      p[pocket] = GRENADE_MAX - 1;
+      // start the hand empty, on the floor of this crate
+      p.grenades = p.molotovs = p.gasbombs = 0; p.throwKind = 'frag';
+      p.floor = f; p.pos = { x: crate.x, y: crate.y };
       const it = g.interactionFor(p);
       assert.equal(it.type, 'grenade'); assert.equal(it.kind, kind);
       const points = p.points;
       g.doInteraction(p, it);
-      assert.equal(p[pocket], GRENADE_MAX); assert.ok(p.points < points);
-      const paid = p.points; g.doInteraction(p, g.interactionFor(p));
-      assert.equal(p.points, paid); assert.equal(p[pocket], GRENADE_MAX);
+      assert.equal(p.throwableKind(), kind);
+      assert.equal(p.throwableCount(), 2);
+      assert.ok(p.points < points);
+
+      // the same kind keeps stacking to the cap
+      p.points = 100000;
+      for (let i = 0; i < 4; i++) g.doInteraction(p, g.interactionFor(p));
+      assert.equal(p.throwableCount(), GRENADE_MAX);
+      const paid = p.points;
+      g.doInteraction(p, g.interactionFor(p));
+      assert.equal(p.points, paid, 'a full hand of this kind is not a sale');
+      assert.equal(p.throwableCount(), GRENADE_MAX);
+
+      // a different kind REPLACES the hand instead of opening a second pocket
+      const other = ['frag', 'molotov', 'gas'].find((k) => k !== kind);
+      const oc = g.map.floors[f].grenadeCrates.find((c) => (c.kind ?? 'frag') === other);
+      if (oc) {
+        const before = p.points;
+        p.pos = { x: oc.x, y: oc.y };
+        g.doInteraction(p, g.interactionFor(p));
+        assert.equal(p.throwableKind(), other);
+        assert.equal(p.throwableCount(), 2);
+        assert.ok(p.points < before);
+        assert.equal(p[pocket[kind]], 0, 'the kind it replaced is gone');
+      }
     }
   }
   assert.deepEqual([...seen].sort(), ['frag', 'gas', 'molotov']);

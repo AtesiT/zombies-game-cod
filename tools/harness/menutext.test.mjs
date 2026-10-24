@@ -1,0 +1,382 @@
+// No label may print through another one, at any size, in any panel.
+//
+// The bug this exists for is the SOUND IS OFF chip printing across the boss
+// bar on a small phone at maximum picture size, and the same class of bug in
+// the settings list (a label under its own slider) and the debug list (a long
+// outfit row under its value). Reading renders catches a few of them; this
+// catches all of them, every time, because it reads the draw calls instead of
+// the pixels: every string, where it landed, and how big it came out.
+//
+// Two draw paths: at 1:1 a label is a pre-rendered sprite (`drawImage`), and
+// under a menu scale it is `fillText`. Both carry `textInfo` or the font and
+// alignment they were drawn with, so both can be turned into a box.
+//
+// Rules protected here:
+//   * no two labels on any panel overlap, at 360x640 up to 1920x1080;
+//   * no label is drawn outside the screen;
+//   * the same holds for the HUD's own furniture (the top and bottom bands,
+//     where the chips, the boss bar, the map tag and the health bar live), in
+//     play, on a warden round and at the bench.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { nc, load } from './stub.mjs';
+
+const { Game, Input, VW, VH } = await load();
+const HUD = await import('../../src/hud.js');
+const touch = await import('../../src/touch.js');
+
+const H = 1 / 60;
+const clearStorage = () => { for (const k of Object.keys(localStorage._d)) delete localStorage._d[k]; };
+const fresh = (w, h) => {
+  const g = new Game(new Input(nc(w, h)));
+  g.setViewport(w, h);
+  g.begin();
+  return g;
+};
+
+/**
+ * A 2D context that also remembers every label drawn on it.
+ *
+ * A proxy over the native context rather than a fake: the panels call a lot of
+ * canvas, and every one of those calls has to land on the real thing or the
+ * layout code measures imaginary text. Only the two text paths are read, and
+ * both are reduced to the box their glyphs actually occupy.
+ */
+function recordingContext(real) {
+  const items = [];
+  const scale = () => {
+    const m = real.getTransform ? real.getTransform() : null;
+    return m ? { a: m.a, d: m.d } : { a: 1, d: 1 };
+  };
+  const push = (str, x0, y0, x1, y1, font) => {
+    const t = scale();
+    if (real.globalAlpha <= 0.25) return;          // faded out: not readable
+    items.push({ str, x0: x0 * t.a, y0: y0 * t.d, x1: x1 * t.a, y1: y1 * t.d,
+      xs: x0 * t.a, ys: y0 * t.d, font });
+  };
+  return {
+    items,
+    ctx: new Proxy({}, {
+      get(_, prop) {
+        const v = real[prop];
+        if (typeof v !== 'function') return v;
+        if (prop === 'drawImage') {
+          return (img, ...args) => {
+            const info = img?.textInfo;
+            if (info) {
+              const [dx, dy, dw, dh] = args.length >= 4 ? args : [args[0], args[1], img.width, img.height];
+              const w = dw ?? img.width, h = dh ?? img.height;
+              const k = w / img.width;
+              const PAD = 2;                         // the sprite's own padding
+              push(info.str, dx + PAD * k, dy + PAD * k,
+                dx + w - PAD * k, dy + h - PAD * k, info.font);
+            }
+            return v.call(real, img, ...args);
+          };
+        }
+        if (prop === 'fillText' || prop === 'strokeText') {
+          return (str, x, y, ...rest) => {
+            const m = real.measureText(String(str));
+            const asc = m.actualBoundingBoxAscent || 9;
+            const desc = m.actualBoundingBoxDescent || 2;
+            const w = m.width;
+            const x0 = real.textAlign === 'center' ? x - w / 2 : real.textAlign === 'right' ? x - w : x;
+            push(String(str), x0, y - asc, x0 + w, y + desc, real.font);
+            return v.call(real, str, x, y, ...rest);
+          };
+        }
+        return v.bind(real);
+      },
+      set(_, prop, val) { real[prop] = val; return true; },
+    }),
+  };
+}
+
+/** Pairs of labels that share more than a hair of screen. */
+function collisions(items) {
+  const bad = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j];
+      // the same string in the same place is one label drawn by two passes
+      if (a.str === b.str && Math.abs(a.xs - b.xs) < 2.5 && Math.abs(a.ys - b.ys) < 2.5) continue;
+      const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+      const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      // a sprite carries two pixels of padding on each side, so a box may
+      // touch its neighbour without the letters doing so
+      if (ox > 4 && oy > 4) {
+        bad.push(`"${a.str}" at ${a.x0.toFixed(0)},${a.y0.toFixed(0)} over "${b.str}" at ${b.x0.toFixed(0)},${b.y0.toFixed(0)} (${ox.toFixed(0)}x${oy.toFixed(0)})`);
+      }
+    }
+  }
+  return bad;
+}
+
+// Any part of a label outside the glass is a label with letters the player
+// cannot see: the wordmark clipped at the top of a landscape phone is the same
+// bug as a row printed through the footer.
+const offscreen = (items, vw, vh) => items
+  .filter((b) => b.x0 < -2 || b.x1 > vw + 2 || b.y0 < -2 || b.y1 > vh + 2)
+  .map((b) => `"${b.str}" at ${b.x0.toFixed(0)},${b.y0.toFixed(0)}-${b.x1.toFixed(0)},${b.y1.toFixed(0)}`);
+
+// A short phone, a tall phone, a small desktop, a big one -- and the canvases
+// a phone gets when PICTURE SIZE is pushed to its top step on a narrow screen
+// (the world is zoomed, so the same glass ends up with fewer canvas pixels).
+const SIZES = [[360, 640], [430, 930], [800, 500], [1280, 800], [1920, 1080],
+  [360, 704], [360, 560], [640, 360]];
+
+const PANELS = {
+  title: (ctx, g, w, h) => HUD.drawTitle(ctx, g, w, h),
+  menu: (ctx, g, w, h) => HUD.drawMenu(ctx, g, w, h),
+  settings: (ctx, g, w, h) => HUD.drawSettings(ctx, g, w, h),
+  controls: (ctx, g, w, h) => HUD.drawControls(ctx, g, w, h),
+  debug: (ctx, g, w, h) => { g.debugTab = 0; HUD.drawDebug(ctx, g, w, h); },
+  zoo: (ctx, g, w, h) => { g.debugTab = 1; HUD.drawDebug(ctx, g, w, h); },
+  music: (ctx, g, w, h) => { g.debugTab = HUD.DEBUG_MUSIC_TAB; HUD.drawDebug(ctx, g, w, h); },
+  pause: (ctx, g, w, h) => HUD.drawPause(ctx, g, w, h),
+  achievements: (ctx, g, w, h) => HUD.drawAchievements(ctx, g, w, h),
+  stats: (ctx, g, w, h) => HUD.drawStats(ctx, g, w, h),
+  outfits: (ctx, g, w, h) => HUD.drawOutfits(ctx, g, w, h),
+  gameover: (ctx, g, w, h) => HUD.drawGameOver(ctx, g, w, h),
+};
+
+test('no two labels print through each other, on any panel, at any size', () => {
+  clearStorage();
+  for (const [w, h] of SIZES) {
+    for (const [name, draw] of Object.entries(PANELS)) {
+      const g = fresh(w, h);
+      g.startRound(3);
+      g.scene = 'game';
+      g.paused = true;
+      const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+      draw(ctx, g, g.vw, g.vh);
+      assert.ok(items.length > 2, `${name} at ${w}x${h} drew no text at all`);
+      const bad = collisions(items);
+      assert.deepEqual(bad, [], `${name} at ${w}x${h}: ${bad.length} overlaps\n  ${bad.join('\n  ')}`);
+      const off = offscreen(items, g.vw, g.vh);
+      assert.deepEqual(off, [], `${name} at ${w}x${h}: ${off.length} labels off screen\n  ${off.join('\n  ')}`);
+      clearStorage();
+    }
+  }
+});
+
+test('the HUD corners hold, on every state a phone can be in', () => {
+  clearStorage();
+  const states = {
+    play: () => {},
+    warden: (g) => { g.startRound(25); g.banner = null; },
+    dog: (g) => { g.startRound(5); g.banner = null; },
+    hurt: (g) => { g.player.hp = g.player.maxHp * 0.15; g.player.poison(g); },
+    lowammo: (g) => { g.player.slot.mag = 0; g.player.reloading = false; },
+  };
+  for (const [w, h] of SIZES) {
+    for (const [name, setup] of Object.entries(states)) {
+      const g = fresh(w, h);
+      g.startRound(3);
+      setup(g);
+      for (let i = 0; i < 3; i++) g.update(H);
+      const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+      g.draw(ctx, H);
+      // only the two bands the HUD lives in: the middle of the screen is the
+      // world, where a price tag may sit over the floor it is painted on
+      const band = 130;
+      const hud = items.filter((b) => b.y1 < band || b.y0 > g.vh - band);
+      assert.ok(hud.length > 2, `${name} at ${w}x${h}: the HUD drew almost nothing`);
+      const bad = collisions(hud);
+      assert.deepEqual(bad, [], `${name} at ${w}x${h}: the HUD overlaps itself\n  ${bad.join('\n  ')}`);
+      clearStorage();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  The three panels that had a bug in them, one test each, so the rule is
+//  written down next to the thing it protects.
+// ---------------------------------------------------------------------------
+test('the controls list gives the key its room and the label the cut', () => {
+  clearStorage();
+  for (const [w, h] of SIZES) {
+    const g = fresh(w, h);
+    const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawControls(ctx, g, g.vw, g.vh);
+    // a key that has been cut ("WHEEL O…") is a wrong answer: on a narrow
+    // panel the list must say the short form instead
+    const keys = items.filter((it) => it.x1 > g.vw * 0.55 && it.xs > g.vw * 0.3);
+    assert.ok(keys.length >= 10, `${w}x${h}: the key column drew ${keys.length} rows`);
+    for (const k of keys) {
+      assert.ok(!k.str.endsWith('\u2026'), `${w}x${h}: a key was cut short: "${k.str}"`);
+    }
+    // and the title never runs into the way out
+    const title = items.find((it) => it.str.startsWith('CONTROLS'));
+    const out = items.find((it) => it.str.includes('CLOSE'));
+    assert.ok(title && out, `${w}x${h}: the panel is missing its title or its way out`);
+    assert.ok(out.x0 >= title.x1 - 1 || out.ys !== title.ys,
+      `${w}x${h}: "ESC OR CLICK TO CLOSE" runs into "${title.str}"`);
+    // the way out is reachable wherever it ended up: header or footer, on screen
+    assert.ok(out.y0 > 0 && out.y1 < g.vh, `${w}x${h}: the way out is off screen`);
+    clearStorage();
+  }
+});
+
+test('the pause menu fits a phone, and stays out of the HUD', () => {
+  clearStorage();
+  for (const [w, h] of SIZES) {
+    const g = fresh(w, h);
+    g.paused = true;
+    for (let i = 0; i < HUD.PAUSE_ROWS.length; i++) {
+      const r = HUD.pauseRowRect(i, g.vw, g.vh);
+      assert.ok(r.x >= 0 && r.x + r.w <= g.vw, `${w}x${h}: row ${i} is ${r.w.toFixed(0)} wide on a ${g.vw} screen`);
+      assert.ok(r.y >= 0 && r.y + r.h <= g.vh, `${w}x${h}: row ${i} runs off the bottom`);
+    }
+    const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawPause(ctx, g, g.vw, g.vh);
+    // the hint under the last row is above the HUD strip, not on top of it.
+    // The strip is drawn from h-74 down
+    const hint = items.find((it) => it.str.includes('ARROWS'));
+    assert.ok(hint, `${w}x${h}: no hint line`);
+    assert.ok(hint.y1 <= g.vh - 72,
+      `${w}x${h}: the hint line sits at ${hint.y1.toFixed(0)}, in the HUD band (from ${g.vh - 74})`);
+    clearStorage();
+  }
+});
+
+test('the death screen and the all-time page fit a phone at max picture size', () => {
+  clearStorage();
+  for (const [w, h] of [[360, 560], [360, 640], [430, 930]]) {
+    const g = fresh(w, h);
+    g.startRound(12);
+    g.scene = 'game';
+    g.overT = 2;
+    g.gameOver = true;
+    // a night worth reading, so the numbers are wide and the labels are long
+    Object.assign(g.runMetrics, {
+      kills: 214, headshots: 61, seconds: 1432, points: 18400, rays: 1900, hitRays: 1200,
+      medkits: 4, revives: 3, downs: 2, planks: 88,
+    });
+    const shot = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawGameOver(shot.ctx, g, g.vw, g.vh);
+    const bad = collisions(shot.items);
+    assert.deepEqual(bad, [], `${w}x${h}: the death screen overlaps itself\n  ${bad.join('\n  ')}`);
+    const off = offscreen(shot.items, g.vw, g.vh);
+    assert.deepEqual(off, [], `${w}x${h}: labels off the bottom of the death screen\n  ${off.join('\n  ')}`);
+
+    const stats = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawStats(stats.ctx, g, g.vw, g.vh);
+    const sbad = collisions(stats.items);
+    assert.deepEqual(sbad, [], `${w}x${h}: the all-time page overlaps itself\n  ${sbad.join('\n  ')}`);
+    // a label cut to an ellipsis is an admission, not a label: the page has
+    // short true names for every row it might have to squeeze
+    const cut = stats.items.filter((it) => it.str.endsWith('\u2026'));
+    assert.deepEqual(cut.map((c) => c.str), [], `${w}x${h}: cut labels on the all-time page`);
+    clearStorage();
+  }
+});
+
+test('the front page, the pause menu and the all-time page hold a landscape phone', () => {
+  clearStorage();
+  // 640x360 is the shape a phone has when it is turned sideways, and after the
+  // menu scale it is only 460x259 units of drawing space: the wordmark, eight
+  // rows, the diary and the footer all have to share it
+  for (const [w, h] of [[640, 360], [568, 320], [740, 360]]) {
+    const g = fresh(w, h);
+    const shot = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawMenu(shot.ctx, g, g.vw, g.vh);
+    assert.deepEqual(collisions(shot.items), [], `${w}x${h}: the front page overlaps itself`);
+    assert.deepEqual(offscreen(shot.items, g.vw, g.vh), [], `${w}x${h}: the front page runs off the glass`);
+
+    // every row of the menu is reachable, and the row you press is the row you
+    // see: the layout the painter used is the layout the hit test uses
+    const rows = HUD.menuRows('menu', g);
+    const L = HUD.menuLayout('menu', g, g.vw, g.vh);
+    for (let i = 0; i < rows.length; i++) {
+      const y = L.top + i * L.step;
+      assert.equal(HUD.menuHitTest('menu', g.vw / 2, y, g), i,
+        `${w}x${h}: row ${i} is drawn at ${y.toFixed(0)} but not pressed there`);
+      assert.ok(y > 0 && y < g.vh, `${w}x${h}: row ${i} is off screen at ${y.toFixed(0)}`);
+    }
+
+    const pause = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+    HUD.drawPause(pause.ctx, g, g.vw, g.vh);
+    assert.deepEqual(collisions(pause.items), [], `${w}x${h}: the pause menu overlaps itself`);
+    for (let i = 0; i < HUD.PAUSE_ROWS.length; i++) {
+      const r = HUD.pauseRowRect(i, g.vw, g.vh);
+      assert.ok(r.h >= 12, `${w}x${h}: pause row ${i} is ${r.h.toFixed(1)} tall -- not a thumb target`);
+      const hit = HUD.pauseHitTest(g, g.vw, g.vh, r.x + r.w / 2, r.y + r.h / 2);
+      assert.equal(hit, i, `${w}x${h}: pause row ${i} is drawn but not pressed`);
+    }
+    clearStorage();
+  }
+});
+
+// The way out of a menu is drawn by the game over the panel: a chip in the
+// top-right corner of the *screen*, in screen units, over a panel drawn in
+// menu units. A panel as wide as the screen therefore puts its header -- and
+// the counter that lives at the right of it -- underneath that chip. It did,
+// on every phone: ACHIEVEMENTS 0 / 36, OUTfits 0 / 10 EARNED and the debug
+// title all had the chip printed across their last letters.
+const CHIP_PANELS = ['settings', 'debug', 'zoo', 'music', 'achievements', 'stats', 'outfits', 'gameover'];
+
+test('no label is printed under the way-out chip', () => {
+  clearStorage();
+  for (const [w, h] of SIZES) {
+    for (const name of CHIP_PANELS) {
+      const g = fresh(w, h);
+      g.startRound(3);
+      g.scene = 'game';
+      g.paused = true;
+      if (name === 'gameover') { g.gameOver = true; g.started = true; g.overT = 3; }
+      const { ctx, items } = recordingContext(nc(g.vw, g.vh).getContext('2d'));
+      PANELS[name](ctx, g, g.vw, g.vh);
+      const chip = HUD.backChipRect(g.vw, g.vh);
+      const under = items.filter((it) => it.x1 > chip.x - 2 && it.x0 < chip.x + chip.w + 2
+        && it.y1 > chip.y - 2 && it.y0 < chip.y + chip.h + 2);
+      assert.deepEqual(under.map((it) => it.str), [],
+        `${name} at ${w}x${h}: ${under.map((it) => `"${it.str}" at ${it.x0.toFixed(0)},${it.y0.toFixed(0)}`).join(', ')} under the chip at ${chip.x},${chip.y}`);
+      clearStorage();
+    }
+  }
+});
+
+test('the phone reads its own instructions, not a keyboard it does not have', () => {
+  clearStorage();
+  const had = globalThis.matchMedia;
+  globalThis.matchMedia = (q) => ({ matches: /coarse/.test(String(q)), addEventListener() {}, removeEventListener() {} });
+  try {
+    assert.equal(touch.isTouchDevice(), true, 'the fake phone is not seen as touch');
+    const [w, h] = [360, 640];
+    const paused = fresh(w, h);
+    paused.startRound(3);
+    paused.scene = 'game';
+    paused.paused = true;
+    const pause = recordingContext(nc(paused.vw, paused.vh).getContext('2d'));
+    HUD.drawPause(pause.ctx, paused, paused.vw, paused.vh);
+    const labels = pause.items.map((it) => it.str);
+    // the key beside a row is gone: a phone has no P, O, C, R or backtick
+    assert.deepEqual(labels.filter((s) => /^[A-Z`/]$/.test(s)), [], 'a single key hint survived on a phone');
+    assert.ok(labels.some((s) => s.includes('TAP A ROW')), 'the pause menu does not say how to use it');
+    assert.ok(!labels.some((s) => s.includes('ARROWS')), 'the pause menu still points at the arrow keys');
+
+    const dbg = fresh(w, h);
+    dbg.startRound(3);
+    dbg.debugTab = 1;
+    const d = recordingContext(nc(dbg.vw, dbg.vh).getContext('2d'));
+    HUD.drawDebug(d.ctx, dbg, dbg.vw, dbg.vh);
+    const dl = d.items.map((it) => it.str);
+    assert.ok(dl.some((s) => s.includes('TAP A ROW')), 'the debug list does not say how to use it');
+    assert.ok(dl.some((s) => s.includes('×')), 'the debug list does not say how to close it');
+    assert.ok(!dl.some((s) => s.includes('ESC') || s.includes('ENTER') || s.includes('W/S')),
+      `the debug list still names a key: ${dl.join(' | ')}`);
+
+    const set = fresh(w, h);
+    set.startRound(3);
+    const st = recordingContext(nc(set.vw, set.vh).getContext('2d'));
+    HUD.drawSettings(st.ctx, set, set.vw, set.vh);
+    const sl = st.items.map((it) => it.str);
+    assert.ok(sl.some((s) => s.includes('TAP')), 'the settings page does not say how to pick a row');
+    assert.ok(!sl.some((s) => /W S|MOUSE|WHEEL/.test(s)), `the settings page still names a mouse: ${sl.join(' | ')}`);
+  } finally {
+    if (had === undefined) delete globalThis.matchMedia;
+    else globalThis.matchMedia = had;
+    clearStorage();
+  }
+});

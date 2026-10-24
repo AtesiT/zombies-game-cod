@@ -13,9 +13,11 @@ ok(g.started === false, 'a fresh game is already running');
 
 // the keyboard walks the list, the mouse points at it; both must agree.
 // The controls screen is a list, not a menu: it starts higher and packs tighter.
-const rowTop = (scene) => M.VH * (scene === 'controls' ? 0.16 : 0.46);
-const rowStep = (scene) => (scene === 'controls' ? 21 : 27);
-const rowY = (i, scene = 'menu') => rowTop(scene) + i * rowStep(scene);
+const rowY = (i, scene = 'menu') => {
+  if (scene === 'controls') return M.VH * 0.16 + i * 21;
+  const L = M.menuLayout(scene, g, M.VW, M.VH);
+  return L.top + i * L.step;
+};
 const click = (i, scene = 'menu') => {
   g.input.mouse.x = M.VW / 2;
   g.input.mouse.y = rowY(i, scene);
@@ -108,7 +110,8 @@ const g2 = new M.Game(new M.Input(nc(M.VW, M.VH)));
 const press2 = (code) => { g2.input.pressed.add(code); g2.update(H); g2.input.endFrame(); };
 const click2 = (i) => {
   g2.input.mouse.x = M.VW / 2;
-  g2.input.mouse.y = M.VH * 0.46 + i * 27;
+  const L = M.menuLayout(g2.scene, g2, M.VW, M.VH);
+  g2.input.mouse.y = L.top + i * L.step;
   g2.input.mouse.pressed = true;
   g2.update(H);
   g2.input.endFrame();

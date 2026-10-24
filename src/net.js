@@ -13,6 +13,8 @@
 // standing guest is handed the room by the relay.
 import { Player, ENEMY_TYPES } from './entities.js';
 import { PERKS } from './perks.js';
+import { SKILLS, SKILL_IDS } from './skills.js';
+import { SKIN_ORDER } from './skins.js';
 import { Powerup } from './powerups.js';
 import { applyShutters } from './crafting.js';
 import { Totem, Grave, ZThrow } from './haunts.js';
@@ -226,6 +228,13 @@ export class Net {
     this.log(want === 'host' ? 'hosting...' : 'joining...');
   }
 
+  /** Tell the host about a new coat. A no-op unless this body is a guest. */
+  sendSkin(id) {
+    if (!this.playing || this.isHost) return false;
+    this.send(this.hostId, { m: 'skin', id: id ?? null });
+    return true;
+  }
+
   /** A code nobody else is using: four letters and digits, no lookalikes. */
   makeRoomCode() {
     const abc = 'ABDEFGHJKLMNPQRSTUWXYZ23456789';
@@ -347,7 +356,7 @@ export class Net {
         this._hiT = setTimeout(() => {
           if (!this._welcomed && !this.isHost && this.state === 'open') {
             this.log('no welcome yet, asking again');
-            this.send(this.hostId, { m: 'hi', name: this.name });
+            this.send(this.hostId, { m: 'hi', name: this.name, skin: this.game?.player?.skin ?? null });
           }
         }, 2500);
         clearTimeout(this._joinT);
@@ -359,7 +368,7 @@ export class Net {
             this._status();
           }
         }, 9000);
-        this.send(this.hostId, { m: 'hi', name: this.name });
+        this.send(this.hostId, { m: 'hi', name: this.name, skin: this.game?.player?.skin ?? null });
       }
       this._status();
       return;
@@ -406,7 +415,17 @@ export class Net {
   _hostMsg(m) {
     const from = m.from;
     if (!from) return;
-    if (m.m === 'hi') { this.log(`${m.name ?? 'somebody'} is joining`); return this._admit(from, m.name); }
+    if (m.m === 'hi') {
+      this.log(`${m.name ?? 'somebody'} is joining`);
+      return this._admit(from, m.name, m.skin);
+    }
+    // a guest changed coat mid-night (the debug panel can do it): the body
+    // lives here, so the coat has to change here
+    if (m.m === 'skin') {
+      const pl = this.peers.get(from)?.player;
+      if (pl && SKIN_ORDER.includes(String(m.id ?? ''))) pl.setSkin(String(m.id));
+      return;
+    }
     if (m.m === 'who') { this.send(from, { m: 'hostis', host: this.you }); return; }
     const peer = this.peers.get(from);
     if (!peer) return;
@@ -415,6 +434,9 @@ export class Net {
     // tryCraft looks the id up in RECIPES and refuses anything it does not
     // know, so this is not a way to reach any other code with a string.
     if (m.m === 'craft') { this.game?.tryCraft?.(String(m.id ?? '').slice(0, 24), peer.player); return; }
+    // a guest picked a skill card: the body lives here, so the choice lands
+    // here. pickSkill re-checks the id against the three cards it dealt.
+    if (m.m === 'skill') { this.game?.pickSkill?.(peer.player, String(m.id ?? '').slice(0, 24)); return; }
     // a guest at the debug panel: the row runs on the host, where the world
     // actually is. GOD is personal -- it arms the guest's own body.
     if (m.m === 'dbg') {
@@ -433,7 +455,7 @@ export class Net {
   }
 
   /** Let somebody into a round that is already running. */
-  _admit(id, rawName) {
+  _admit(id, rawName, wantSkin = null) {
     const g = this.game;
     if (!g) return;
     // a room only exists once somebody has opened one, which starts a game --
@@ -460,6 +482,9 @@ export class Net {
     p.netId = id;
     p.name = name;
     p.points = 500;
+    // the coat they arrived in: validated against the catalogue here, because
+    // this string came off the wire
+    if (SKIN_ORDER.includes(wantSkin)) p.setSkin(wantSkin);
     p.floor = g.map.floor;
     p.salvage = 0;
     p.medkits = 0;
@@ -627,12 +652,11 @@ export class Net {
 
     const it = g.interactionFor?.(p) ?? null;
     if (inp.wasPressed('KeyF', 'KeyE')) g.doInteraction?.(p, it);
-    // the pockets: a guest's frag, bottle and pot fly from the guest's hands,
-    // toward the guest's aim -- the host lends the physics, not the intent
+    // the one throwing hand: whatever the guest bought last flies from the
+    // guest's hands toward the guest's aim -- the host lends the physics, not
+    // the intent. G is the key; X and B remain aliases for the same slot.
     if (!p.downed && !p.evac) {
-      if (inp.wasPressed('KeyG')) g.throwFor?.(p, 'frag');
-      if (inp.wasPressed('KeyX')) g.throwFor?.(p, 'molotov');
-      if (inp.wasPressed('KeyB')) g.throwFor?.(p, 'gas');
+      if (inp.wasPressed('KeyG', 'KeyX', 'KeyB')) g.throwFor?.(p);
       // and a guest can kneel and pull a friend up, exactly like the host:
       // ten seconds of holding him, five with Quick Revive
       const fallen = g.fallenNear(p);
@@ -725,6 +749,12 @@ export class Net {
       if ((pl.knifeAnim ?? 0) > 0.1) flags |= 64;
       let perkMask = 0;
       for (let i = 0; i < PERK_IDS.length; i++) if (pl.perks?.has(PERK_IDS[i])) perkMask |= (1 << i);
+      let skillMask = 0;
+      for (let i = 0; i < SKILL_IDS.length; i++) if (pl.skills?.has(SKILL_IDS[i])) skillMask |= (1 << i);
+      const d = pl.skillDraft;
+      const draft = d
+        ? [d.round | 0, ...d.ids.map((id) => SKILL_IDS.indexOf(id)), r2(d.t ?? 0), d.index | 0]
+        : null;
       p.push([
         pl.netId ?? 0, r0(pl.pos.x), r0(pl.pos.y), r2(pl.aim ?? 0), r0(pl.hp),
         r0(pl.maxHp ?? 100), pl.floor ?? g.map.floor, flags, pl.current ?? 'm1911',
@@ -734,6 +764,10 @@ export class Net {
         r2(pl.chillT ?? 0), r2(pl.stunT ?? 0),
         pl.molotovs ?? 0, pl.gasbombs ?? 0,
         r2(pl.reloading ? clamp(1 - (pl.reloadTimer / (pl.reloadTotal || 1)), 0, 1) : 0),
+        skillMask, draft,
+        // the outfit, so the other people in the room see the coat they are
+        // standing next to (255 = the standard kit, which is index -1)
+        SKIN_ORDER.indexOf(pl.skin) < 0 ? 255 : SKIN_ORDER.indexOf(pl.skin),
       ]);
     }
     const floors = g.map.floors.map((F) => F.barricades.map((b) => b.planks));
@@ -792,7 +826,7 @@ export class Net {
         r0(s.x), r0(s.y), s.f ?? 0, r2(s.t), r2(s.fall), r2(s.life), r2(s.seed ?? 0), s.taken ? 1 : 0,
       ]),
       sw: (g.map.floors?.[0]?.secretSwitches ?? []).map((x) => (x.found ? 1 : 0)),
-      rr: g.roundReport, rm: g.runMetrics,
+      rm: g.runMetrics,
       evc: g.evacuated ? 1 : 0,
       go: g.gameOver ? 1 : 0,
       you: g.player?.netId ?? 0,
@@ -805,7 +839,6 @@ export class Net {
     if (!s) return;
     g.round = s.r;
     g.roundActive = !!s.ra;
-    g.roundReport = s.rr ?? null;
     if (s.rm) g.runMetrics = { ...s.rm };
     g.intermission = s.im ?? 0;
     g.zombiesKilled = s.zk ?? 0;
@@ -814,10 +847,14 @@ export class Net {
     g.powerOn = !!s.pw;
     if (g.powerOn && !wasOn) g.powerOnAt = g.time;   // lamps warm up over here as well
     g.dogRound = !!s.dg;
+    const wasOver = g.gameOver;
     g.gameOver = !!s.go;
     // the roof ending, painted from the host's numbers: phase timers run on
     // both sides (see game._heliStep), the phase itself only advances there
     if (s.evc) g.evacuated = true;
+    // a guest's night is the host's night: when the last body goes down there,
+    // the machine keeps a copy of the run it just watched
+    if (g.gameOver && !wasOver) g._bankRun?.();
     if (s.evc || (s.he?.[0] ?? 0) >= 4) g.playEvacuationAudio?.();
     if (s.he && g.heli) {
       g.heli.phase = s.he[0] ?? 0;
@@ -906,6 +943,8 @@ export class Net {
       t.perkMask = e[16]; t.bleedT = e[17];
       t.chillT = e[19] ?? 0; t.stunT = e[20] ?? 0;   // e[18] is the NAME -- mind the gap
       t.molotovs = e[21] ?? 0; t.gasbombs = e[22] ?? 0; t.reloadK = e[23] ?? 0;
+      t.skillMask = e[24] ?? 0; t.skillDraft = e[25] ?? null;
+      t.skin = SKIN_ORDER[e[26] ?? -1] ?? null;
       this._targets.set(`p${id}`, t);
       if (immediate) this._snapPlayer(pl, t);
       if (id === this.you && g.player !== pl) { g.player = pl; pl.game = g; }
@@ -1025,6 +1064,46 @@ export class Net {
       for (let i = 0; i < PERK_IDS.length; i++) if (t.perkMask & (1 << i)) pl.perks.add(PERK_IDS[i]);
       pl.applyPerks?.();
     }
+    this._skillWire(pl, t);
+    this._skinWire(pl, t);
+  }
+
+  /**
+   * The outfit is cosmetic plus one small stat, but it is still a stat: a
+   * guest's body has to carry the same bonus the host is simulating, and it
+   * has to be drawn in the same coat. `setSkin` recomputes the block and does
+   * nothing at all when the id has not changed.
+   */
+  _skinWire(pl, t) {
+    if (t.skin === undefined || !pl.setSkin) return;
+    if ((pl.skin ?? null) !== (t.skin ?? null)) pl.setSkin(t.skin);
+  }
+
+  /**
+   * Skills and the open draft travel with the player entry. The draft's card
+   * *cursor* is local to whoever is reading it, so keep ours while the same
+   * round and the same three cards are still on the table.
+   */
+  _skillWire(pl, t) {
+    if (pl.skills && t.skillMask !== undefined) {
+      let changed = false;
+      for (let i = 0; i < SKILL_IDS.length; i++) {
+        const has = pl.skills.has(SKILL_IDS[i]);
+        const want = !!(t.skillMask & (1 << i));
+        if (has !== want) { changed = true; if (want) pl.skills.add(SKILL_IDS[i]); else pl.skills.delete(SKILL_IDS[i]); }
+      }
+      if (changed) pl.applyPerks?.();
+    }
+    const d = t.skillDraft;
+    if (!d) { pl.skillDraft = null; return; }
+    const ids = [d[1], d[2], d[3]].map((i) => SKILL_IDS[i]).filter(Boolean);
+    if (!ids.length) { pl.skillDraft = null; return; }
+    const prev = pl.skillDraft;
+    const same = prev && prev.round === (d[0] | 0) && prev.ids.join() === ids.join();
+    pl.skillDraft = {
+      round: d[0] | 0, ids, t: d[4] ?? 0,
+      index: same ? (prev.index ?? 0) : (d[5] ?? 0),
+    };
   }
 
   /** Ease everything towards its target so 20 Hz looks like 60. */
@@ -1078,6 +1157,8 @@ export class Net {
         }
         if (changed) pl.applyPerks?.();
       }
+      this._skillWire(pl, t);
+      this._skinWire(pl, t);
       if (t.muzzle) { pl.muzzleFlash = 0.05; pl._muzzle = 1; } else pl._muzzle = 0;
       if (!this.isHost) pl.knifeAnim = Math.max(0, (pl.knifeAnim ?? 0) - dt);
       // our own barrel points where we are pointing *now*
@@ -1142,6 +1223,13 @@ export class Net {
         break;
       case 'door': audio.door?.(); break;
       case 'perk': audio.perk?.(); break;
+      case 'skill': {
+        const def = SKILLS[m.id];
+        if (def) g.bannerShow?.(`${m.name ?? 'SOMEONE'} TOOK ${def.name.toUpperCase()}`, def.desc,
+          { dur: 2.6, colour: def.colour });
+        audio.perk?.();
+        break;
+      }
       case 'craft':
         // somebody's hammer, everybody's news: the name goes over the body
         // that built it, and the guest that asked hears the answer
