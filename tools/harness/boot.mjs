@@ -14,6 +14,7 @@
 // hand instead of importing main.js, so it never ran the line that broke.
 import { createCanvas } from './node_modules/@napi-rs/canvas/index.js';
 import { fileURLToPath } from 'node:url';
+import { menuLayout } from '../../src/hud.js';
 import { dirname, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -116,18 +117,23 @@ ok(px.lit > 20000, `the menu is a black screen (${px.lit} lit pixels)`);
 ok(px.variety > 30, `the menu drew a flat fill (${px.variety} colours)`);
 
 // ------------------------------------------------------- the panel rescales --
-// resize() drives the panel's scale, so the panel is the proof it ran
+// resize() drives the panel's scale, so the panel is the proof it ran. The
+// stage is the whole window now (no letterbox), so the scale is the zoom the
+// view was solved at, not windowWidth/800.
+const zoomOf = () => parseFloat((touch.panel.style.transform.match(/scale\(([\d.]+)\)/) ?? [])[1]);
 ok(touch._stageW === 1280 && touch._stageH === 800,
   `the panel was laid out for ${touch._stageW}x${touch._stageH}, not the 1280x800 window`);
-ok(touch.panel.style.transform === 'scale(1.6)',
-  `the panel scaled to "${touch.panel.style.transform}", not scale(1.6)`);
+ok(zoomOf() > 0.9 && zoomOf() < 2.2, `the panel scaled to "${touch.panel.style.transform}" for a 1280x800 window`);
 win.innerWidth = 1600; win.innerHeight = 1000;
 frame.clientWidth = 1600; frame.clientHeight = 1000;
 win.dispatch('resize', {});
 ok(touch._stageW === 1600 && touch._stageH === 1000,
   `a resize left the panel at ${touch._stageW}x${touch._stageH}, not 1600x1000`);
-ok(touch.panel.style.transform === 'scale(2)',
-  `a resize left the panel at "${touch.panel.style.transform}", not scale(2)`);
+// the panel's units are the stage's units: whatever zoom the view was solved
+// at, panelHeight * zoom has to be the whole stage or the buttons float
+const panelUnits = parseFloat(touch.panel.style.height) || 500;
+ok(Math.abs(panelUnits * zoomOf() - 1000) <= 2,
+  `the panel covers ${(panelUnits * zoomOf()).toFixed(0)} of 1000 px -- its buttons do not reach the bottom`);
 win.innerWidth = 1280; win.innerHeight = 800;
 frame.clientWidth = 1280; frame.clientHeight = 800;
 win.dispatch('resize', {});
@@ -136,13 +142,15 @@ ok(touch._stageW === 1280, 'shrinking the window back did not reach the panel');
 // ---- a four-inch phone ----------------------------------------------------
 // It used to be handed an 800x500 stage inside a 667x320 window: the stage was
 // centred and clipped, so the bottom of it -- the walking stick -- was off the
-// screen entirely, and the right-hand buttons hung over the edge.
+// screen entirely, and the right-hand buttons hung over the edge. There is no
+// fixed-shape stage any more: the view is solved for the screen it is on.
 win.innerWidth = 667; win.innerHeight = 320;         // iPhone SE, Safari, sideways
 frame.clientWidth = 667; frame.clientHeight = 320;
 win.dispatch('resize', {});
 const sw = parseInt(canvas.style.width, 10), sh = parseInt(canvas.style.height, 10);
 ok(sw <= 667 && sh <= 320, `a 667x320 window got a ${sw}x${sh} stage -- it does not fit`);
-ok(Math.abs(sw / sh - VW / VH) < 0.02, `the stage lost its shape: ${sw}x${sh}`);
+ok(sw >= 667 * 0.97 && sh >= 320 * 0.97,
+  `a ${sw}x${sh} stage leaves bars in a 667x320 window -- that is the box the phone complained about`);
 ok(touch._stageW === sw && touch._stageH === sh,
   `the panel is laid out for ${touch._stageW}x${touch._stageH}, the stage is ${sw}x${sh}`);
 ok(touch._tier === 'compact', `a four-inch screen got the ${touch._tier} panel`);
@@ -150,8 +158,10 @@ ok(touch._tier === 'compact', `a four-inch screen got the ${touch._tier} panel`)
 const realStick = touch._geo.S * (sw / 800);
 ok(realStick >= 60, `the walking stick is only ${realStick.toFixed(0)} real pixels on a phone`);
 ok(touch._geo.B * (sw / 800) >= 36, `the buttons are only ${(touch._geo.B * (sw / 800)).toFixed(0)} real pixels`);
-// the stick sits 14 units off the bottom of a 500-unit panel: still on screen
-ok(touch._geo.S + 14 <= 500, 'the walking stick is cut off by the bottom edge');
+// the panel is as tall as the stage in its own units, so the stick's 14-unit
+// bottom margin really is at the bottom of the glass
+const panelH = parseFloat(touch.panel.style.height) || 500;
+ok(touch._geo.S + 14 <= panelH, `the walking stick is cut off: ${touch._geo.S} + 14 > ${panelH}`);
 
 win.innerWidth = 1280; win.innerHeight = 800;
 frame.clientWidth = 1280; frame.clientHeight = 800;
@@ -176,18 +186,30 @@ ok(here > 20 && there < here / 2,
   `the cursor is not drawn where the pointer is (${here} lit under it, ${there} after it moved)`);
 input.mouse.x = VW / 2; input.mouse.y = VH * 0.46;
 
-// ---- FILL fills the screen, FIT keeps it all in view -----------------------
-game.settings.set('screen', 1);                 // FILL
-const fillW = parseInt(canvas.style.width, 10), fillH = parseInt(canvas.style.height, 10);
-ok(fillW >= 1280 && fillH >= 800, `FILL left a ${fillW}x${fillH} stage in a 1280x800 window`);
-game.settings.set('screen', 0);                 // FIT
-const fitW = parseInt(canvas.style.width, 10), fitH = parseInt(canvas.style.height, 10);
-ok(fitW <= 1280 && fitH <= 800, `FIT overflowed the window: ${fitW}x${fitH}`);
+// ---- PICTURE SIZE zooms the picture in and out ----------------------------
+// The stage is the window either way -- there is nothing to letterbox -- so
+// what the setting moves is how much world is drawn into it: BIGGEST shows
+// less map, larger, and SMALLER pulls back.
+const worldOf = () => {
+  const m = (canvas.width && game.vw) ? game.vw : VW;
+  return { w: game.vw, h: game.vh, m };
+};
+game.settings.set('view', 3);                   // BIGGEST
+const big = worldOf();
+const bigW = parseInt(canvas.style.width, 10), bigH = parseInt(canvas.style.height, 10);
+ok(bigW >= 1280 * 0.97 && bigH >= 800 * 0.97, `BIGGEST left a ${bigW}x${bigH} stage in a 1280x800 window`);
+game.settings.set('view', 0);                   // SMALLER
+const small = worldOf();
+const smallW = parseInt(canvas.style.width, 10), smallH = parseInt(canvas.style.height, 10);
+ok(smallW <= 1280 && smallH <= 800, `SMALLER overflowed the window: ${smallW}x${smallH}`);
+ok(small.w > big.w && small.h > big.h,
+  `PICTURE SIZE did nothing: ${big.w}x${big.h} world units at BIGGEST, ${small.w}x${small.h} at SMALLER`);
+game.settings.set('view', 1);                   // back to NORMAL for the rest
 
 // ------------------------------------------------------------- press SOLO ----
 // the way a thumb or a mouse would, through the input the real loop is reading
 input.mouse.x = VW / 2;
-input.mouse.y = VH * 0.46;
+input.mouse.y = menuLayout('menu', game, VW, VH).top;
 input.mouse.pressed = true;
 frames(3);
 ok(game.started === true, 'clicking SOLO did not start the game');

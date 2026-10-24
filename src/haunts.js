@@ -248,6 +248,253 @@ export class Grave {
 }
 
 // ---------------------------------------------------------------------------
+export class Hive {
+  /**
+   * The beekeeper's nest: a box of humming comb that stays where it was put.
+   * It has hit points, it has a clock, and while both are running it makes
+   * bees -- small, quick, worth almost nothing, and not part of the round.
+   * Shooting the bees is the wrong answer and that is the whole design.
+   */
+  constructor(x, y, floor, uid) {
+    this.kind = 'hive';
+    this.uid = uid;
+    this.x = x; this.y = y;
+    this.f = floor ?? 0;
+    this.maxHp = 110; this.hp = this.maxHp;
+    this.maxLife = 46; this.life = this.maxLife;
+    this.dead = false;
+    this.t = randRange(0, 10);
+    this.spawnT = randRange(1.4, 2.6);
+    this.flash = 0;
+    this.hum = 0;
+  }
+
+  update(dt, game) {
+    if (this.dead) return;
+    this.t += dt;
+    this.flash = Math.max(0, this.flash - dt * 4);
+    this.hum = Math.max(0, this.hum - dt);
+    if (!isAuth(game)) return;
+    this.life -= dt;
+    this.spawnT -= dt;
+    if (this.spawnT <= 0) {
+      this.spawnT = 3.1;
+      this.hum = 0.5;
+      const live = (game.zombies ?? []).reduce(
+        (n, z) => n + (!z.dead && z.hiveUid === this.uid ? 1 : 0), 0);
+      if (live < 5) game.spawnBee?.(this);
+    }
+    if (this.life <= 0) this.breakApart(game, false);
+  }
+
+  hurt(dmg, game) {
+    if (this.dead) return false;
+    this.hp -= dmg;
+    this.flash = 1;
+    game.particles?.spark?.(this.x + randRange(-6, 6), this.y - randRange(2, 16), randRange(0, TAU), 4, '#e0b04a');
+    if (this.hp <= 0) { this.breakApart(game, true); return true; }
+    return false;
+  }
+
+  breakApart(game, shot) {
+    if (this.dead) return;
+    this.dead = true;
+    if (!isAuth(game)) return;
+    game.particles?.chunk?.(this.x, this.y - 8, randRange(0, TAU), 8);
+    game.particles?.spark?.(this.x, this.y - 10, randRange(0, TAU), 16, '#e0b04a');
+    game.explosionLights?.push({ x: this.x, y: this.y - 8, r: 120, life: 0.4, max: 0.4, colour: '#e0b04a', f: this.f });
+    // the bees it still had in it come out at once, and they are angry
+    for (let i = 0; i < 3; i++) game.spawnBee?.(this);
+    audio.wood?.(true);
+    if (shot) {
+      game.bannerShow?.('HIVE DOWN', 'the humming stops', { dur: 1.8, colour: '#e0b04a' });
+      game.addPoints?.(120, this.x, this.y - 20, '#f0d98a', game.player);
+    }
+  }
+
+  draw(ctx, art, t = 0) {
+    const px = Math.round(this.x), py = Math.round(this.y);
+    const dying = this.life < 4 ? (Math.floor(this.life * 6) % 2 === 0 ? 0.45 : 1) : 1;
+    ctx.save();
+    ctx.globalAlpha = dying;
+    // the hum: a warm pool under the box, and it breathes
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = (0.14 + Math.sin(this.t * 3) * 0.05 + (this.hum > 0 ? 0.12 : 0)) * dying;
+    ctx.fillStyle = '#c8901c';
+    ctx.beginPath(); ctx.ellipse(px, py, 16, 7, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.globalAlpha = dying;
+    if (art?.hive) ctx.drawImage(art.hive, px - (art.hive.width >> 1), py - art.hive.height + 5);
+    if (this.flash > 0.02) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = this.flash * 0.55 * dying;
+      ctx.fillStyle = '#ffe6a8';
+      ctx.fillRect(px - 7, py - 18, 14, 20);
+    }
+    ctx.restore();
+    // bees in the air, so you can see where they come from
+    if (this.hum > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 5; i++) {
+        const a = this.t * 4 + i * 1.3, r = 6 + (i % 3) * 4;
+        ctx.globalAlpha = 0.5 * (this.hum / 0.5) * dying;
+        ctx.fillStyle = '#e0c060';
+        ctx.fillRect(px + Math.cos(a) * r, py - 10 + Math.sin(a * 1.4) * r * 0.6, 1.5, 1.5);
+      }
+      ctx.restore();
+    }
+    if (!this.dead && this.hp < this.maxHp) {
+      const w = 20;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(px - w / 2, py - 30, w, 3);
+      ctx.fillStyle = '#e0b04a';
+      ctx.fillRect(px - w / 2, py - 30, w * clamp(this.hp / this.maxHp, 0, 1), 3);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+export class Thread {
+  /**
+   * A knot of silk on the floor. It does not move, it does not chase you, and
+   * it does not kill you -- it takes your legs. Walk into one and you are at a
+   * little over half speed and the dash is refused; the way out is a bullet, a
+   * knife, or a dash that starts outside it and tears straight through.
+   *
+   * The whole point of it being shootable is that it is cheap to draw and
+   * cheap to remove, and it makes the floor of a room a thing you look at.
+   */
+  constructor(x, y, floor) {
+    this.kind = 'thread';
+    this.uid = 0;
+    this.x = x; this.y = y;
+    this.f = floor ?? 0;
+    this.maxHp = 24; this.hp = this.maxHp;
+    this.maxLife = 22; this.life = this.maxLife;
+    this.dead = false;
+    this.t = randRange(0, 10);
+    this.seed = randRange(0, 100);
+    this.flash = 0;
+  }
+
+  update(dt) {
+    if (this.dead) return;
+    this.t += dt;
+    this.flash = Math.max(0, this.flash - dt * 5);
+    this.life -= dt;
+    if (this.life <= 0) this.dead = true;
+  }
+
+  hurt(dmg, game) {
+    if (this.dead) return false;
+    this.hp -= dmg;
+    this.flash = 1;
+    game?.particles?.spark?.(this.x, this.y - 3, randRange(0, TAU), 3, '#e8e4d2');
+    if (this.hp <= 0) { this.tear(game); return true; }
+    return false;
+  }
+
+  tear(game) {
+    if (this.dead) return;
+    this.dead = true;
+    game?.particles?.dust?.(this.x, this.y, randRange(0, TAU), 4);
+    audio.silk?.(0.5);
+  }
+
+  draw(ctx, art, t = 0) {
+    const px = Math.round(this.x), py = Math.round(this.y);
+    const k = clamp(this.life / 2, 0, 1);          // fades out as it ages
+    const a = 0.35 + Math.sin(this.t * 2 + this.seed) * 0.06;
+    ctx.save();
+    ctx.globalAlpha = a * k;
+    ctx.strokeStyle = this.flash > 0.1 ? '#ffffff' : '#cfc8b4';
+    ctx.lineWidth = 1;
+    // six strands from a hub, and one ring: a knot, not a puddle
+    const R = 12;
+    for (let i = 0; i < 6; i++) {
+      const ang = (this.seed + i * (TAU / 6));
+      ctx.beginPath();
+      ctx.moveTo(px, py - 2);
+      ctx.lineTo(px + Math.cos(ang) * R, py + Math.sin(ang) * R * 0.55);
+      ctx.stroke();
+    }
+    ctx.globalAlpha *= 0.7;
+    ctx.beginPath();
+    ctx.ellipse(px, py - 2, R * 0.6, R * 0.32, 0, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  An arrow. Unlike everything else a zombie lets go of, this one is aimed:
+//  it flies in a straight line until it hits a wall or a body, and the body
+//  does not have to be where it was when the bow was drawn.
+// ---------------------------------------------------------------------------
+export class Arrow {
+  constructor(x, y, ang, speed, dmg, floor, heavy = false) {
+    this.kind = 'arrow';
+    this.x = x; this.y = y;
+    this.ang = ang;
+    this.speed = speed;
+    this.dmg = dmg;
+    this.f = floor ?? 0;
+    this.heavy = heavy;
+    this.life = 2.2;
+    this.dead = false;
+    this.trail = [];
+  }
+
+  update(dt, game) {
+    if (this.dead) return;
+    this.life -= dt;
+    if (this.life <= 0) { this.dead = true; return; }
+    const step = this.speed * dt;
+    const nx = this.x + Math.cos(this.ang) * step;
+    const ny = this.y + Math.sin(this.ang) * step;
+    // a wall stops it; the shaft is left sticking in the plaster
+    if (game.map.blockedAt(nx, ny, 1, this.f)) {
+      this.dead = true;
+      game.particles?.dust?.(this.x, this.y, this.ang, 3);
+      game.stickArrow?.(this.x, this.y, this.ang, this.f);
+      return;
+    }
+    this.x = nx; this.y = ny;
+    this.trail.push({ x: nx, y: ny });
+    if (this.trail.length > 4) this.trail.shift();
+    if (!isAuth(game)) return;
+    for (const p of game.players ?? [game.player]) {
+      if (!p || p.dead || (p.floor ?? 0) !== this.f) continue;
+      if (dist(p.pos.x, p.pos.y - 4, this.x, this.y) < 9) {
+        this.dead = true;
+        const hit = p.hurt(this.dmg, this.x - Math.cos(this.ang) * 20,
+          this.y - Math.sin(this.ang) * 20, game);
+        if (hit) game.popups?.add?.(p.pos.x, p.pos.y - 30, 'ARROW', '#cfc9b4', 10);
+        game.particles?.blood?.(this.x, this.y, this.ang, 4, 0.6);
+        audio.impact?.(true, false);
+        return;
+      }
+    }
+  }
+
+  draw(ctx) {
+    ctx.save();
+    ctx.strokeStyle = this.heavy ? '#efe9d2' : '#cfc9b4';
+    ctx.lineWidth = this.heavy ? 1.6 : 1.1;
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y);
+    ctx.lineTo(this.x - Math.cos(this.ang) * 9, this.y - Math.sin(this.ang) * 9);
+    ctx.stroke();
+    // the head, so you can read which way it is going
+    ctx.fillStyle = this.heavy ? '#ffffff' : '#e8e4d2';
+    ctx.fillRect(this.x - 1, this.y - 1, 2, 2);
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 //  What a zombie throws. It flies a fixed arc to a fixed point -- the aim was
 //  decided (badly, for the snowman) when it left the hand -- and does its one
 //  thing where it lands.

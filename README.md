@@ -1,4 +1,4 @@
-# Nacht der Untoten — top-down CoD zombies
+# Top-Down Zombie Shooter
 
 A 2D top-down survival wave shooter in the spirit of the very first *Call of Duty: World at War*
 zombies map, **Nacht der Untoten**. Hand-written vanilla JavaScript + HTML5 Canvas — no build
@@ -11,7 +11,8 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 > радиособытия с ящиками снабжения, радиостанция на крыше (починил за скрап — ящики каждые
 > два раунда), финал с вертолётом (раунд 25 + 4 маяка, зелёный фальшфейер, 2 минуты до посадки,
 > в кооперативе — голосование большинства, экран EVACUATED с особой отметкой в рекордах),
-> достижения и таблица рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
+> навыки забега (после каждого пятого раунда — одна из трёх карт), достижения и таблица
+> рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
 > через WebAudio, сборка не нужна.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
 
@@ -34,9 +35,14 @@ The bundled server doubles as a relay, so co-op needs no extra software:
 
 ```bash
 node server.mjs 8080
-# it prints the addresses it is listening on, e.g.
-#   on your network:  http://192.168.1.5:8080/   (multiplayer ready)
+# it prints one address per usable network adapter, each marked by its name
+#   Wi-Fi: http://192.168.1.5:8080/   (multiplayer ready)
 ```
+
+Those are **not separate game servers**: one process listens on all interfaces
+(`0.0.0.0`). A laptop can have Wi-Fi, Ethernet, VPN and virtual adapters at
+once, so choose the address reachable from the other players' network (usually
+the Wi-Fi address). The game itself stays dependency-free.
 
 1. Whoever runs the server picks **MULTIPLAYER → HOST A GAME** and starts playing.
 2. Everybody else — laptops, phones, tablets on the same wi-fi — opens that address
@@ -51,8 +57,9 @@ downed player bleeds for **60 s** and only the clock can finish them — teeth
 cannot hurry it. Any team-mate, host or guest, stands over the body and holds
 `F`: revival is a **10 s channel** (5 s with Quick Revive), shown as a ring on
 every screen. A body that bleeds out comes back at the top of the next round
-with its sidearm only. Guests fight with the same hands as the host: `G`, `X`
-and `B` throw their own frag, molotov and gas bomb through the host's physics.
+with its sidearm only. Guests fight with the same hands as the host: `G` throws
+whatever is in their one throwing hand -- frag, molotov or gas -- through the
+host's physics. Buying a different kind replaces what is in it.
 Points are per player, rounds are shared, and the horde grows by 32 % for every
 extra body in the building. If the host quits, the relay hands the room to the
 longest-standing guest.
@@ -69,37 +76,179 @@ the wire is not a cosmetic bug, it is a frozen picture.
 
 On any touch screen the panel appears by itself (`SETTINGS → ON-SCREEN CONTROLS`,
 `AUTO` by default): a stick to walk with on the left, a stick to aim with and the
-FIRE / F / R / Q / sprint / frag / medkit / knife buttons on the right, plus a
-pause button in the corner — parked off the physical corner of the glass, clear
-of notches and rounded edges, and big enough for a thumb. A tap anywhere else
-reaches the game underneath, so the menus work with a thumb. `AIM ASSIST` points
-the barrel at the nearest walker while you are not touching the aim stick.
+FIRE / F / R / Q / dash / throw / medkit / knife buttons on the right, plus a
+pause button in the **top left** corner — the map owns the right one — parked off
+the physical corner of the glass, clear of notches and rounded edges, and big
+enough for a thumb. A tap anywhere else reaches the game underneath, so the
+menus work with a thumb; a *flick* that scrolls one of them is a scroll and not
+a press, so nothing is chosen until the finger comes down again. `AIM ASSIST`
+points the barrel at the nearest walker while you are not touching the aim
+stick, and no mouse pointer is drawn on a touch screen at all.
+
+Menus are drawn through a scale that grows as the screen narrows (`src/ui.js`):
+a phone gets the same layout 1.5× bigger, a desktop gets exactly the 800 × 500
+design, and every hit-test divides the pointer by the same factor, so the row
+you press is the row you see. The settings list scrolls by dragging it (a drag
+that scrolls does not also flip the toggle it started on), and on a narrow panel
+a row puts its slider on a second line under its label instead of printing the
+two on top of each other.
+
+Every full-screen panel — settings, controls, the debug list, achievements,
+statistics, the wardrobe — carries a **BACK / X** chip in the top-right corner,
+because a phone has no ESC and "O / ESC — back" was a sentence it could not act
+on. The wheel moves one row a notch (in the settings, the achievements and the
+debug list alike), and every list answers to all four arrows. The debug panel is
+reachable without knowing any shortcut: `PAUSE → DEBUG PANEL`.
+
+Every panel is measured, not assumed: the pause menu's rows are clamped to the
+screen (a fixed 268 × 38 at 1.5× was 402 pixels wide on a 360-pixel phone), the
+controls list never truncates a key — a narrow panel reads the short form of the
+row — and on a small screen at the top picture step the death screen's ledger is
+cut to what fits above the prompt and says how many rows it left for the
+all-time page. `tools/harness/menutext.test.mjs` proves it by turning every
+label on every panel into a box and comparing them all, at seven screen sizes.
+
+The picture is not a fixed 800 × 500 box any more. The canvas takes the shape of
+whatever it is sitting in — a phone held upright, a laptop, an ultrawide — and
+keeps the same *amount* of world on screen by trading width for height, so a tall
+screen sees more of the corridor above you instead of black bars top and bottom.
+`SETTINGS → PICTURE SIZE` then zooms the whole picture (SMALLER / NORMAL / BIGGER
+/ BIGGEST): on a phone **BIGGER** is usually the difference between reading a
+zombie and guessing at one, and the touch panel is measured from the same view,
+so the buttons keep their place at the bottom of the glass.
+
+The panel belongs to the round, not to the screen: the moment a menu, the
+pause, the crafting bench, the controls page, the debug panel, the card draft
+or the death screen is up, every stick and button goes away, any held key is
+let go and a tap becomes a plain click. That is what makes the front page and
+the full-page lists usable under a thumb — and it stops a tap on the death
+screen pulling the trigger. `ACHIEVEMENTS` scrolls by dragging and closes with
+a tap that did not drag (there is no `Esc` on a phone); `STATISTICS` fits on one
+page and closes on any tap.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | `WASD` / arrows | Move |
-| `Shift` | Sprint |
+| `Shift` | Dash — a step of about one tile in the direction you are walking (or facing), then five seconds before the next. The clock and your armour share the two thin bars above the health |
 | Mouse | Aim |
 | Left click | Fire (hold for automatic weapons) |
 | `R` | Reload |
-| `1` / `2` | Pick a carried weapon slot |
+| `1` / `2` | Pick a carried weapon slot (while skill cards are up, digits take a card) |
 | `Q` | Flip between your two carried guns (0.35 s) |
 | wheel / `[` `]` | Dig through the whole armoury (0.9 s swap) |
 | `E` | … · **arm a trap** · pack-a-punch the gun in your hands |
 | `V` | Knife — short range, big points, never runs out |
-| `G` | Throw a frag grenade |
-| `X` | Throw a molotov — leaves a pool of fire that knows its thrower |
-| `B` | Throw a gas bomb — leaves a cloud that slows and bites |
+| `G` | Throw what is in your one throwing hand — a frag grenade, a molotov (fire that knows its thrower) or a gas bomb (a cloud that slows and bites). Buying another kind replaces it; `X` and `B` still work as aliases |
 | `H` | Use a medkit |
 | `E` | Buy weapon / ammo · open a door · drink a perk · spin the box · throw the power switch · open the workbench · arm a trap · pack-a-punch · **hold** to rebuild a barricade |
+| `ArrowLeft` / `Right` + `Enter` | Browse and take a skill card (a click or tap works too) |
 | `M` | Mute · `P` / `Esc` pause (also on the touch panel) · `R` restart after death |
 | `F` | Same as `E` — and how you revive a downed team-mate in co-op (**hold**: 10 s, or 5 s with Quick Revive) |
 
 The pause screen is a menu you can click (or thumb): five rows — resume, settings,
 controls, restart the run, return to the front page — each with its old shortcut
 printed on the right, because the keyboard way still works.
+
+Leaving is never a way to lose a night: **RESTART** (or `R`) writes the run into
+the all-time diary before it wipes it, and **QUIT TO MENU** resets the world, so
+the next SOLO starts with 500 points and an empty ledger instead of the last
+run's wallet. On the death screen, `Esc` (or `Backspace`) goes back to the front
+page without starting another run — a tap still starts one, because that is what
+a thumb wants there.
+
+## Run skills: one card every five rounds (switched off for now)
+
+> **Off at the moment.** The pool, the draft, the effects, the co-op wire and
+> the tests all stay in the tree, behind one switch: `SKILLS_ENABLED` in
+> `src/skills.js`. While it is `false` no cards are dealt, the HUD draws no
+> skill chips and a run carries no skills. Everything below describes what
+> happens the moment it is switched back on.
+
+Rounds 5, 10, 15 and so on end with three cards and one choice. Sixteen cards are
+in the pool; a run collects six or seven of them, so no two nights turn you into
+the same character:
+
+| Card | Effect |
+| --- | --- |
+| **Deadeye** | +15% damage, +25% more on headshots |
+| **Fast Hands** | reload 20% faster |
+| **Hair Trigger** | automatic fire 10% faster |
+| **Cold Blood** | stand still 0.6 s: the next shot does +30% |
+| **Last Stand** | +25% damage below 35% health |
+| **Long Stride** | walk 8%, sprint 6% faster |
+| **Second Wind** | below 30% health: +20% speed for 2 s, once a round |
+| **Iron Hide** | +30 maximum health |
+| **Survivor** | regeneration starts sooner and runs faster |
+| **Hardened** | take 12% less damage |
+| **Field Medic** | medkits heal 45% more |
+| **Engineer** | planks go back on 35% faster |
+| **Scavenger** | every point you earn counts 15% higher |
+| **Demolitionist** | frags blast 20% wider and 15% harder |
+| **Strong Arm** | throwables fly 25% faster, so they land farther |
+| **Pack Mule** | one extra throwable in every between-round refill |
+
+Pick with `1` `2` `3`, `←` `→` + `Enter`, or a click/tap on the card. The next wave
+waits while the cards are on the table, and a twenty-second clock picks for you if
+you walk away. A skill is not a perk: nothing is bought, it multiplies with the
+machines rather than replacing them, and it lasts exactly one run. In co-op every
+player is dealt their own three cards; the host applies the effects and the choice
+rides the snapshot back to the guest.
+
+**The per-wave statistics panel is gone.** A cleared round is just `ROUND N CLEARED`.
+The full ledger — round reached, kills, headshot rate, accuracy, points, scrap,
+damage, planks, crafts, revives, skills taken and the best-runs table — is on the
+game-over / EVACUATED screen, where there is time to read it.
+
+## All-time statistics
+
+Every finished night — a death, an evacuation, or quitting to the front page
+mid-run — is added to a diary kept in `localStorage` (`ndu.lifetime.v1`). The
+front page carries the headline under the title: **runs, best round, total
+kills**, plus evacuations, rounds cleared and time played. The **STATISTICS**
+row opens the whole page: eight numbers about the nights themselves on the
+left (runs, evacuations, deaths, rounds cleared, best round, best run kills,
+points and time) and sixteen about what happened in them on the right (kills,
+headshots, special/knife/trap kills, points, scrap, health lost, planks, doors,
+crafts, throwables, medkits, revives, downs, time played). The best three
+single runs sit under the left column. The page fits without scrolling, so a
+phone can read all of it and a tap closes it; a range run is practice and is
+never banked. One run is banked exactly once, whichever way it ends.
+
+## Outfits: ten coats, ten badges, ten small edges
+
+The soldier in the middle of the screen is *yours*. **OUTFITS** on the front page
+opens the wardrobe: a list of ten outfits and the standard kit you were issued.
+Every outfit is locked behind one achievement — walk into the wardrobe and the
+row tells you which badge it wants, in the same words the achievements page
+uses:
+
+| Outfit | Badge | What it does |
+| --- | --- | --- |
+| **The Scout** | Ten Deep — reach round 10 | walk 8 % faster |
+| **Field Medic** | Field Medic — craft a medkit | health comes back 30 % faster |
+| **Speed Loader** | Punched — run a weapon through the Pack-a-Punch | reload 15 % faster |
+| **The Marksman** | Marksman — land half your shots over a hundred fired | headshots hit 25 % harder |
+| **The Blade** | Knife Work — take down twenty-five with the knife | the knife hits 50 % harder |
+| **The Heavy** | Twenty Deep — reach round 20 | 15 more maximum health |
+| **The Hoarder** | Care Package — pick up a crate the radio dropped for you | one more throwable every round |
+| **The Ghost** | Untouchable — clear a round without a scratch | the dash returns in 3 s |
+| **The Scavenger** | Big Spender — hold 10 000 points | kills drop scrap 50 % more often |
+| **The Veteran** | The Long Night — reach round 30 | 25 armour at the start of every night |
+
+Wear one with a click (or `Enter`), take the standard kit back off the same way,
+`Esc` backs out. The buff is folded into the same stat block perks and run skills
+use, so it stacks with them and is capped where they are capped — an outfit is
+the size of a run skill, never a replacement for a perk. The choice is stored in
+`localStorage` (`ndu.skin.v1`), remembered across runs, checked against the
+achievement wall on load (a hand-edited save cannot wear a coat it did not earn)
+and **sent over the wire**, so the other player in a co-op room sees the coat
+standing next to them — including a swap made in the middle of a round.
+
+For testing, `DEBUG → OUTFITS` grants each badge by name (and `GRANT EVERY OUTFIT`
+grants all ten), wears the outfit, and marks the row so you can see what is
+granted; `DEBUG → CHEATS` still has the broader handy switches.
 
 ## The map (72 × 50 tiles)
 
@@ -136,8 +285,9 @@ One big level instead of a second map:
 - **Attic** — the board shack on the roof holds the **workbench**: anything you
   want built, you carry the scrap up three storeys for.
 - **Roof radio** (east roof block) — a dead set with a bent mast from night one.
-  **25 scrap** straightens the mast: from then on, every second round a supply
-  crate drops onto the pad (points, salvage, every magazine topped up).
+  **25 scrap** straightens the mast: from then on, every second round the radio
+  calls a crate down to the ground-floor supply area (points, salvage, every
+  magazine topped up), keeping radio supplies off the upper storeys.
 - **Cellar** (south-west) — holds the **power switch**; reached by a stairwell from room C.- **Secret vault** — behind a bricked-up arch in the east wall, only opens after the easter egg.
 - **Outside** — forest belts, copses, picket fences, a wrecked truck, an open field to the south.
   A burnt-out car sits at the bottom of the field and a gutted tank at the bottom
@@ -156,7 +306,7 @@ and the vault light.
 
 **Perks.** Eight machines, six per run:
 Juggernog (×2 health) · Speed Cola (½ reload) · Double Tap (−33 % shot delay) ·
-Quick Revive (faster regen) · Stamin-Up (+25 % speed, sprint) · PhD Flopper (immune to your own
+Quick Revive (faster regen) · Stamin-Up (dash every 3 s instead of 5) · PhD Flopper (immune to your own
 explosions) · Deadshot Daiquiri (aim drifts to the head) · Widow's Wine (knife and frags leave
 slowing webs).
 
@@ -174,7 +324,8 @@ M1918 BAR · MG 42 · PTRS-41. Ammo costs a fraction of the gun.
 
 **Workbench.** Kills drop **scrap**, and the bench in the attic spends it. On the bench today:
 **Medkit** (8 scrap, +55 HP, up to three carried), **Armour Plate** (14 scrap + 1500 points,
-absorbs the next 60 damage, up to 120) and **Steel Shutters** (30 scrap + 2500 points, once per
+absorbs the next 60 damage, up to 120 — its meter sits under the dash clock above the health
+bar, where your eye already is after being bitten) and **Steel Shutters** (30 scrap + 2500 points, once per
 house: every window on every floor takes two more planks — the cap itself rises, and the boards
 come with it). The original six recipes were flat vending-machine buttons with nothing behind
 them; they were rewritten onto a new recipe contract, and the four not on the bench yet (Plank
@@ -202,11 +353,42 @@ under room A's north windows (80 dps, shocks them rigid) and a *Steam Vent* at t
 room B → D doorway (75 dps, scalds, slows and shoves them back out through the door). Only ever
 hurts zombies — and 15 trap kills in one run is an achievement.
 
-**Enemies — 26 types.** Walkers, **Runners** (fast, frail, round 6), **Brutes** (2.7× HP, smashes
-three planks at a time, round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
-**Hellhounds** (every fifth round is a dog round), **Helmeted**, **Napalm**, **Gasbags**,
+**Enemies — 44 types**, nine of which are the wardens below. Walkers, **Runners**
+(fast, frail, round 6), **Brutes** (2.7× HP, smashes three planks at a time,
+round 10), **Crawlers**, **Shriekers** (rally scream, round 12),
+**Hellhounds** (every fifth round is a dog round — a 26 × 16 dog, drawn at 1:1,
+about one tile nose to tail), **Helmeted** (a steel pot with a brim, a riveted
+band and a chin strap, plates on both shoulders), **Napalm**, **Gasbags**,
 **Miners** (come up through the floor), **Mimics**, **Field Medics**, **Bonewrights**,
 **Swarmlings**, **Jammers**, and **Amalgams**.
+
+The second wave, each arriving on its own round so the early game stays quiet:
+
+| round | who | what it does |
+| --- | --- | --- |
+| 7 | **Beekeeper** | kneels once and leaves a hive you can shoot down; its bees come out of the box and never count towards the round |
+| 8 | **Weaver** | leaves knots of silk that take your legs — shoot them, cut them, or dash through one that starts outside it |
+| 9 | **Bone Archer** | a telegraphed three-arrow fan, then a long reload |
+| 11 | **Bulwark** | a plank shield turned towards you: shots on it do a fifth of their damage, and it re-aims with a third of a second of lag — go round it, do not feed it bullets |
+| 12 | **Widow** | one bite, nine seconds of venom that runs its own clock and stops at a fifth of the bar |
+| 13 | **Drummer** | beats every two seconds: everything within 300 units walks and bites a fifth faster; the aura is drawn, so you can see where it comes from |
+| 14 | **Sapper** | a crawler with a bundle of charges: 260 damage inside 96 units, and it takes the rest of the round with it — shoot it early, and never let it reach you |
+| 16 | **Porter** | slow, fat, and carrying a sac of brood: it sets a handful of swarmlets down every few seconds, and the sac bursts when it dies |
+| 18 | **The First** | gets up again — twice, quicker and angrier each time |
+
+**Wardens.** Every fifth round from ten — 10, 15, 20 … 50 — belongs to one of
+nine, in this order; on round 55 the cycle starts again with every warden 35 %
+more health, and another 35 % on round 100: **The Warden** (plated, and it
+calls the walkers in), **The Organist** (keeps its distance and screams — the ring staggers you and
+hastes the rest), **The Butcher** (plants its feet, then crosses the room in a
+straight line with a cleaver; the line is the telegraph), **The First**
+(reassembles twice), **The Mother** (broods swarmlets), **The Queen** (two hives at
+once), **The Gravedigger** (two graves, and the bells do not stop while it
+stands), **The Bellringer** (its bell is the bolt, and every ring brings the horde
+with it) and **The Colonel** (the only one not wearing a helm: a peaked cap
+that used to mean something, a cuirass, a sabre, and a whistle that brings the
+knights). A warden round is an escort, not an army: half the bodies, and never
+more than 22 alive at once.
 
 The haunt roster arrives from round 12 up: **Snowmen** lob snowballs (badly — on purpose) that
 chill your legs for three seconds, and roll double in a storm; **Arsonists** throw fire bottles
@@ -299,10 +481,10 @@ plank. Repairing barricades pays *you* — that is the authentic CoD safety net.
 
 ```
 index.html          shell + canvas
-styles.css          crisp upscaling, letterboxing
+styles.css          crisp upscaling, no fixed game box (the canvas fills the frame)
 server.mjs          zero-dependency dev server
 src/
-  main.js           boot, fixed-step loop, integer-ish canvas upscaling
+  main.js           boot, fixed-step loop, viewport sized to the device, supersampling
   game.js           rounds, spawning, interactions, camera, frame renderer
   map.js            tile grid, collision, stairwell portals, dijkstra flow field
   mapData.js        AUTO-GENERATED level layout (see tools/genmap.py)
@@ -312,6 +494,7 @@ src/
   powerups.js       power-up table, drop roll, floating pickup
   mysterybox.js     the box: spin, teddy bear, relocation, fire sale
   crafting.js       the workbench: recipe contract, three shipped recipes, four shelved
+  skins.js          ten outfits: palettes, buffs, achievement gates, saved choice
   achievements.js   achievements, localStorage leaderboard, easter-egg state machine
   art.js            sprite baking, parametric gun builder, procedural level painting
   spriteData.js     ASCII pixel art + palette (pure data)
@@ -372,14 +555,20 @@ runtime assets; repository metadata and developer tools are not public files.
 
 ## Music listening room and round reports
 
-Open debug (backquote, or five taps on the round counter while paused on a
-phone), then select the third **MUSIC** tab. It contains **20 original procedural
-scores, 5–9 minutes each** (~2 h 22 min total), repeat/playlist/once modes, volume,
-minute-seeking and an evacuation-fanfare preview. Closing debug keeps the chosen
-score playing; STOP returns to the adaptive score. Selection is local in co-op.
+The title screen and each new run now start a different existing original score
+from the twenty-track procedural library; they are synthesized locally through
+WebAudio, not downloaded. Music follows its own settings fader. Open debug
+(backquote, or five taps on the round counter while paused on a phone), then
+select the fourth **MUSIC** tab (CHEATS · ZOMBIES · OUTFITS · MUSIC) to choose a
+track, set repeat/playlist/once, seek by a minute, or preview the evacuation
+fanfare. Closing debug keeps the chosen score playing; STOP returns to the
+adaptive score. Selection is local in co-op.
 
-Each completed wave now has a 20-metric report and a 12-second intermission;
-Tab toggles the report and [x] dismisses it. The final screen shows run totals.
-Successful evacuation gets a major-key celebration on both host and guest.
+A completed wave is announced as `ROUND N CLEARED` and nothing else: the
+twenty-metric panel that used to open on every intermission is gone. All of it —
+round reached, kills, headshot rate, accuracy, points, scrap, damage, planks,
+crafts, revives, the skills taken — is on the end-of-run screen, together with
+the best-runs table. Successful evacuation gets a major-key celebration on both
+host and guest.
 See [the listening guide and catalogue](docs/MUSIC.md) for controls, track moods,
 stat definitions and technical/testing limitations.

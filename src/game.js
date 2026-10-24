@@ -1,23 +1,27 @@
 import { SOUNDTRACKS, musicTime } from './soundtracks.js';
-import { newRoundMetrics, recordRound, finishRoundReport } from './roundReport.js';
+import { newRoundMetrics, recordRound } from './roundReport.js';
 // Game state: rounds, spawning, interactions, camera and the frame renderer.
 import { T, TILE, buildArt } from './art.js';
 import { GameMap } from './map.js';
 import {
   Player, Zombie, Particles, Popups, throwGrenade, MonkeyBomb, HEAD_OFF_Y, ENEMY_TYPES, ZSTATE,
+  throwPocket, bossForRound, BOSS_ORDER,
 } from './entities.js';
 import { WEAPONS, WEAPON_ORDER, GRENADE_PRICE, GRENADE_MAX, PAP_PRICE, defFor, packedTracer } from './weapons.js';
 import { PERKS } from './perks.js';
+import { SKILLS, SKILLS_ENABLED, DRAFT_TIME, DRAFT_EVERY, makeDraft, NO_SKILLS } from './skills.js';
 import { MysteryBox } from './mysterybox.js';
 import { Powerup, rollPowerup } from './powerups.js';
-import { Totem, Grave, ZThrow } from './haunts.js';
+import { Totem, Grave, Hive, Thread, Arrow, ZThrow } from './haunts.js';
 import { Workbench, recipe, recipeIds, craftRefusal } from './crafting.js';
-import { Achievements, EasterEgg, submitScore } from './achievements.js';
+import { Achievements, EasterEgg, submitScore, ACHIEVEMENTS } from './achievements.js';
+import { loadLifetime, bankRun } from './lifetime.js';
+import { SKINS, SKIN_ORDER, loadSkin, saveSkin, skinOwned } from './skins.js';
 import { Traps, TRAP_PRICE } from './traps.js';
 import { settings, SETTING_DEFS } from './settings.js';
 import { Net, textEntry, defaultRelay, relayURL } from './net.js';
 import { Lighting, drawVignette, postgrade } from './lighting.js';
-import {HUD, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, roundReportPanel, drawAchievements, craftRowAt, craftLayout} from './hud.js';
+import {HUD, achVisible, drawTitle, drawPause, drawGameOver, drawSettings, settingsRowAt, soundSlotAt, settingsSliderRect, settingsLayout, drawMenu, menuRows, menuHitTest, pauseHitTest, text, drawCursor, drawControls, drawDebug, debugHitTest, debugTabHit, DEBUG_TABS, DEBUG_MUSIC_TAB, skillCardAt, drawAchievements, drawStats, drawOutfits, outfitRowAt, outfitIdAt, outfitsLayout, craftRowAt, craftLayout, backChipAt, drawBackChip, PAUSE_ROWS, pauseChipAt, pauseChipShown, pauseTitleAt} from './hud.js';
 import { audio } from './audio.js';
 import {
   clamp, lerp, damp, dist, dist2, randRange, randInt, TAU, pointSegDist2,
@@ -36,6 +40,9 @@ const SALVAGE_DROP = 0.16;      // chance a kill drops salvage
 
 const MAX_ALIVE_BASE = 24;
 const DOG_ROUND_EVERY = 5;      // every 5th round is a hellhound round
+// The plain walker must stay the single biggest group at every round, so the
+// specials never take more than this much of the spawn table between them.
+const SPECIAL_CAP = 0.52;
 
 function hslToRgb(h, s, l) {
   if (s <= 0) { const v = Math.round(l * 255); return [v, v, v]; }
@@ -189,6 +196,28 @@ export const VOICE_LINES = {
   shocker: ['Something out there is carrying lightning. Keep moving or keep smoking.', 'Blue one on a rod. Shoot it while it winds up.'],
   bearer: ['Purple one with a bundle. It is going to plant something. Do not let it.', 'That one kneels. When it kneels, the house changes. Interrupt the kneeling.'],
   mourner: ['Grey one with a spade. It digs, and then the bells start.', 'Do not let it finish the hole. Nobody should be buried here tonight.'],
+  // ---- the apiary, the barrow and the web --------------------------------
+  beekeeper: ['It is carrying a box. Whatever is in the box, do not let it open the box.',
+    'A keeper. It wants somewhere quiet to put the hive down. Do not give it one.'],
+  hive: ['That is a hive. The bees are not the problem and they never were.',
+    'Shoot the box. Not the bees. The box.'],
+  archer: ['It has a bow. It draws slowly on purpose -- watch the draw and step off the line.',
+    'Something out there is aiming. When you see the string come back, move.'],
+  bulwark: ['One with a plank for a face. You are not getting through the plank -- go round it.',
+    'Shield. Aim at the hand, not the wood.'],
+  drummer: ['Listen. That is a drum, and everything dead in earshot is keeping time with it.',
+    'Kill the drummer. The room gets slower when you do.'],
+  sapper: ['Crawling with a bundle of charges. Shoot it from a distance and it takes the rest with it.',
+    'If that gets to your boots, the whole bundle is yours. Do not let it get to your boots.'],
+  first: ['That one has a crown of ribs. It has died before. It will die again.',
+    'Bones on bones. Every time you put it down it gets up quicker.'],
+  weaver: ['Spider. Whatever it leaves on the floor takes your legs -- shoot it or cut it.',
+    'Silk on the ground. A dash started outside it tears straight through.'],
+  widow: ['Pale cross on its back. That bite keeps working after it lets go.',
+    'Widow. Nine seconds of it in your blood. A medkit ends it early, nothing else does.'],
+  porter: ['Fat one carrying something. It is not loot, it is brood.'],
+  boss: ['Something bigger than the rest just walked in. Deal with it.',
+    'That is the warden of this round. It is not in the count -- it is the count.'],
 };
 
 // The droplets on the glass after a storm: one baked sheet per frame size,
@@ -281,11 +310,16 @@ export class Game {
       settingsHooked = true;
       settings.onChange(() => activeGame?.applySettings());
     }
+    // The game draws in its own units; `vw`/`vh` are how many of them fit on
+    // the screen right now. They used to be the constants 800x500 and the
+    // canvas was letterboxed into whatever the device was; main.js now picks
+    // the view from the shape of the screen, so a phone in portrait gets a
+    // tall view instead of a small box with two black bars around it.
     this.vw = VW;
     this.vh = VH;
     this.map = new GameMap();
     this.art = buildArt();
-    this.lighting = new Lighting(VW, VH, 0.5);
+    this.lighting = new Lighting(this.vw, this.vh, 0.5);
     this.hud = new HUD();
     this.achievements = new Achievements();
     this.net = new Net(this);
@@ -317,11 +351,19 @@ export class Game {
 
   reset() {
     audio.stopSoundtrack();
+    this._musicStoppedByUser = false;
+    // a banner that was waiting behind another belongs to the night that just
+    // ended: it may not walk into the front door
+    this.banner = null;
+    if (this.bannerQueue) this.bannerQueue.length = 0;
     this._evacAudioPlayed = false;
     this.roundMetrics = newRoundMetrics();
     this.runMetrics = newRoundMetrics();
-    this._reportHidden = null;
-    this.roundReport = null;
+    // the run-skill switch (see src/skills.js). It survives a reset, so a
+    // test or a future settings row can turn it on for one session.
+    if (this.skillsEnabled === undefined) this.skillsEnabled = SKILLS_ENABLED;
+    this._banked = false;
+    this.lifetime = loadLifetime();
     this.map = new GameMap();
     this._clearDecals();
     this.decals = this._decalFor(this.map.floor);
@@ -330,6 +372,10 @@ export class Game {
     this.player.game = this;
     this.player.netId = 0;
     this.player.name = this.net?.name || 'PLAYER';
+    // the outfit is a wardrobe, not a run: whatever was on before is on now.
+    // loadSkin refuses a coat whose badge is not earned, so a wiped list
+    // cannot leave a body wearing something it never unlocked.
+    this.player.setSkin(loadSkin(this.achievements));
     this.player.floor = this.map.floor;
     // every body in the round, local one first: the host simulates all of
     // them, a guest only ever draws them
@@ -350,6 +396,12 @@ export class Game {
     // ---- the haunt round: what the new creatures leave behind and throw ----
     this.totems = [];       // dusk on a stick: shoot it or the house stays bold
     this.graves = [];       // bells, and the wraiths that answer them
+    // ---- the apiary, the barrow and the web --------------------------------
+    this.hives = [];        // the beekeeper's nest, and the bees it keeps
+    this.threads = [];      // a weaver's knots of silk: the floor, made hostile
+    this.arrows = [];       // the archer's fan, still in the air
+    this.arrowSticks = [];  // the ones that stopped in a wall, for a while
+    this.boss = null;       // the warden of this round, if it has one
     this.zThrows = [];      // snowballs, fire bottles, stink potions in flight
     this.bolts = [];        // the Shocker's lightning, purely to look at
     this._hauntId = 0;
@@ -394,6 +446,7 @@ export class Game {
     this.gameOver = false;
     this.overT = 0;
     this.banner = null;
+    this.bannerQueue = [];
     this.interaction = null;
     this.muzzleFlash = null;
     this.settingsOpen = false;
@@ -408,6 +461,7 @@ export class Game {
     this._dbgTaps = 0;
     this._dbgTapT = -9;
     this.settingsIndex = 0;
+    this.outfitIndex = 0;    // the wardrobe's cursor: row 0 is the standard kit
     this.fps = 60;
     this.tension = 0;
     this.aimOnTarget = false;
@@ -455,8 +509,8 @@ export class Game {
     this.teleportFx = 0;
 
     this.rebuildFlow();
-    this.cam.x = clamp(this.player.pos.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(this.player.pos.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(this.player.pos.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(this.player.pos.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.revealAround(this.player.pos.x, this.player.pos.y, 14);
   }
 
@@ -565,6 +619,41 @@ export class Game {
   // ------------------------------------------------------------------ utils
   screenToWorld(sx, sy) { return { x: sx + this.cam.x, y: sy + this.cam.y }; }
 
+  /**
+   * How much of the world is on the screen, in world units.
+   *
+   * Called by main.js on every resize (and when the PICTURE SIZE setting
+   * moves). Everything that lays itself out -- the HUD, every panel, the
+   * camera clamp, the lighting layer -- reads `vw`/`vh`, so this is the one
+   * place that decides what "the screen" means.
+   */
+  setViewport(w, h, force = false) {
+    const mw = this.map ? this.map.w * T : 0;
+    const mh = this.map ? this.map.h * T : 0;
+    const vw = Math.round(Math.max(320, mw ? Math.min(mw, w) : w));
+    const vh = Math.round(Math.max(240, mh ? Math.min(mh, h) : h));
+    // `force` is for a window that changed shape *and* for a map that did:
+    // main.js solves the view from the window alone and used to skip the call
+    // when the numbers came out the same, which left the canvas at boot size
+    // until the player dragged the window.
+    if (!force && vw === this.vw && vh === this.vh) return false;
+    this.vw = vw;
+    this.vh = vh;
+    this.lighting?.setSize?.(vw, vh);
+    this.input?.setLogicalSize?.(vw, vh);
+    this._clampCam();
+    return true;
+  }
+
+  /** Keep the camera inside the map after the window (or the storey) changes size. */
+  _clampCam() {
+    if (!this.map) return;
+    const maxX = Math.max(0, this.map.w * T - this.vw);
+    const maxY = Math.max(0, this.map.h * T - this.vh);
+    this.cam.x = clamp(this.cam.x, 0, maxX);
+    this.cam.y = clamp(this.cam.y, 0, maxY);
+  }
+
   /** Stats for a weapon, upgraded if the player has punched it. */
   packedDef(id) { return defFor(id, this.player.packed.has(id)); }
   worldToScreen(wx, wy) { return { x: wx - this.cam.x, y: wy - this.cam.y }; }
@@ -578,9 +667,20 @@ export class Game {
   }
 
   bannerShow(title, sub, opts = {}) {
-    this.banner = { title, sub, t: opts.dur ?? 2.2, max: opts.dur ?? 2.2, big: !!opts.big, colour: opts.colour };
-    // guests see the same banner: rounds, perks, the power coming on
-    this.net?.emit('banner', { title, sub, colour: opts.colour, dur: opts.dur ?? 2.2 });
+    const dur = opts.dur ?? 2.2;
+    const b = { title, sub, t: dur, max: dur, big: !!opts.big, colour: opts.colour, net: !opts.local };
+    // A banner that would wipe one still being read waits its turn. The
+    // warden's name went up on a fifth round and the radio replaced it in the
+    // same second, which is why nobody ever saw the name of the thing that
+    // owned the room. Only quiet banners ask for this (`queue`).
+    if (opts.queue && this.banner && this.banner.t > 0.6) {
+      if (this.bannerQueue.length < 3) this.bannerQueue.push(b);
+      return;
+    }
+    this.banner = b;
+    // guests see the same banner: rounds, perks, the power coming on. A note
+    // about *this machine's* speakers is local -- it is not news downstairs.
+    if (b.net) this.net?.emit('banner', { title, sub, colour: opts.colour, dur });
   }
 
   /**
@@ -622,8 +722,12 @@ export class Game {
   recordRound(key, n = 1) { recordRound(this, key, n); }
 
   addPoints(n, x, y, colour, who) {
-    if (n > 0) this.recordRound('points', n);
     const t = who ?? this.player;
+    // Scavenger counts every point earned a little higher -- on the body that
+    // earned it, not on the host's purse.
+    const mul = n > 0 ? (t?.skillFx?.pointsMul ?? 1) : 1;
+    if (n > 0) n = Math.round(n * mul);
+    if (n > 0) this.recordRound('points', n);
     if (t) t.points = (t.points ?? 0) + n;
     if (t === this.player) {
       this.stats.points += Math.max(0, n);
@@ -690,12 +794,26 @@ export class Game {
     this.net?.emit('revive', { name: downed.name });
   }
 
-  throwFor(p, kind = 'frag') {
+  /**
+   * Throw whatever is in the one throwing hand. `kind` is accepted for old
+   * guest messages and harnesses: if that pocket still has something in it,
+   * that is what leaves the hand; otherwise the hand decides.
+   */
+  throwFor(p, kind) {
     if (!p || p.dead || p.downed || p.evac) return;
-    const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-    if ((p[pocket] ?? 0) <= 0) return;
-    p[pocket]--;
-    this.throwAtCursor(p, kind, p.aim);
+    if (kind) {
+      const pocket = throwPocket(kind);
+      if ((p[pocket] ?? 0) > 0) {
+        p[pocket]--;
+        p.throwKind = kind;
+        this.throwAtCursor(p, kind, p.aim);
+        this.shake(2, 0.1);
+        return;
+      }
+    }
+    const k = p.takeThrowable?.() ?? null;
+    if (!k) return;
+    this.throwAtCursor(p, k, p.aim);
     this.shake(2, 0.1);
   }
 
@@ -727,6 +845,11 @@ export class Game {
   // ------------------------------------------------------------------ waves
   roundPlan(round) {
     const dog = round > 0 && round % DOG_ROUND_EVERY === 0;
+    // ---- the nine wardens: one on every fifth round from ten -------------
+    // A warden round is shorter than the round it replaces -- the point of it
+    // is the thing in the middle of the room, not the queue outside it -- and
+    // the warden is not part of the tally, so the round ends when it does.
+    const boss = bossForRound(round);
     // more bodies in the room, more of them at the windows: not a straight
     // multiplication, or a four-player round ten becomes a spreadsheet
     const crowd = 1 + 0.32 * Math.max(0, (this.players?.length ?? 1) - 1);
@@ -739,54 +862,115 @@ export class Game {
     const hp = dog ? Math.min(80 + (round - 1) * 30, 1600) : Math.min(120 + (round - 1) * 46, 2600);
     const speed = Math.min(52 + (round - 1) * 1.6, 96);
     const interval = dog ? Math.max(0.22, 0.75 - round * 0.02) : Math.max(0.3, 1.35 - round * 0.05);
-    return { total, maxAlive, hp, speed, interval, dog };
+    if (boss) {
+      // the escort, not the army: about half the bodies, arriving no faster
+      return {
+        total: Math.max(4, Math.round(total * (dog ? 0.55 : 0.5))),
+        maxAlive: Math.min(maxAlive, 22), hp, speed, interval,
+        dog, boss, bossIndex: BOSS_ORDER.indexOf(boss),
+      };
+    }
+    return { total, maxAlive, hp, speed, interval, dog, boss: null };
   }
 
-  /** Roll which enemy archetype the next spawn is. */
+  /**
+   * Roll which enemy archetype the next spawn is.
+   *
+   * One table, five columns: the type, the round it starts arriving on, how
+   * much its share grows per round, the ceiling on that share, and an optional
+   * multiplier for the weather. The plain walker has to stay the single
+   * biggest group at every round -- specials are seasoning -- so the whole
+   * special side of the table is scaled down whenever it would grow past
+   * `SPECIAL_CAP`. That way a new creature can be added here without
+   * arithmetic and without eating the walker alive.
+   */
   rollEnemyType() {
     if (this.dogRound) return 'dog';
     const r = this.round;
-    // The plain walker has to stay the majority all the way to the cap --
-    // specials are seasoning, not the meal. The haunt round made room for
-    // itself by shaving every older cap a little: everything together still
-    // tops out near four walkers in five... no -- near one special in five at
-    // mid rounds, and the walker stays the single biggest group at every one.
-    const runnerChance = Math.min(0.135, Math.max(0, (r - 5) * 0.020));
-    const bruteChance = Math.min(0.070, Math.max(0, (r - 9) * 0.011));
-    const shriekChance = Math.min(0.039, Math.max(0, (r - 11) * 0.007));
-    const helmetChance = Math.min(0.050, Math.max(0, (r - 11) * 0.010));
-    const gasChance = Math.min(0.030, Math.max(0, (r - 13) * 0.006));
-    const napalmChance = Math.min(0.034, Math.max(0, (r - 14) * 0.007));
-    const minerChance = Math.min(0.050, Math.max(0, (r - 11) * 0.009));
-    const medicChance = Math.min(0.043, Math.max(0, (r - 12) * 0.008));
-    const mimicChance = Math.min(0.034, Math.max(0, (r - 14) * 0.006));
-    const boneChance = Math.min(0.043, Math.max(0, (r - 5) * 0.006));
-    const swarmChance = Math.min(0.055, Math.max(0, (r - 17) * 0.009));
-    const jammerChance = Math.min(0.043, Math.max(0, (r - 24) * 0.007));
-    // ---- the haunt round: each arrives on its own round, all of them rare --
-    // the snowman likes a storm and comes twice as often in one
-    const snowChance = Math.min(0.022, Math.max(0, (r - 11) * 0.004)) * (this.wx?.kind === 'storm' ? 2 : 1);
-    const arsonChance = Math.min(0.017, Math.max(0, (r - 12) * 0.004));
-    const witchChance = Math.min(0.015, Math.max(0, (r - 13) * 0.004));
-    const bearerChance = Math.min(0.011, Math.max(0, (r - 14) * 0.003));
-    const mournerChance = Math.min(0.011, Math.max(0, (r - 15) * 0.003));
-    const shockChance = Math.min(0.015, Math.max(0, (r - 17) * 0.0035));
-    const knightChance = Math.min(0.013, Math.max(0, (r - 19) * 0.0035));
+    const storm = this.wx?.kind === 'storm' ? 2 : 1;
+    const SP = [
+      ['runner', 5, 0.020, 0.115],
+      ['brute', 9, 0.011, 0.060],
+      ['shrieker', 11, 0.007, 0.033],
+      ['helmet', 11, 0.010, 0.043],
+      ['gasbag', 13, 0.006, 0.026],
+      ['napalm', 14, 0.007, 0.029],
+      ['miner', 11, 0.009, 0.043],
+      ['medic', 12, 0.008, 0.037],
+      ['mimic', 14, 0.006, 0.029],
+      ['bonewright', 5, 0.006, 0.037],
+      ['swarmling', 17, 0.009, 0.047],
+      ['jammer', 24, 0.007, 0.037],
+      // the haunt round
+      ['snowman', 11, 0.004, 0.019, storm],
+      ['arsonist', 12, 0.004, 0.015],
+      ['witch', 13, 0.004, 0.013],
+      ['bearer', 14, 0.003, 0.010],
+      ['mourner', 15, 0.003, 0.010],
+      ['shocker', 17, 0.0035, 0.013],
+      ['knight', 19, 0.0035, 0.011],
+      // ---- the apiary, the barrow and the web ---------------------------
+      // the spiders are the commonest of the new lot: they are the cheapest
+      // to draw and the most fun to have on the floor
+      ['weaver', 8, 0.006, 0.030],
+      ['beekeeper', 7, 0.003, 0.018],
+      ['archer', 9, 0.005, 0.026],
+      ['bulwark', 11, 0.004, 0.020],
+      ['widow', 12, 0.004, 0.016],
+      ['drummer', 13, 0.003, 0.014],
+      ['sapper', 14, 0.003, 0.018],
+      ['porter', 16, 0.003, 0.013],
+      ['first', 18, 0.002, 0.007],
+    ];
+    const share = ([, from, per, cap, wx = 1]) => Math.min(cap, Math.max(0, (r - from) * per)) * wx;
+    let sum = 0;
+    for (const row of SP) sum += share(row);
+    const k = sum > SPECIAL_CAP ? SPECIAL_CAP / sum : 1;
     const x = Math.random();
     let acc = 0;
-    for (const [type, chance] of [
-      ['shrieker', shriekChance], ['helmet', helmetChance], ['gasbag', gasChance],
-      ['napalm', napalmChance], ['brute', bruteChance], ['runner', runnerChance],
-      ['miner', minerChance], ['medic', medicChance], ['mimic', mimicChance],
-      ['bonewright', boneChance], ['swarmling', swarmChance], ['jammer', jammerChance],
-      ['snowman', snowChance], ['arsonist', arsonChance], ['witch', witchChance],
-      ['bearer', bearerChance], ['mourner', mournerChance], ['shocker', shockChance],
-      ['knight', knightChance],
-    ]) {
-      acc += chance;
-      if (x < acc) return type;
+    for (const row of SP) {
+      acc += share(row) * k;
+      if (x < acc) return row[0];
     }
     return 'walker';
+  }
+
+  /**
+   * The warden of round n. It arrives on the far side of the house with its
+   * name on the screen, it is not part of the round's tally -- the round ends
+   * when it is dead, not when the counter runs out -- and it leaves a gap of a
+   * second before it starts walking, so you get to see what you are facing.
+   */
+  _spawnBoss(type) {
+    const pick = this.pickSpawn();
+    const sp = pick?.s ?? pick;
+    const floor = pick?.floor ?? this.map.floor;
+    if (!sp || sp.x == null) return null;
+    const z = this.makeZombie({ x: sp.x, y: sp.y, floor }, type);
+    z.boss = true;
+    z.bossName = z.def.name ? z.def.name.toUpperCase() : String(type).toUpperCase();
+    // nine of them in a cycle, and they get heavier every time round it comes
+    const cycle = Math.floor(Math.max(0, this.round - 10) / 45);
+    z.hp = z.maxHp = Math.round(z.maxHp * (1 + cycle * 0.35));
+    z.bossMaxHp = z.maxHp;
+    z.state = ZSTATE.EMERGE;
+    z.emergeT = 0.8;
+    if (type === 'first') z.revivesLeft = 2;
+    this.zombies.push(z);
+    this.boss = z;
+    this.bannerShow(z.bossName, 'it has been waiting for you', {
+      dur: 4, big: true, colour: '#e0705a',
+    });
+    audio.growl(0.45, 1);
+    this.shake(5, 0.5);
+    this.say('boss');
+    return z;
+  }
+
+  /** Is the warden of this round still standing? */
+  get bossAlive() {
+    const b = this.boss;
+    return !!(b && !b.dead && !b.remove);
   }
 
   makeZombie(sp, forceType = null) {
@@ -812,12 +996,24 @@ export class Game {
     this.roundMetrics = newRoundMetrics();
     this.round = n;
     this.stats.round = n;
-    // throwables come back two at a time for whoever already owns the kind
+    // One throwing hand: the kind you carry comes back two at a time, and it
+    // stops at the same cap the crates use. Owning two kinds no longer means
+    // two pockets -- buying the second one replaced the first.
     for (const pl of this.players ?? []) {
-      if (!pl || !pl.ownThrow) continue;
-      if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + 2);
-      if (pl.ownThrow.molotov) pl.molotovs = Math.min(GRENADE_MAX, pl.molotovs + 2);
-      if (pl.ownThrow.gas) pl.gasbombs = Math.min(GRENADE_MAX, pl.gasbombs + 2);
+      if (!pl) continue;
+      // THE VETERAN arrives dressed and kitted: the plate is handed out at the
+      // top of a night, not every wave (that would be a free armour refill)
+      if (n === 1 && pl.skinFx?.startArmor) {
+        pl.armor = Math.max(pl.armor ?? 0, pl.skinFx.startArmor);
+      }
+      // a new wave is a clean slate for anything that happens once per wave
+      pl._windUsed = false;
+      pl.windT = 0;
+      pl.skillDraft = null;   // a draft never survives into the wave it delays
+      if (!pl.ownThrow) continue;
+      const give = 2 + (pl.skillFx?.refillBonus ?? 0) + (pl.skinFx?.refillBonus ?? 0);
+      if (pl.refillThrowable) pl.refillThrowable(give);
+      else if (pl.ownThrow.frag) pl.grenades = Math.min(GRENADE_MAX, pl.grenades + give);
     }
     // Co-op: a body that went down comes back when the next round does. You
     // keep what you bought and you come back where the others are.
@@ -856,6 +1052,9 @@ export class Game {
     }
     const plan = this.roundPlan(n);
     this.dogRound = plan.dog;
+    this.bossRound = plan.boss ?? null;
+    this.boss = null;
+    if (plan.boss) this._spawnBoss(plan.boss);
     // the range never "finishes" a round: there is nothing to finish
     this.zombiesTotal = this.rangeMode ? 0x3fffffff : plan.total;
     this.zombiesSpawned = 0;
@@ -869,7 +1068,14 @@ export class Game {
     this._fusionCd = 6;
     this.workbench.onRoundStart();
     if (this.roofRadio?.fixed && n % 2 === 0 && !this.rangeMode) this.dropRoofSupply();
-    if (plan.dog) {
+    if (plan.boss) {
+      // The warden's own name is the round's announcement. `_spawnBoss` put it
+      // up a moment ago, and a second banner here replaced it in the same
+      // frame -- so on every warden round (and they are all fifth rounds, so
+      // they are all dog rounds too) the one thing the round is about was the
+      // one thing never said. The hounds still howl for their own round.
+      if (plan.dog) audio.dogRound(); else audio.roundSting(true);
+    } else if (plan.dog) {
       this.bannerShow(`ROUND ${n}`, 'something is out there', { dur: 2.6, big: true, colour: '#e0705a' });
       audio.dogRound();
     } else {
@@ -895,16 +1101,136 @@ export class Game {
 
   endRound() {
     if (!this.roundActive) return;
-    this._reportHidden = null;
-    this.roundReport = finishRoundReport(this);
     this.roundActive = false;
     this.intermission = 12;
     this.respawnQueue = 0;
     this.setWeatherKind(null);   // the sky clears while you catch your breath
     if (this.roundDamageTaken === 0) this.achievements.unlock('untouchable');
-    this.bannerShow(`ROUND ${this.round} CLEARED`, 'catch your breath', { dur: 2.6, colour: '#f0d98a' });
+    // just the number, and a breath: the ledger this used to open is on the
+    // end-of-run screen now, where a reader has time for it
+    this.bannerShow(`ROUND ${this.round} CLEARED`, null, { dur: 2.2, colour: '#f0d98a' });
     audio.roundSting(false);
+    // every fifth wave: a personal upgrade, offered to every body in the
+    // room. The whole system is behind one switch (src/skills.js) and is off
+    // while the pool is being rebalanced.
+    if (this.skillsEnabled && this.round % DRAFT_EVERY === 0 && !this.rangeMode) this._offerSkillDrafts();
   }
+
+  // ------------------------------------------------------- all-time diary --
+  /**
+   * Write this night into the machine's lifetime totals. Once per run: a death
+   * and a restart must not bank the same night twice, and quitting to the menu
+   * banks exactly what was earned.
+   */
+  _bankRun() {
+    if (this._banked || !this.started || this.rangeMode) return;
+    this._banked = true;
+    this.lifetime = bankRun(this.lifetime, {
+      round: this.round, evac: !!this.evacuated, metrics: this.runMetrics,
+    });
+  }
+
+  // ------------------------------------------------------------ run skills --
+  /** Deal three cards to everyone who is still standing in this night. */
+  _offerSkillDrafts() {
+    if (!this.skillsEnabled || this.rangeMode || this.gameOver) return;
+    for (const p of this.players ?? [this.player]) {
+      if (!p || p.skillDraft) continue;
+      const ids = makeDraft(p.skills, 3);
+      if (!ids.length) continue;
+      p.skillDraft = { round: this.round, ids, index: 0, t: DRAFT_TIME };
+      // the panel itself is the announcement; the ROUND N CLEARED banner from
+      // endRound gets to finish its line first
+      if (p === this.player) audio.ready && audio.roundSting?.(true);
+    }
+  }
+
+  /** Is anybody still holding an open draft? The next wave waits for them. */
+  _draftOpen() { return (this.players ?? [this.player]).some((p) => !!p?.skillDraft); }
+
+  /** Keep every open draft's clock running; pick for a body that went idle. */
+  _skillDraftTick(dt) {
+    if (!this.started || this.gameOver) return;
+    // a guest's draft lives on the host; only the host runs the clock
+    if (this.net?.playing && !this.net.isHost) return;
+    for (const p of this.players ?? []) {
+      const d = p?.skillDraft;
+      if (!d) continue;
+      d.t = (d.t ?? DRAFT_TIME) - dt;
+      if (d.t <= 0) {
+        const id = d.ids[Math.min(d.ids.length - 1, Math.floor(Math.random() * d.ids.length))];
+        this.pickSkill(p, id);
+      }
+    }
+  }
+
+  /** Arrows / 1-2-3 / the mouse: one card, one press, one skill. */
+  _skillDraftUpdate() {
+    const d = this.player?.skillDraft;
+    if (!d) return;
+    const inp = this.input;
+    const n = d.ids.length;
+    const idx = Math.min(Math.max(0, d.index ?? 0), n - 1);
+    // the cards are a row, but all four arrows move: a player who reaches for
+    // up and down should not find dead keys in a menu that is asking them to
+    // choose
+    if (inp.wasPressed('ArrowRight', 'KeyD', 'ArrowDown', 'KeyS')) {
+      d.index = (idx + 1) % n; audio.dryFire?.();
+    } else if (inp.wasPressed('ArrowLeft', 'KeyA', 'ArrowUp', 'KeyW')) {
+      d.index = (idx - 1 + n) % n; audio.dryFire?.();
+    }
+    const m = inp.mouse;
+    const hit = skillCardAt(this.vw, this.vh, m.x, m.y, n);
+    if (hit >= 0 && (this._pointerMoved() || m.pressed)) d.index = hit;
+    // The digits are also weapon-slot keys on the wire. Take the press out of
+    // the frame's set once the card has used it, or a guest would both pick a
+    // skill and swap guns with the same keystroke.
+    const digit = (code, id) => {
+      if (!inp.wasPressed(code)) return false;
+      inp.pressed?.delete?.(code);
+      this.chooseSkill(id);
+      return true;
+    };
+    if (digit('Digit1', d.ids[0]) || digit('Digit2', d.ids[1]) || digit('Digit3', d.ids[2])) return;
+    else if (inp.wasPressed('Enter', 'Space', 'KeyE') || (m.pressed && hit >= 0)) {
+      // E is the interact key on the wire, like the digits above
+      if (inp.wasPressed('KeyE')) inp.pressed?.delete?.('KeyE');
+      this.chooseSkill(d.ids[Math.min(d.index ?? 0, n - 1)]);
+    }
+  }
+
+  /** The player's answer. A guest's answer travels to the body that owns it. */
+  chooseSkill(id) {
+    const d = this.player?.skillDraft;
+    if (!d || !d.ids?.includes(id)) return false;
+    if (this.net?.playing && !this.net.isHost) {
+      this.net.send(this.net.hostId, { m: 'skill', id });
+      audio.perk?.();
+      return true;
+    }
+    return this.pickSkill(this.player, id);
+  }
+
+  /** Host: validate the card, put it in the hand, close the draft. */
+  pickSkill(p, id) {
+    const d = p?.skillDraft;
+    if (!p || !d || !d.ids?.includes(id)) return false;
+    if (!p.addSkill?.(id)) return false;
+    p.skillDraft = null;
+    const def = SKILLS[id];
+    if (!def) return false;
+    if (p === this.player) {
+      this.bannerShow(`SKILL: ${def.name.toUpperCase()}`, def.desc,
+        { dur: 3.4, colour: def.colour, local: true });
+      audio.perk?.();
+    }
+    this.popups.add?.(p.pos.x, p.pos.y - 32, def.short, def.colour, 12);
+    // guests hear about it either way; this is not a local secret like a
+    // blocked speaker, it is a new number in the world
+    this.net?.emit?.('skill', { name: p.name || 'PLAYER', id });
+    return true;
+  }
+
 
   get zombiesLeft() {
     return Math.max(0, this.zombiesTotal - this.zombiesKilled);
@@ -1095,28 +1421,43 @@ export class Game {
     const a = Math.min(1, this.voice.left / 0.5);
     // broadcasts are sentences now, not call-signs: wrap them to the box
     // (12px Courier is ~7.2px a character; the box is 440 wide, 420 usable)
+    // The box was a fixed 440 wide, which is wider than a phone held upright
+    // and wider than the picture at MAX PICTURE SIZE: the broadcast ran off
+    // both edges of the glass. It is measured from the view now, and the wrap
+    // is worked out from that -- 12px Courier is about 7.2 a character.
+    const bw = Math.min(440, vw - 16);
+    const cols = Math.max(18, Math.floor((bw - 20) / 7.2));
     const words = String(this.voice.text).split(/\s+/);
     const lines = [];
     let cur = '';
     for (const wd of words) {
       const t = cur ? `${cur} ${wd}` : wd;
-      if (t.length > 58 && cur) { lines.push(cur); cur = wd; } else cur = t;
-      while (cur.length > 58) { lines.push(cur.slice(0, 58)); cur = cur.slice(58); }
+      if (t.length > cols && cur) { lines.push(cur); cur = wd; } else cur = t;
+      while (cur.length > cols) { lines.push(cur.slice(0, cols)); cur = cur.slice(cols); }
     }
     if (cur) lines.push(cur);
-    const shown = lines.slice(0, 3);
-    const y = vh - 96;
+    // The box lives between the boss bar and the bottom of the HUD. On a very
+    // short view there is not room for three lines of it, and a broadcast that
+    // runs over the round counter is worse than a shorter one.
+    const boss = this.hud?._bossRect;
+    const top = (boss ? boss.y + boss.h + 8 : 0) + 18;
+    const bottom = vh - 78;
+    const room = Math.max(0, bottom - top);
+    const maxLines = Math.max(1, Math.min(3, Math.floor((room - 6) / 14)));
+    const shown = lines.slice(0, maxLines);
+    let y = Math.max(top, Math.min(vh - 96, bottom - shown.length * 14 - 6));
     const bh = 20 + shown.length * 14;
+    const bLeft = vw / 2 - bw / 2;
     ctx.save();
     ctx.globalAlpha = a * 0.55;
     ctx.fillStyle = '#0a0c0e';
-    ctx.fillRect(vw / 2 - 220, y - 16, 440, bh);
+    ctx.fillRect(bLeft, y - 16, bw, bh);
     ctx.globalAlpha = a;
     ctx.strokeStyle = 'rgba(150,190,220,0.35)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(vw / 2 - 220, y - 16, 440, bh);
+    ctx.strokeRect(bLeft, y - 16, bw, bh);
     ctx.restore();
-    text(ctx, 'LOUDSPEAKER', vw / 2 - 210, y - 6, {
+    text(ctx, 'LOUDSPEAKER', bLeft + 10, y - 6, {
       font: 'bold 9px "Courier New", monospace', colour: '#7f9cb5', align: 'left', alpha: a,
     });
     shown.forEach((ln, i) => {
@@ -1183,7 +1524,14 @@ export class Game {
     // Skeletons and the pieces that come off a swarm are not part of the
     // round's tally -- they are made during it. They do not bring the round
     // closer to done; they only hold it open until you have killed them too.
-    if (!z.summoned) this.zombiesKilled++;
+    if (z.boss) {
+      // the warden was never in the tally: killing it is what ends the round
+      this.boss = null;
+      this.recordRound('bosses');
+      this.bannerShow('WARDEN DOWN', 'whatever it was holding open is closed',
+        { dur: 3.4, colour: '#f0d98a' });
+      audio.chime?.();
+    } else if (!z.summoned) this.zombiesKilled++;
     const who = z._by ?? this.player;
     // the set goes off the air the moment the thing carrying it does
     if (z.def.jams && this.jamT > 0) { this.jamT = Math.min(this.jamT, 0.45); this.jamSrc = null; }
@@ -1205,8 +1553,9 @@ export class Game {
     this.netEmit('kill', { x: Math.round(z.pos.x), y: Math.round(z.pos.y), pts, head: !!head });
     this.splat(z.pos.x, z.pos.y, 9 + Math.random() * 7, 0.5);
 
-    // salvage
-    const dropChance = SALVAGE_DROP + (z.type === 'brute' ? 0.55 : 0);
+    // salvage -- an outfit can make the pockets of the dead more generous
+    const dropChance = (SALVAGE_DROP + (z.type === 'brute' ? 0.55 : 0))
+      * (who.skinFx?.salvageMul ?? 1);
     if (Math.random() < dropChance) {
       const n = z.type === 'brute' ? randInt(2, 4) : 1;
       who.salvage = (who.salvage ?? 0) + n;
@@ -1274,6 +1623,22 @@ export class Game {
       this.graves[i].update(dt, this);
       if (this.graves[i].dead) this.graves.splice(i, 1);
     }
+    for (let i = this.hives.length - 1; i >= 0; i--) {
+      this.hives[i].update(dt, this);
+      if (this.hives[i].dead) this.hives.splice(i, 1);
+    }
+    for (let i = this.threads.length - 1; i >= 0; i--) {
+      this.threads[i].update(dt, this);
+      if (this.threads[i].dead) this.threads.splice(i, 1);
+    }
+    for (let i = this.arrows.length - 1; i >= 0; i--) {
+      this.arrows[i].update(dt, this);
+      if (this.arrows[i].dead) this.arrows.splice(i, 1);
+    }
+    for (let i = this.arrowSticks.length - 1; i >= 0; i--) {
+      this.arrowSticks[i].life -= dt;
+      if (this.arrowSticks[i].life <= 0) this.arrowSticks.splice(i, 1);
+    }
     for (let i = this.zThrows.length - 1; i >= 0; i--) {
       this.zThrows[i].update(dt, this);
       if (this.zThrows[i].dead) this.zThrows.splice(i, 1);
@@ -1288,6 +1653,20 @@ export class Game {
   /** A Bearer or a Mourner kneels and leaves something behind. False = house full. */
   placeHaunt(z) {
     const floor = z.floor ?? this.map.floor;
+    if (z.def.places === 'hive') {
+      // two hives at most in the house, and never two from the same keeper
+      if (this.hives.filter((h) => !h.dead).length >= (z.boss ? 2 : 1)) return false;
+      if (this.hives.some((h) => !h.dead && h.ownerId === z.id)) return false;
+      const hv = new Hive(z.pos.x, z.pos.y, floor, ++this._hauntId);
+      hv.ownerId = z.id;
+      this.hives.push(hv);
+      audio.wood(true);
+      this.particles.spark(hv.x, hv.y - 8, -Math.PI / 2, 8, '#e0b04a');
+      this.bannerShow('A HIVE IS SET DOWN', 'the humming starts -- shoot the box, not the bees',
+        { dur: 3, colour: '#e0b04a' });
+      this.say('hive');
+      return true;
+    }
     if (z.def.places === 'totem') {
       if (this.totems.some((t) => !t.dead)) return false;   // one dusk at a time
       const tt = new Totem(z.pos.x, z.pos.y, floor, ++this._hauntId);
@@ -1342,6 +1721,201 @@ export class Game {
     }
   }
 
+  /** A hive lets one out. Small, quick, and worth almost nothing on its own. */
+  spawnBee(hive) {
+    const a = randRange(0, TAU), r = randRange(8, 18);
+    const z = this.makeZombie({
+      x: hive.x + Math.cos(a) * r, y: hive.y + Math.sin(a) * r, floor: hive.f,
+    }, 'bee');
+    z.hiveUid = hive.uid;
+    z.summoned = true;
+    this.zombies.push(z);
+    this.particles.spark(z.pos.x, z.pos.y - 8, a, 3, '#e0c060');
+    audio.silk?.(0.35);
+  }
+
+  /** The archer's fan: three arrows, the middle one where you were standing. */
+  archerVolley(z, p) {
+    const floor = z.floor ?? this.map.floor;
+    const tx = p?.pos.x ?? z.pos.x, ty = p?.pos.y ?? z.pos.y;
+    const base = Math.atan2(ty - 12 - (z.pos.y - 12), tx - z.pos.x);
+    const dmg = (this.roundPlan?.(this.round)?.hp ?? 120) * 0.055;
+    for (const [off, fast, heavy] of [[0, 520, true], [-0.245, 380, false], [0.245, 380, false]]) {
+      const ang = base + off;
+      this.arrows.push(new Arrow(z.pos.x + Math.cos(base) * 10, z.pos.y - 12 + Math.sin(base) * 6,
+        ang, fast, heavy ? dmg : dmg * 0.6, floor, heavy));
+    }
+    audio.bow?.(0.8);
+    this.particles.spark(z.pos.x, z.pos.y - 12, base, 3, '#cfc9b4');
+  }
+
+  /** A weaver sets a knot of silk down. It is not a projectile: it stays. */
+  addThread(x, y, floor) {
+    if (this.threads.length >= 26) return;
+    // do not stack them on top of each other -- a mat of silk is not a wall
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, x, y) < 24 * 24) return;
+    }
+    this.threads.push(new Thread(x, y, floor));
+    audio.silk?.(0.5);
+    this.particles.dust(x, y, randRange(0, TAU), 2);
+  }
+
+  /** An arrow that stopped in a wall. Kept, because it is a nice thing to see. */
+  stickArrow(x, y, ang, f) {
+    if (this.arrowSticks.length > 40) this.arrowSticks.shift();
+    this.arrowSticks.push({ x, y, ang, f, life: 14, max: 14 });
+  }
+
+  /**
+   * The floor under your feet, made hostile. A knot of silk takes a little
+   * over half your legs and refuses the dash; a dash that starts outside one
+   * tears straight through it, which is the move the whole creature is for.
+   */
+  threadTick(dt) {
+    const p = this.player;
+    if (!p || p.dead) return;
+    const floor = p.floor ?? this.map.floor;
+    let inSilk = false;
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, p.pos.x, p.pos.y) < 17 * 17) { inSilk = true; break; }
+    }
+    if (inSilk) {
+      if (!p._silkTold || this.time - p._silkTold > 4) {
+        p._silkTold = this.time;
+        this.popups.add(p.pos.x, p.pos.y - 34, 'SILK', '#e8e4d2', 10);
+      }
+      p.silkT = 0.14;
+    }
+  }
+
+  /** A dash tears every knot it passes through. */
+  tearThreads(p) {
+    if (!this.threads.length) return;
+    const floor = p.floor ?? this.map.floor;
+    for (const t of this.threads) {
+      if (t.dead || (t.f ?? 0) !== floor) continue;
+      if (dist2(t.x, t.y, p.pos.x, p.pos.y) < 30 * 30) {
+        t.tear(this);
+        this.particles.spark(t.x, t.y - 3, randRange(0, TAU), 5, '#e8e4d2');
+      }
+    }
+  }
+
+  /**
+   * The sapper's bundle. Killing it is the gift: the blast takes everything
+   * dead within ninety units with it and does nothing at all to you. Letting
+   * it reach you is the other case, and that one hurts.
+   */
+  sapperBoom(z, onContact = false) {
+    if (z._boomed) return;
+    z._boomed = true;
+    const floor = z.floor ?? this.map.floor;
+    const R = 96;
+    this.explosionLights.push({ x: z.pos.x, y: z.pos.y - 6, r: 150, life: 0.35, max: 0.35, colour: '#f0a03c', f: floor });
+    this.particles.spark(z.pos.x, z.pos.y - 6, randRange(0, TAU), 26, '#f0c060');
+    this.particles.smoke(z.pos.x, z.pos.y - 4, 10);
+    this.shake(4, 0.3);
+    if (audio.explosion) audio.explosion(); else audio.zombieDie();
+    let killed = 0;
+    for (const o of this.zombies) {
+      if (o === z || o.dead) continue;
+      if ((o.floor ?? 0) !== floor) continue;
+      const d = dist(z.pos.x, z.pos.y, o.pos.x, o.pos.y);
+      if (d > R) continue;
+      const mul = 1 - (d / R) * 0.6;
+      if (o.hurt(260 * mul, false, this, randRange(0, TAU)) === 2) {
+        this.onZombieKilled(o, false, null, 'blast');
+        killed++;
+      }
+    }
+    if (killed) this.addPoints(killed * 40, z.pos.x, z.pos.y - 22, '#f0d98a', this.player);
+    if (onContact) {
+      const p = this.player;
+      if (p && !p.dead && (p.floor ?? 0) === floor && dist(z.pos.x, z.pos.y, p.pos.x, p.pos.y) < R) {
+        if (p.hurt(55, z.pos.x, z.pos.y, this)) {
+          this.popups.add(p.pos.x, p.pos.y - 34, 'SAPPER', '#e0896a', 12);
+        }
+      }
+    }
+    // if it is still standing (it reached you), put it down here; if the
+    // bullet already did that, `die` has been and gone and only the blast
+    // was ever missing
+    if (!z.dead) {
+      z.hp = 0;
+      z.dead = true;
+      z.deadT = 0;
+      z.state = ZSTATE.DEAD;
+      this.particles.chunk(z.pos.x, z.pos.y, randRange(0, TAU), 6);
+    }
+  }
+
+  /** A porter sets its brood down. They belong to it, so they are not counted. */
+  spawnBrood(z, n = 2) {
+    const floor = z.floor ?? this.map.floor;
+    for (let i = 0; i < n; i++) {
+      const a = randRange(0, TAU), r = randRange(12, 26);
+      const b = this.makeZombie({
+        x: z.pos.x + Math.cos(a) * r, y: z.pos.y + Math.sin(a) * r, floor,
+      }, 'porter' === z.type || z.type === 'mother' ? 'swarmlet' : 'swarmlet');
+      b.summoned = true;
+      b.summonedBy = z.id;
+      this.zombies.push(b);
+      this.particles.dust(b.pos.x, b.pos.y, a, 4);
+    }
+    audio.silk?.(0.4);
+  }
+
+  /** The warden blows a whistle; the colonel gets knights. */
+  bossSummon(z) {
+    const floor = z.floor ?? this.map.floor;
+    const type = z.def.summons ?? 'walker';
+    const n = type === 'knight' ? 1 : 2;
+    let made = 0;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + randRange(0, 1);
+      const spot = this.map.blockedAt(z.pos.x + Math.cos(a) * 40, z.pos.y + Math.sin(a) * 40, 8, floor)
+        ? null : { x: z.pos.x + Math.cos(a) * 40, y: z.pos.y + Math.sin(a) * 40 };
+      if (!spot) continue;
+      const o = this.makeZombie({ x: spot.x, y: spot.y, floor }, type);
+      o.summoned = true;
+      o.state = ZSTATE.EMERGE;
+      o.emergeT = 0.5;
+      this.zombies.push(o);
+      this.particles.dust(spot.x, spot.y, a, 8);
+      made++;
+    }
+    if (made) {
+      this.shake(2, 0.2);
+      this.popups?.add?.(z.pos.x, z.pos.y - 40,
+        type === 'knight' ? 'IT WHISTLES' : 'IT CALLS THEM IN', '#e0896a', 11);
+      audio.growl?.(0.6, 0.9);
+    }
+  }
+
+  /** The organist's ring: it staggers you and it is heard across the floor. */
+  bossShock(z, radius = 220) {
+    const floor = z.floor ?? this.map.floor;
+    this.shriekRings.push({
+      x: z.pos.x, y: z.pos.y, r: 10, max: radius, life: 0.9, maxLife: 0.9,
+      f: floor, colour: '#c8a0e8',
+    });
+    audio.shriek();
+    this.shake(4, 0.3);
+    const p = this.player;
+    if (p && !p.dead && (p.floor ?? 0) === floor
+      && dist(z.pos.x, z.pos.y, p.pos.x, p.pos.y) < radius && p.hurt(16, z.pos.x, z.pos.y, this)) {
+      p.stunT = Math.max(p.stunT ?? 0, 0.45);
+      this.popups.add(p.pos.x, p.pos.y - 34, 'STAGGERED', '#c8a0e8', 12);
+    }
+    for (const o of this.zombies) {
+      if (o === z || o.dead) continue;
+      if (dist2(z.pos.x, z.pos.y, o.pos.x, o.pos.y) < radius * radius) o.rally = 5;
+    }
+  }
+
   /** The grave lets one out: half-seen, quick, and not part of the round's tally. */
   spawnWraith(x, y, floor, uid) {
     const a = randRange(0, TAU), r = randRange(26, 52);
@@ -1364,6 +1938,15 @@ export class Game {
       if (gv.dead || (gv.f ?? 0) !== floor) continue;
       const d = dist(x, y, gv.x, gv.y);
       if (d < R) gv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const hv of this.hives) {
+      if (hv.dead || (hv.f ?? 0) !== floor) continue;
+      const d = dist(x, y, hv.x, hv.y);
+      if (d < R) hv.hurt(dmg * (1 - d / R * 0.5), this);
+    }
+    for (const th of this.threads) {
+      if (th.dead || (th.f ?? 0) !== floor) continue;
+      if (dist(x, y, th.x, th.y) < R) th.tear(this);
     }
   }
 
@@ -1394,7 +1977,7 @@ export class Game {
     if (kind === 'storm') {
       W.drops = [];
       for (let i = 0; i < 110; i++) {
-        W.drops.push({ x: Math.random() * VW, y: Math.random() * VH, s: randRange(340, 620), l: randRange(7, 16) });
+        W.drops.push({ x: Math.random() * this.vw, y: Math.random() * this.vh, s: randRange(340, 620), l: randRange(7, 16) });
       }
       this.say('storm');
     }
@@ -1419,8 +2002,8 @@ export class Game {
       for (const d of W.drops) {
         d.y += d.s * dt;
         d.x -= 160 * dt;                      // the rain comes in slanted
-        if (d.y > VH) { d.y = -12; d.x = Math.random() * (VW + 80); }
-        if (d.x < -20) d.x += VW + 40;
+        if (d.y > this.vh) { d.y = -12; d.x = Math.random() * (this.vw + 80); }
+        if (d.x < -20) d.x += this.vw + 40;
       }
     } else if (W.wet > 0) {
       W.wet = Math.max(0, W.wet - dt * 0.05); // the glass dries slowly
@@ -1468,7 +2051,9 @@ export class Game {
     audio.radioStart();
     this._speak(ev.text(this));
     if (ev.fx) ev.fx(this);
-    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0' });
+    // queued: the radio is atmosphere, and the warden it would have covered
+    // for four seconds is not
+    this.bannerShow('THE RADIO', 'somebody out there still transmits', { dur: 2.8, colour: '#9fd0e0', queue: true });
   }
 
   /**
@@ -1516,7 +2101,7 @@ export class Game {
       // the smoke thins as the wings come in over the west trees
       const thin = H.t < 108 ? 1 : Math.max(0, (116 - H.t) / 8);
       if (H.flare && thin > 0 && Math.random() < dt * 26 * thin) {
-        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1);
+        this.particles.smoke(HELI_PAD.x + randRange(-5, 5), HELI_PAD.y - 4 + randRange(-4, 4), 1, HELI_PAD.f);
       }
       this._heliSnd = H.t > 108;
       if (this._heliSnd) audio.heli(Math.min(1, 0.25 + (H.t - 108) / 12));
@@ -1552,7 +2137,7 @@ export class Game {
       if (s.taken) { this.supplies.splice(i, 1); continue; }
       if (s.t <= s.fall) continue;                 // still under the canopy
       s.life -= dt;
-      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1);
+      if (Math.random() < dt * 5) this.particles.smoke(s.x + randRange(-6, 6), s.y - 6, 1, s.f ?? 0);
       if (s.life <= 0) { this.supplies.splice(i, 1); continue; }   // the night takes it back
       if (!auth) continue;                          // the host hands out the contents
       for (const pl of this.players ?? [this.player]) {
@@ -1628,7 +2213,7 @@ export class Game {
     H.phase = 2; H.t = 0; H.flare = true; H._said60 = 0; H._said108 = 0;
     this.shake(3, 0.8);
     audio.powerUp();
-    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1);
+    this.particles.smoke(HELI_PAD.x, HELI_PAD.y - 4, 1, HELI_PAD.f);
     this.bannerShow('FLARE LIT', 'green smoke over the roof -- the bird lands in 2:00', { dur: 4.2, colour: '#8fdc6a' });
     this._speak('Green over the roof, we see it. Two minutes out -- keep the pad clear and your heads down.');
     this.net?.emit('flare', {});
@@ -1652,14 +2237,17 @@ export class Game {
     this.net?.emit('radiofix', {});
   }
 
-  /** The crate the roof radio called in: it lands on the pad, under canopy. */
+  /** The roof radio calls a crate to the ground-floor supply area. */
   dropRoofSupply() {
+    const ground = this.map.floors?.[0] ?? this.map;
+    const spots = ground.boxSpots ?? [];
+    const spot = spots.length ? spots[randInt(0, spots.length - 1)] : this.map.playerStart;
     this.supplies.push({
-      x: HELI_PAD.x + randRange(-46, 46),
-      y: HELI_PAD.y + randRange(-30, 30),
-      f: HELI_PAD.f, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
+      x: clamp(spot.x + randRange(-30, 30), T, this.map.w * T - T),
+      y: clamp(spot.y + randRange(-30, 30), T, this.map.h * T - T),
+      f: 0, t: 0, fall: 3.2, life: 110, taken: false, seed: Math.random() * 100,
     });
-    this.bannerShow('SUPPLY RUN', 'the roof radio called it in -- crate on the pad', { dur: 2.8, colour: '#f2e26a' });
+    this.bannerShow('SUPPLY RUN', 'radio drop on the ground floor -- crate by the boxes', { dur: 2.8, colour: '#f2e26a' });
     audio.radioStart();
   }
 
@@ -1675,6 +2263,7 @@ export class Game {
     this.gameOver = true;
     this.evacuated = true;
     this.overT = 0;
+    this._bankRun();
     audio.heliOff();
     if (this.net?.playing && !this.net.isHost) return;   // a guest gets its screen off the snapshot
     const stamp = Date.now();
@@ -1687,25 +2276,43 @@ export class Game {
 
   /** Keep the settings window over the row the arrows just landed on. */
   _viewFollow() {
-    const L = settingsLayout(this, VW, VH);
+    const L = settingsLayout(this, this.vw, this.vh);
     if (!L.over) { this.settingsView = 0; return; }
-    let v = this.settingsView ?? L.top;
+    // a half-scrolled window is snapped to a whole row when the *keyboard*
+    // moves the selection: the finger leaves it wherever it likes
+    let v = Math.round(this.settingsView ?? L.top);
     if (this.settingsIndex < v) v = this.settingsIndex;
     else if (this.settingsIndex >= v + L.shown) v = this.settingsIndex - L.shown + 1;
     this.settingsView = clamp(v, 0, L.over);
   }
 
+  /**
+   * A new night from scratch. The old one is banked first -- restarting from
+   * the pause screen is the same decision as quitting to the menu and walking
+   * back in, and it must not quietly erase the diary entry the quit would
+   * have written.
+   */
+  _restartRun() {
+    this._bankRun();
+    this.reset();
+    this.started = true;
+    this.startRound(1);
+  }
+
   /** The pause menu's last row: leave the run and stand at the front door. */
   _quitToMenu() {
+    // quitting mid-night still counts: the diary takes what was earned
+    this._bankRun();
     if (this.net?.playing || this.net?.active) this.net.close();
     audio.heliOff();
-    this.paused = false;
-    this.settingsOpen = false;
+    // A quit is a full stop, not a pause. Without the reset the front door's
+    // SOLO row walked back into the half-played map with the old guns, doors,
+    // points and tallies -- and with `_banked` still set, so the next night
+    // was never written to the diary at all.
+    this.reset();
     this.controlsOpen = false;
     this.debugOpen = false;
     this.craftOpen = false;
-    this.gameOver = false;
-    this.started = false;
     this.scene = 'menu';
   }
 
@@ -1739,6 +2346,8 @@ export class Game {
     for (const z of this.zombies) { z.dead = true; z.remove = true; }
     this.zombies = [];
     this.totems = []; this.graves = []; this.zThrows = []; this.bolts = [];
+    this.hives = []; this.threads = []; this.arrows = []; this.arrowSticks = [];
+    this.boss = null;
     this.fires = []; this.gases = []; this.rifts = [];
     this.heli = { phase: 0, t: 0, roofRounds: 0, sorry: false, flare: false };
     this.supplies = [];
@@ -1769,7 +2378,7 @@ export class Game {
       if (coop) {
         p.downed = true; p.bleedT = 60; p.invuln = 1.2;
         this.popups?.add?.(p.pos.x, p.pos.y - 34, 'DOWN', '#c4463a', 13);
-      } else { p.dead = true; this.gameOver = true; this.overT = 0; }
+      } else { p.dead = true; this.gameOver = true; this.overT = 0; this._bankRun(); }
     }
   }
 
@@ -1926,13 +2535,15 @@ export class Game {
       if ((z.floor ?? 0) !== (p.floor ?? this.map.floor)) continue;
       const hx = z.pos.x, hy = z.pos.y - HEAD_OFF_Y * (z.def.headOff ?? 1);
       const low = z.def.low ? 0.72 : 1;
+      // a hound is drawn bigger than a human crouch, so its boxes are too
+      const hs = z.def.hitScale ?? 1;
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
-      const headR = 5.2 * low;
+      const headR = 5.2 * low * hs;
       let isHead = false;
       // no head on a skeleton: there is nothing to aim at but the ribs
       if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
-        const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1);
+        const bodyR = (8.4 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.8 : 1) * hs;
         if (res.d2 > bodyR * bodyR) continue;
       } else isHead = true;
       if (Math.hypot(res.cx - ox, res.cy - oy) > wallT) continue;
@@ -1970,8 +2581,9 @@ export class Game {
       let res = pointSegDist2(hx, hy, ox, oy, ox + dx * def.range, oy + dy * def.range);
       let head = false;
       const low = z.def.low ? 0.72 : 1;
-      const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low;
-      const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1);
+      const hs = z.def.hitScale ?? 1;   // the big ones are easier to hit
+      const headR = (3.9 + (magnet > 0 ? 1.6 : 0)) * low * hs;
+      const bodyR = (7.2 + (z.def.smash ? 3.4 : 0)) * (z.def.low ? 0.78 : 1) * hs;
       if (z.def.headless || res.d2 > headR * headR) {
         res = pointSegDist2(z.pos.x, z.pos.y, ox, oy, ox + dx * def.range, oy + dy * def.range);
         if (res.d2 > bodyR * bodyR) continue;
@@ -1982,11 +2594,13 @@ export class Game {
     }
     // the planted haunts take bullets too -- shooting the totem or the
     // headstone is the whole point of them
-    for (const arr of [this.totems, this.graves]) {
+    for (const arr of [this.totems, this.graves, this.hives, this.threads]) {
       for (const st of arr) {
         if (st.dead || (st.f ?? 0) !== floor) continue;
-        const res = pointSegDist2(st.x, st.y - 10, ox, oy, ex, ey);
-        if (res.d2 > 13 * 13) continue;
+        const lift = st.kind === 'thread' ? 2 : 10;
+        const rad = st.kind === 'thread' ? 11 : 13;
+        const res = pointSegDist2(st.x, st.y - lift, ox, oy, ex, ey);
+        if (res.d2 > rad * rad) continue;
         const t = Math.hypot(res.cx - ox, res.cy - oy);
         if (t > wallT) continue;
         hits.push({ st, t, head: false, x: res.cx, y: res.cy });
@@ -1995,6 +2609,13 @@ export class Game {
     hits.sort((a, b) => a.t - b.t);
 
     const insta = this.timers.instakill > 0 ? 9999 : 1;
+    // Run skills that live on the shot itself. Cold Blood is loaded by
+    // standing still and spent by the next trigger pull, hit or miss.
+    const sfx = shooter.skillFx ?? NO_SKILLS;
+    const cool = sfx.coolhead && shooter._coolReady ? sfx.coolheadMul : 1;
+    const last = shooter.hp <= shooter.maxHp * sfx.laststandHp ? sfx.lastStandMul : 1;
+    const skillMul = (sfx.dmgMul ?? 1) * cool * last;
+    shooter._coolReady = false;
     let pierce = def.pierce;
     let endT = wallT;
     let anyHit = false;
@@ -2009,9 +2630,10 @@ export class Game {
           x: Math.round(h.x), y: Math.round(h.y), a: Math.round(angle * 100) / 100,
           head: false, by: by?.netId ?? 0,
         });
-        const broke = h.st.hurt(def.dmg * insta, this);
+        const broke = h.st.hurt(def.dmg * insta * skillMul, this);
         if (broke) {
-          this.addPoints(h.st.kind === 'totem' ? 250 : 200, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
+          const prize = h.st.kind === 'totem' ? 250 : h.st.kind === 'thread' ? 20 : 200;
+          this.addPoints(prize, h.st.x, h.st.y - 30, '#f0d98a', by ?? this.player);
         }
         anyHit = true;
         if (!firstHit) firstHit = { x: h.x, y: h.y, z: null };
@@ -2019,7 +2641,8 @@ export class Game {
         break;
       }
       const wasAlive = !h.z.dead;
-      const mul = (h.head ? def.headMul : 1) * insta;
+      const mul = (h.head ? def.headMul : 1) * insta * skillMul
+        * (h.head ? (sfx.headMul ?? 1) * (shooter.skinFx?.headMul ?? 1) : 1);
       const res = h.z.hurt(def.dmg * mul, h.head, this, angle, by);
       if (!wasAlive) continue;
       anyHit = true;
@@ -2218,10 +2841,14 @@ export class Game {
     for (const g of F.grenadeCrates) {
       const d = dist(p.pos.x, p.pos.y, g.x, g.y);
       if (d < 30) {
+        const kind = g.kind ?? 'frag';
+        // a crate of a different kind can replace what is in the hand: the
+        // one slot is the point, so only "already full of this" is a refusal
+        const same = (p.throwableKind?.() ?? 'frag') === kind;
+        const have = p.throwableCount?.() ?? 0;
         offer({
-          type: 'grenade', kind: g.kind ?? 'frag', price: GRENADE_PRICE, d,
-          affordable: p.points >= GRENADE_PRICE
-            && (p[{ frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[g.kind ?? 'frag']] ?? 0) < GRENADE_MAX,
+          type: 'grenade', kind, price: GRENADE_PRICE, d,
+          affordable: p.points >= GRENADE_PRICE && !(same && have >= GRENADE_MAX),
         });
       }
     }
@@ -2394,14 +3021,19 @@ export class Game {
 
     if (it.type === 'grenade') {
       const kind = it.kind ?? 'frag';
-      const pocket = { frag: 'grenades', molotov: 'molotovs', gas: 'gasbombs' }[kind];
-      if (p.points < it.price || (p[pocket] ?? 0) >= GRENADE_MAX) { audio.deny(); return; }
+      const same = (p.throwableKind?.() ?? 'frag') === kind;
+      const have = p.throwableCount?.() ?? 0;
+      // A different kind is a replacement, so a full hand does not block it.
+      // Only a full hand of the SAME kind has nothing left to sell.
+      if (p.points < it.price || (same && have >= GRENADE_MAX)) { audio.deny(); return; }
       p.points -= it.price;
-      p[pocket] = Math.min(GRENADE_MAX, (p[pocket] ?? 0) + 2);
-      p.ownThrow[kind] = true;
+      if (p.giveThrowable) p.giveThrowable(kind, 2);
+      else p[throwPocket(kind)] = Math.min(GRENADE_MAX, (p[throwPocket(kind)] ?? 0) + 2);
+      if (p.ownThrow) p.ownThrow[kind] = true;
       audio.buy();
+      const name = { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind];
       this.popups.add(p.pos.x, p.pos.y - 26,
-        { frag: 'FRAG GRENADES', molotov: 'MOLOTOVS', gas: 'GAS BOMBS' }[kind], '#f0d98a', 12);
+        have > 0 && !same ? `${name} — REPLACED` : name, '#f0d98a', 12);
       return;
     }
 
@@ -2570,7 +3202,7 @@ export class Game {
     const b = it.barricade;
     if (b.planks >= b.maxPlanks) { this._rebuildT = 0; return; }
     this._rebuildT = (this._rebuildT || 0) + dt;
-    if (this._rebuildT >= 0.3) {
+    if (this._rebuildT >= 0.3 * (p.skillFx?.buildTimeMul ?? 1)) {
       this._rebuildT = 0;
       b.planks++;
       this.stats.planks++;
@@ -2656,8 +3288,8 @@ export class Game {
     this.revealAround(spot.x, spot.y, 13);
     if (this.hud) this.hud._miniDirty = true;
     this.onPlayerTeleport(from, spot);
-    this.cam.x = clamp(spot.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(spot.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(spot.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(spot.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.bannerShow(this.map.floorName, link?.name ?? '', { dur: 1.7, colour: '#9fd0f0' });
     if (n === 2) this.achievements.unlock('up_on_the_roof');
     if (n === 1) this.achievements.unlock('upstairs');
@@ -2706,12 +3338,15 @@ export class Game {
       if (dd > 8) { aim = Math.atan2(dy, dx); d = dd; }
     }
     this.recordRound('throws');
-    const speed = Math.max(150, Math.min(MAX_THROW_SPEED, Number.isFinite(d) ? d * 1.64 : MAX_THROW_SPEED));
+    const reach = Math.max(150, Math.min(MAX_THROW_SPEED, Number.isFinite(d) ? d * 1.64 : MAX_THROW_SPEED));
+    // Strong Arm: the same aim, a harder throw -- the arc (and the grenade)
+    // still land where the cursor is, they just get there with more pace
+    const speed = Math.min(MAX_THROW_SPEED, reach * (p.skillFx?.throwSpeedMul ?? 1));
     const floor = p.floor ?? this.map.floor;
     p.vel.x -= Math.cos(aim) * 26;
     p.vel.y -= Math.sin(aim) * 26;
     if (kind === 'frag') {
-      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor);
+      throwGrenade(this, p.pos.x, p.pos.y, aim, speed, floor, p);
       audio.shot?.('throw', 0);
       return;
     }
@@ -2882,7 +3517,7 @@ export class Game {
       'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
     );
     if (m && ids.length) {
-      const hover = craftRowAt(this, VW, VH, m.x, m.y);
+      const hover = craftRowAt(this, this.vw, this.vh, m.x, m.y);
       if (!keyed && hover >= 0 && hover !== p.craftRow) { p.craftRow = hover; audio.dryFire(); }
       if (m.pressed && hover >= 0) { build(ids[hover]); return true; }
     }
@@ -2890,7 +3525,7 @@ export class Game {
     // arrows and WASD walk the grid, Enter builds what is lit
     if (ids.length) {
       const n = ids.length;
-      const cols = craftLayout(this, VW, VH).cols;
+      const cols = craftLayout(this, this.vw, this.vh).cols;
       const move = (d) => {
         p.craftRow = clamp(((p.craftRow ?? 0) + d + n) % n, 0, n - 1);
         audio.dryFire();
@@ -2966,17 +3601,68 @@ export class Game {
     audio.growl(0.8, 0.8);
   }
 
+  /**
+   * The wardrobe tab. One row per coat, and pressing it grants *that coat's
+   * badge* -- the same one the game would hand you for doing the thing -- and
+   * puts the coat on, so a locked outfit can be checked in ten seconds instead
+   * of a night.
+   */
+  _skinRows() {
+    const wearing = this.player?.skin ?? null;
+    const rows = SKIN_ORDER.map((id) => {
+      const skin = SKINS[id];
+      const owned = skinOwned(id, this.achievements);
+      return {
+        id: `skin:${id}`,
+        label: `${skin.name}  ${skin.short}`,
+        value: owned ? (wearing === id ? 'ON' : 'GRANTED') : 'GRANT',
+        local: true,
+      };
+    });
+    rows.push({ id: 'skin:none', label: 'STANDARD KIT', value: wearing ? 'WEAR' : 'ON', local: true });
+    rows.push({ id: 'skins:all', label: 'GRANT EVERY OUTFIT', value: 'ALL', local: true });
+    return rows;
+  }
+
+  /** Grant one coat's badge (and wear it), from the debug panel. */
+  _debugSkin(id) {
+    if (id === 'skins:all') {
+      for (const key of SKIN_ORDER) this.achievements.unlock(SKINS[key].ach);
+      this.bannerShow('EVERY OUTFIT', 'all ten badges granted', { dur: 1.8, colour: '#f0d98a' });
+      return;
+    }
+    if (id === 'skin:none') {
+      this.equipSkin(null);
+      this.bannerShow('STANDARD KIT', 'nothing on', { dur: 1.4, colour: '#8fa8bd' });
+      return;
+    }
+    const key = id.slice(5);
+    const skin = SKINS[key];
+    if (!skin) return;
+    const before = skinOwned(key, this.achievements);
+    // the badge, not just the coat: `unlock` is the same call the game makes
+    // when you actually do the thing, so the wall and the wardrobe agree
+    this.achievements.unlock(skin.ach);
+    this.equipSkin(key);
+    this.bannerShow(before ? 'OUTFIT' : 'BADGE GRANTED',
+      `${skin.name} \u00b7 ${skin.buff}`, { dur: 1.8, colour: skin.colour });
+  }
+
   debugRows() {
     if (this.debugTab === 1) return this._zooRows();
-    if (this.debugTab === 2) return [
-      { id: 'music:stop', label: 'STOP / ADAPTIVE SCORE', value: 'STOP' },
-      { id: 'music:mode', label: 'AFTER THE TRACK', value: (audio.musicMode ?? 'repeat').toUpperCase() },
-      { id: 'music:volume', label: 'MUSIC VOLUME (cycle)', value: `${settings.get('music')}%` },
-      { id: 'music:victory', label: 'EVACUATION FANFARE', value: '0:18' },
-      { id: 'music:forward', label: 'SEEK FORWARD 60 SECONDS', value: '+1:00' },
-      { id: 'music:back', label: 'SEEK BACK 60 SECONDS', value: '-1:00' },
+    if (this.debugTab === 2) return this._skinRows();
+    if (this.debugTab === DEBUG_MUSIC_TAB) return [
+      // every one of these is local: a sound audition belongs to the machine
+      // whose speakers it comes out of, never to the host
+      { id: 'music:stop', label: 'STOP / ADAPTIVE SCORE', value: 'STOP', local: true },
+      { id: 'music:mode', label: 'AFTER THE TRACK', value: (audio.musicMode ?? 'repeat').toUpperCase(), local: true },
+      { id: 'music:volume', label: 'MUSIC VOLUME (cycle)', value: `${settings.get('music')}%`, local: true },
+      { id: 'music:victory', label: 'EVACUATION FANFARE', value: '0:18', local: true },
+      { id: 'music:forward', label: 'SEEK FORWARD 60 SECONDS', value: '+1:00', local: true },
+      { id: 'music:back', label: 'SEEK BACK 60 SECONDS', value: '-1:00', local: true },
       ...SOUNDTRACKS.map((t, i) => ({ id: `music:${t.id}`, label: `${String(i + 1).padStart(2, '0')} ${t.title}`,
-        value: audio.soundtrack?.current?.id === t.id ? `${musicTime(audio.soundtrack.elapsed)} / ${musicTime(t.duration)}` : musicTime(t.duration) })),
+        value: audio.soundtrack?.current?.id === t.id ? `${musicTime(audio.soundtrack.elapsed)} / ${musicTime(t.duration)}` : musicTime(t.duration),
+        local: true })),
     ];
     const on = (b) => (b ? 'ON' : 'OFF');
     const d = this.debug, p = this.player;
@@ -3008,8 +3694,8 @@ export class Game {
     if (id.startsWith('music:')) {
       if (remote) return; // auditions are always local, never a remote cheat
       const choice = id.slice(6);
-      if (choice === 'stop') audio.stopSoundtrack();
-      else if (choice === 'victory') { audio.resume(); audio.victory(); }
+      if (choice === 'stop') { this._musicStoppedByUser = true; audio.stopSoundtrack(); }
+      else if (choice === 'victory') { this._musicStoppedByUser = true; audio.resume(); audio.victory(); }
       else if (choice === 'forward' || choice === 'back') {
         audio.soundtrack?.seek(audio.soundtrack.elapsed + (choice === 'forward' ? 60 : -60));
       } else if (choice === 'mode') {
@@ -3019,11 +3705,14 @@ export class Game {
       } else if (choice === 'volume') {
         settings.set('music', (Math.floor(settings.get('music') / 25) * 25 + 25) % 125);
         audio.setVolumes({ music: settings.get('music') });
-      } else audio.playSoundtrack(choice);
+      } else { this._musicStoppedByUser = false; audio.playSoundtrack(choice); }
       return;
     }
     const p = remote ?? this.player;
     if (id.startsWith('spawn:')) { this._debugSpawn(id.slice(6)); return; }
+    // the wardrobe is local storage, not world state: it runs wherever the
+    // player is standing, host or guest
+    if (id.startsWith('skin:') || id === 'skins:all') { this._debugSkin(id); return; }
     switch (id) {
       case 'where':
         this._dbgWhere = this._dbgWhere === 'front' ? 'window' : 'front';
@@ -3120,8 +3809,64 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- update
+  /**
+   * The way out of a full-screen panel for a device with no ESC. It is one
+   * press on the chip in the corner, and it is read before every other
+   * handler: the press that closes the panel must not also land on whatever
+   * row was underneath it.
+   */
+  _backChipPressed() {
+    const m = this.input?.mouse;
+    if (!m || !m.pressed) return false;
+    return backChipAt(this.vw, this.vh, m.x, m.y);
+  }
+
+  _closePanel() {
+    if (this.debugOpen) {
+      this.debugOpen = false;
+      this.paused = this._dbgWasPaused || false;
+    } else if (this.settingsOpen) {
+      this.settingsOpen = false;
+      this._resetArmT = 0;
+      this.paused = this._wasPaused || false;
+    } else if (!this.started && (this.scene === 'achievements' || this.scene === 'stats'
+      || this.scene === 'outfits')) {
+      const back = this.scene;
+      this.scene = 'menu';
+      this.menuIndex = this._menuRowIndex(back);
+    }
+    audio.dryFire();
+  }
+
+  /** Run the pause row the player picked. Indices follow PAUSE_ROWS. */
+  _pauseChoose(i) {
+    audio.dryFire();
+    if (i === 0) this.paused = false;
+    else if (i === 1) { this.settingsOpen = true; this._wasPaused = true; }
+    else if (i === 2) { this.controlsOpen = true; this._wasPaused = true; }
+    else if (i === 3) this._restartRun();
+    else if (i === 4) { this.debugOpen = true; this._dbgWasPaused = true; }
+    else if (i === 5) this._quitToMenu();
+  }
+
   update(dt) {
     this.time += dt;
+    this._phase = 'update';
+    this._ensureBackgroundMusic();
+    // one pointer-moved answer per frame, for every list to share (see
+    // `_pointerMoved`)
+    const pm = this.input?.mouse;
+    this._ptrMoved = !!pm && (pm.x !== (this._pmx ?? -9999) || pm.y !== (this._pmy ?? -9999));
+    if (pm) { this._pmx = pm.x; this._pmy = pm.y; }
+
+    // the corner chip, before anything else can eat the press
+    if ((this.settingsOpen || this.debugOpen
+      || (!this.started && (this.scene === 'achievements' || this.scene === 'stats' || this.scene === 'outfits')))
+      && this._backChipPressed()) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      this._closePanel();
+    }
 
     // ---- settings overlay (works anywhere, pauses the game behind it) -----
     // `wasPressed` stays true for the whole step, so a single O used to open
@@ -3132,7 +3877,7 @@ export class Game {
     if (oPressed) {
       const was = this.settingsOpen;
       this.settingsOpen = !this.settingsOpen;
-      if (this.settingsOpen) this.settingsView = null;
+      if (this.settingsOpen) { this.settingsView = null; this._resetArmT = 0; }
       openedByO = !was;
       if (this.settingsOpen) { this._wasPaused = this.paused; this.paused = true; }
       else this.paused = this._wasPaused || false;
@@ -3149,46 +3894,81 @@ export class Game {
 
     if (this.settingsOpen) {
       const S = settings;
+      // ---- the sound line, in the footer -----------------------------------
+      // It says what the engine is doing and it is a button: the answer to
+      // "there is no sound" is a shot the player can hear, made from inside a
+      // real press (which is the only moment a browser lets audio start).
+      const sm = this.input.mouse;
+      if (sm.pressed && soundSlotAt(this.vw, this.vh, sm.x, sm.y)) {
+        sm.pressed = false; sm.down = false;
+        this._soundTest();
+        this.hud.update(dt, this);
+        return;
+      }
+      // the second press of RESTORE DEFAULTS has a few seconds to arrive
+      this._resetArmT = Math.max(0, (this._resetArmT ?? 0) - dt);
       // the mouse and the wheel are first-class citizens here too: hover
       // picks a row, a click flips or drags it, the wheel scrolls the window
       // (the selection keeps its place while the list moves under it)
       const m = this.input.mouse;
       const wheeled = !!this.input.wheel;
+      const SL = settingsLayout(this, this.vw, this.vh);
       if (wheeled) {
-        const L = settingsLayout(this, VW, VH);
-        if (L.over > 0) {
+        if (SL.over > 0) {
           // a list taller than the panel: the wheel scrolls the window and
           // the selection keeps its place
-          const cur = this.settingsView ?? L.top;
-          this.settingsView = clamp(cur + this.input.wheel, 0, L.over);
+          const cur = this.settingsView ?? SL.top;
+          this.settingsView = clamp(cur + this.input.wheel, 0, SL.over);
         } else {
           // everything fits: the wheel walks the selection, as it always did
           this.settingsIndex = clamp(this.settingsIndex + this.input.wheel, 0, SETTING_DEFS.length - 1);
         }
         audio.dryFire();
       }
+      // A finger has no wheel. Dragging the list scrolls it -- and a press
+      // that turned into a drag must not also land on a row, or scrolling a
+      // toggle row flips it.
+      if (m?.down && SL.over > 0) {
+        if (this._setDragY === undefined) { this._setDragY = m.y; this._setDragged = false; }
+        const dy = m.y - this._setDragY;
+        if (dy !== 0) {
+          // the list moves exactly as far as the finger did -- one design row
+          // of pitch, whatever the picture's scale -- so a slow drag creeps
+          // and a flick lands where the hand left it, not three rows past it
+          const pitch = Math.max(1, SL.PITCH);
+          this.settingsView = clamp((this.settingsView ?? SL.top) - dy / pitch, 0, SL.over);
+          this._setDragY = m.y;
+          if (Math.abs(dy) > 4) this._setDragged = true;
+        }
+      } else if (!m?.down) {
+        this._setDragY = undefined;
+      }
       // hover only picks a row while the pointer is actually moving: a hand
       // resting on the panel must not pin the keyboard's selection
       const moved = m.x !== (this._smx ?? -999) || m.y !== (this._smy ?? -999);
       this._smx = m.x; this._smy = m.y;
-      const hover = settingsRowAt(this, VW, VH, m.x, m.y);
+      const hover = settingsRowAt(this, this.vw, this.vh, m.x, m.y);
       if (!wheeled && moved && hover >= 0 && hover !== this.settingsIndex) {
         this.settingsIndex = hover;
         this._viewFollow();
         audio.dryFire();
       }
-      if (m.pressed && hover >= 0) {
+      if (m.pressed && hover >= 0 && !this._setDragged) {
         const d = SETTING_DEFS[hover];
         if (d.type === 'range') {
-          const { bx, bw } = settingsSliderRect(this, VW, VH);
+          const { bx, bw } = settingsSliderRect(this, this.vw, this.vh);
           if (m.x >= bx - 8 && m.x <= bx + bw + 8) {
             const k = clamp((m.x - bx) / bw, 0, 1);
             const raw = d.min + k * (d.max - d.min);
             S.set(d.id, Math.round(raw / d.step) * d.step);
           } else S.nudge(d.id, 1);
-        } else if (d.id === 'reset') S.reset();
+        } else if (d.id === 'reset') this._settingsReset();
         else S.activate(d.id);
       }
+      // The finger came off: the press has been used, so the *next* one is a
+      // tap again. (Clearing this on `m.pressed` cleared the flag before the
+      // line above could read it, which made every tap after a drag dead.)
+      if (!m.down) this._setDragged = false;
       if (this.input.wasPressed('ArrowUp', 'KeyW')) {
         this.settingsIndex = (this.settingsIndex - 1 + SETTING_DEFS.length) % SETTING_DEFS.length;
         this._viewFollow();
@@ -3202,11 +3982,12 @@ export class Game {
       if (this.input.wasPressed('ArrowLeft', 'KeyA')) S.nudge(SETTING_DEFS[this.settingsIndex].id, -1);
       if (this.input.wasPressed('ArrowRight', 'KeyD')) S.nudge(SETTING_DEFS[this.settingsIndex].id, 1);
       if (this.input.wasPressed('Enter', 'Space')) {
-        if (SETTING_DEFS[this.settingsIndex].id === 'reset') S.reset();
+        if (SETTING_DEFS[this.settingsIndex].id === 'reset') this._settingsReset();
         else S.activate(SETTING_DEFS[this.settingsIndex].id);
       }
       if (this.input.wasPressed('Escape', 'KeyP') || (oPressed && !openedByO)) {
         this.settingsOpen = false;
+        this._resetArmT = 0;
         this.paused = this._wasPaused || false;
       }
       this.hud.update(dt, this);
@@ -3225,12 +4006,13 @@ export class Game {
       else this.paused = this._dbgWasPaused || false;
     }
     // and on a phone, where there is no backquote key at all: five taps on
-    // the round counter. Only while paused -- during a round, the corner with
-    // the round in it is exactly where you aim and click at whatever is
-    // coming through the window, and five of those must not open a menu.
+    // the word PAUSED. It used to be a corner of the picture -- which is now
+    // the pause chip, and which you are also shooting at during a round. The
+    // PAUSE MENU also carries a DEBUG PANEL row, so this is the shortcut
+    // rather than the only door.
     if (!this.debugOpen && this.paused && this.started && !this.gameOver
       && this.input.mouse.pressed
-      && this.input.mouse.x < 132 && this.input.mouse.y < 46) {
+      && pauseTitleAt(this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
       this._dbgTaps = (this.time - this._dbgTapT < 0.7) ? this._dbgTaps + 1 : 1;
       this._dbgTapT = this.time;
       if (this._dbgTaps >= 5) {
@@ -3260,7 +4042,14 @@ export class Game {
         this.debugTab = (this.debugTab + 1) % tabs;
         this.debugIndex = 0; audio.dryFire();
       }
-      const tabHit = debugTabHit(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
+      // a mouse on the list expects the wheel to walk it, exactly as it walks
+      // the settings page
+      const dwheel = this.input.wheel ?? 0;
+      if (dwheel) {
+        this.debugIndex = clamp(this.debugIndex + Math.sign(dwheel), 0, n - 1);
+        audio.dryFire();
+      }
+      const tabHit = debugTabHit(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
       if (this.input.mouse.pressed && tabHit >= 0 && tabHit !== this.debugTab) {
         this.debugTab = tabHit;
         this.debugIndex = 0;
@@ -3268,13 +4057,25 @@ export class Game {
       }
       const hit = (this.input.mouse.pressed && tabHit >= 0)
         ? -1
-        : debugHitTest(this, VW, VH, this.input.mouse.x, this.input.mouse.y);
-      if (hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
+        : debugHitTest(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y);
+      // Hovering *picks* only while the pointer is actually moving -- the same
+      // rule the settings page has always used. A hand resting on the list
+      // used to re-pick its row on every frame, so an arrow key moved the
+      // selection and the mouse put it back before the frame ended: the panel
+      // answered the scroll wheel and nothing else. A pointer that has not
+      // moved is not an instruction.
+      const m = this.input.mouse;
+      const moved = m.x !== (this._dbgMx ?? -9999) || m.y !== (this._dbgMy ?? -9999);
+      this._dbgMx = m.x; this._dbgMy = m.y;
+      // a press always lands on the row under the pointer, whether or not the
+      // pointer moved first (a thumb arrives without a hover to announce it)
+      if (m.pressed && hit >= 0) this.debugIndex = hit;
+      else if (moved && hit >= 0 && hit !== this.debugIndex) { this.debugIndex = hit; audio.dryFire(); }
       if (this.input.wasPressed('Enter', 'Space') || (this.input.mouse.pressed && hit >= 0)) {
         rows = this.debugRows();
         const row = rows[this.debugIndex] ?? rows[0];
         if (row) {
-          if (this.net?.playing && !this.net.isHost && !row.id.startsWith('music:')) {
+          if (this.net?.playing && !this.net.isHost && !row.local) {
             // the guest's panel is a remote control: the world lives on the
             // host, so the row runs there (GOD arms your own body only)
             this.net.send(this.net.hostId, { m: 'dbg', id: row.id });
@@ -3290,22 +4091,17 @@ export class Game {
       return;
     }
 
-    if (this.roundReport && !this.roundActive && !this.gameOver && !this.paused) {
-      const r = roundReportPanel(VW, VH), m = this.input.mouse;
-      const close = this._reportHidden !== this.roundReport.round && m.pressed
-        && m.x >= r.x + r.cw - 32 && m.x <= r.x + r.cw - 3 && m.y >= r.y + 4 && m.y <= r.y + 32;
-      if (this.input.wasPressed('Tab') || close) {
-        this._reportHidden = this._reportHidden === this.roundReport.round ? null : this.roundReport.round;
-        if (close) { m.pressed = false; m.down = false; }
-      }
-    }
-
-    // ---- a guest runs no simulation at all: it draws what the host says ---
-    if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
-
     if (!this.started) { this._menuUpdate(dt); return; }
 
-    if (this.input.wasPressed('KeyM')) audio.setMuted(!audio.muted);
+    // The skill cards are dealt between waves. Their clocks run first, then
+    // the hand that is holding the cards gets the whole input for itself.
+    this._skillDraftTick(dt);
+
+    if (this.input.wasPressed('KeyM')) {
+      audio.setMuted(!audio.muted);
+      this.bannerShow(audio.muted ? 'SOUND OFF' : 'SOUND ON', audio.muted ? 'M again to unmute' : null,
+        { dur: 1.6, colour: audio.muted ? '#c4463a' : '#7fbf5f', local: true });
+    }
 
     if (this.gameOver) {
       this.overT += dt;
@@ -3314,14 +4110,38 @@ export class Game {
       if (this.net?.active && this.net.isHost) this.net.step(dt);
       this.particles.update(dt, this.map);
       this.popups.update(dt);
-      if (this.overT > 1.1 && (this.input.wasPressed('KeyR') || this.input.mouse.pressed)) {
-        if (this.net?.playing && !this.net.isHost) this.net.close();
-        this.reset();
-        this.started = true;
-        this.startRound(1);
+      if (this.overT > 1.1) {
+        // the one screen with no way back to the front door used to be this
+        // one: a player who wanted to stop had to start a run first. A phone
+        // gets the chip in the corner, because a thumb anywhere else means
+        // "again" and there was nothing that meant "enough".
+        if (this.input.wasPressed('Escape', 'Backspace')) { this._quitToMenu(); return; }
+        const m = this.input.mouse;
+        if (m.pressed && backChipAt(this.vw, this.vh, m.x, m.y)) {
+          m.pressed = false; m.down = false;
+          this._quitToMenu();
+          return;
+        }
+        if (this.input.wasPressed('KeyR') || this.input.mouse.pressed) {
+          if (this.net?.playing && !this.net.isHost) this.net.close();
+          this._restartRun();
+        }
       }
       return;
     }
+
+    if (this.player?.skillDraft && !this.paused) {
+      this._skillDraftUpdate();
+      this.input.menuLock = true;
+      // a guest's answer comes back as a snapshot; keep the wire turning even
+      // while the cards cover the middle of the screen
+      if (this.net?.active) this.net.step(dt);
+      this.hud.update(dt, this);
+      return;
+    }
+
+    // ---- a guest runs no simulation at all: it draws what the host says ---
+    if (this.net?.role === 'guest' && this.net.active) { this._guestUpdate(dt); return; }
 
     // Escape belongs to whatever full-screen list is up: at the bench it steps
     // away from the bench, and only then -- on the next press -- does it pause.
@@ -3330,22 +4150,69 @@ export class Game {
     if (this.input.wasPressed('KeyP')) this.paused = !this.paused;
     else if (this.input.wasPressed('Escape') && !this.craftOpen) this.paused = !this.paused;
     if (this.paused) {
-      // the pause screen is a menu you can click (or thumb) now: the rows and
-      // their geometry live in hud.js, the shortcuts still work as before
+      // The pause screen is a menu you can click, thumb *and* walk with the
+      // arrows: it used to answer only to the mouse and to five shortcut
+      // keys, so a phone had no way to reach the debug panel from a round and
+      // a keyboard could not move the highlight at all.
       const m = this.input.mouse;
-      const hit = pauseHitTest(this, VW, VH, m.x, m.y);
-      if (m.pressed && hit >= 0) {
+      const n = PAUSE_ROWS.length;
+      const hit = m.pressed ? pauseHitTest(this, this.vw, this.vh, m.x, m.y) : -1;
+      const up = this.input.wasPressed('ArrowUp', 'KeyW', 'Numpad8');
+      const down = this.input.wasPressed('ArrowDown', 'KeyS', 'Numpad2');
+      if (hit >= 0) this.pauseIndex = hit;
+      else if (up || down) {
+        this.pauseIndex = ((this.pauseIndex ?? 0) + (down ? 1 : n - 1)) % n;
         audio.dryFire();
-        if (hit === 0) this.paused = false;
-        else if (hit === 1) { this.settingsOpen = true; this._wasPaused = true; }
-        else if (hit === 2) { this.controlsOpen = true; this._wasPaused = true; }
-        else if (hit === 3) { this.reset(); this.started = true; this.startRound(1); }
-        else if (hit === 4) this._quitToMenu();
       }
-      if (this.input.wasPressed('KeyR')) { this.reset(); this.started = true; this.startRound(1); }
+      let chosen = -1;
+      if (hit >= 0) chosen = hit;
+      else if (this.input.wasPressed('Enter', 'Space', 'NumpadEnter')) chosen = this.pauseIndex ?? 0;
+      if (chosen >= 0) this._pauseChoose(chosen);
+      if (this.input.wasPressed('KeyR')) this._restartRun();
       // the controls are worth looking up in the middle of a round too, not
       // only from the front page
       if (this.input.wasPressed('KeyC')) { this.controlsOpen = true; this._wasPaused = true; }
+      return;
+    }
+
+    // ---- the sound chip, top right ---------------------------------------
+    // It is a button when it is telling the player something they can fix:
+    // a frame that blocks autoplay gets one more honest attempt from inside
+    // this press, and a way out to a tab if the frame will not have it.
+    if (this.input.mouse.pressed
+      && this.hud.soundChipAt(this, this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      if (audio.muted) {
+        // the chip is also the mute warning: pressing it is the way back
+        audio.setMuted(false);
+        this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
+        return;
+      }
+      if (settings.get('master') === 0 || settings.get('sfx') === 0) {
+        // a fader at zero is silent, and a silent game is a silent game
+        if (settings.get('master') === 0) settings.set('master', 85);
+        if (settings.get('sfx') === 0) settings.set('sfx', 100);
+        this.applySettings();
+        this.bannerShow('SOUND RESTORED', 'volumes back to normal', { dur: 2, colour: '#7fbf5f', local: true });
+        return;
+      }
+      const r = audio.manualUnlock();
+      if (r === 'running') this.bannerShow('SOUND ON', null, { dur: 1.4, colour: '#7fbf5f', local: true });
+      else if (r === 'blocked') this.bannerShow('SOUND IS BLOCKED', 'the browser will not start audio here', { dur: 2.4, colour: '#c4463a', local: true });
+      return;
+    }
+
+    // ---- the pause chip, top left ----------------------------------------
+    // Read here, before the body updates: the press that stops the world must
+    // not also put a bullet through the window. (The touch layer has its own
+    // button in the same corner, so this is for the mouse and the pad.)
+    if (pauseChipShown(this) && this.input.mouse.pressed
+      && pauseChipAt(this.vw, this.vh, this.input.mouse.x, this.input.mouse.y)) {
+      this.input.mouse.pressed = false;
+      this.input.mouse.down = false;
+      this.paused = true;
+      audio.dryFire();
       return;
     }
 
@@ -3369,6 +4236,10 @@ export class Game {
     if (this.input) this.input.menuLock = this.craftOpen;
     this._fxOn(this.player);
     this.player.update(dt, this, this.input);
+    // the floor is a thing the weavers own: a knot of silk under the boots is
+    // a little over half speed and no dash, and it is checked here because
+    // the player has no idea threads exist
+    this.threadTick(dt);
     // footprints through the openings: whichever window or hatch a living body
     // is standing in goes on the trail the horde reads when it paths to you
     for (const pl of this.players ?? []) {
@@ -3384,7 +4255,8 @@ export class Game {
         if (!sl.owned || !w) continue;
         sl.mag = w.mag; sl.reserve = w.maxReserve;
       }
-      pl.grenades = Math.max(pl.grenades ?? 0, 4);
+      if (pl.giveThrowable) pl.giveThrowable(pl.throwableKind?.() ?? 'frag', 4);
+      else pl.grenades = Math.max(pl.grenades ?? 0, 4);
     }
     this.revealAround(this.player.pos.x, this.player.pos.y, 11);
 
@@ -3411,22 +4283,11 @@ export class Game {
       if (this.input.wasPressed('BracketRight')) this.player.cycle(1);
       if (this.input.wheel) this.player.cycle(this.input.wheel > 0 ? 1 : -1);
 
-      // grenades
-      if (this.input.wasPressed('KeyG') && this.player.grenades > 0 && !this.player.dead) {
-        this.player.grenades--;
-        this.throwAtCursor(this.player, 'frag');
-        this.shake(2, 0.1);
-      }
-      // molotovs and gas: their own pockets, their own keys
-      if (this.input.wasPressed('KeyX') && this.player.molotovs > 0 && !this.player.dead) {
-        this.player.molotovs--;
-        this.throwAtCursor(this.player, 'molotov');
-        this.shake(2, 0.1);
-      }
-      if (this.input.wasPressed('KeyB') && this.player.gasbombs > 0 && !this.player.dead) {
-        this.player.gasbombs--;
-        this.throwAtCursor(this.player, 'gas');
-        this.shake(2, 0.1);
+      // ONE throwing hand: G throws whatever was bought last -- frag, molotov
+      // or gas. X and B stay as quiet aliases for the same slot, so a player
+      // with the old muscle memory does not throw nothing.
+      if (this.input.wasPressed('KeyG', 'KeyX', 'KeyB') && !this.player.dead) {
+        this.throwFor(this.player);
       }
       // medkit
       if (this.input.wasPressed('KeyH')) {
@@ -3475,10 +4336,12 @@ export class Game {
         }
       }
       if (this.zombiesKilled >= this.zombiesTotal && aliveCount === 0) this.endRound();
-    } else {
+    } else if (!this._draftOpen()) {
       this.intermission -= dt;
       if (this.intermission <= 0) this.startRound(this.round + 1);
     }
+    // else: somebody is still looking at three cards. The next wave can wait;
+    // the 20-second clock in _skillDraftTick will answer for them.
 
     // ---- item B: three of them get tired of queueing ----------------------
     this._updateFusion(dt);
@@ -3787,6 +4650,7 @@ export class Game {
     if (!anyAlive && !this.gameOver) {
       this.gameOver = true;
       this.overT = 0;
+      this._bankRun();       // the last body is down: the diary takes the night
       audio.roundSting(false);
       const stamp = Date.now();
       this.board = submitScore({
@@ -3802,10 +4666,10 @@ export class Game {
   /** Camera, lamps, HUD and banners: a guest needs all of it too. */
   _lateUpdate(dt) {
     // ---- camera ------------------------------------------------------------
-    const lookX = ((this.input?.mouse?.x ?? VW / 2) - VW / 2) * 0.22;
-    const lookY = ((this.input?.mouse?.y ?? VH / 2) - VH / 2) * 0.22;
-    const tx = clamp(this.player.pos.x + lookX - VW / 2, 0, this.map.w * T - VW);
-    const ty = clamp(this.player.pos.y + lookY - VH / 2, 0, this.map.h * T - VH);
+    const lookX = ((this.input?.mouse?.x ?? this.vw / 2) - this.vw / 2) * 0.22;
+    const lookY = ((this.input?.mouse?.y ?? this.vh / 2) - this.vh / 2) * 0.22;
+    const tx = clamp(this.player.pos.x + lookX - this.vw / 2, 0, this.map.w * T - this.vw);
+    const ty = clamp(this.player.pos.y + lookY - this.vh / 2, 0, this.map.h * T - this.vh);
     this.cam.x = damp(this.cam.x, tx, 7, dt);
     this.cam.y = damp(this.cam.y, ty, 7, dt);
 
@@ -3838,6 +4702,39 @@ export class Game {
     if (this.banner) {
       this.banner.t -= dt;
       if (this.banner.t <= 0) this.banner = null;
+    }
+    // whatever was waiting behind it has the screen now
+    if (!this.banner && this.bannerQueue.length) {
+      const next = this.bannerQueue.shift();
+      this.banner = next;
+      if (next.net) this.net?.emit('banner', { title: next.title, sub: next.sub, colour: next.colour, dur: next.max });
+    }
+  }
+
+  /**
+   * The sound line's test: put the engine back in order as far as it can be,
+   * then make a noise. Whatever is still wrong after that, the line says.
+   */
+  _soundTest() {
+    if (settings.get('master') === 0) settings.set('master', 85);
+    if (settings.get('sfx') === 0) settings.set('sfx', 100);
+    if (audio.muted) audio.setMuted(false);
+    this.applySettings();
+    const state = audio.gesture();
+    if (state) {
+      // three sounds, one after another, so a shot that is drowned by the
+      // wind is still recognisable as sound
+      audio.shot('m1911');
+      setTimeout(() => audio.reload(0), 260);
+      setTimeout(() => audio.buy(), 620);
+      this.bannerShow('SOUND TEST', 'a shot, a reload, a purchase', { dur: 2, colour: '#7fbf5f', local: true });
+    } else {
+      audio.manualUnlock();
+      let framed = false;
+      try { framed = !!window.top && window.top !== window.self; } catch { framed = true; }
+      this.bannerShow('SOUND IS BLOCKED', framed
+        ? 'the frame will not allow audio — opening a tab'
+        : 'the browser will not start audio here', { dur: 2.6, colour: '#c4463a', local: true });
     }
   }
 
@@ -3919,9 +4816,50 @@ export class Game {
    * Everything downstream reads through this.map, so one fresh GameMap is
    * the whole trick; the box and the player just need to be told.
    */
+  /**
+   * Build the test range before anybody asks for it.
+   *
+   * The first `new GameMap('range')` of a page paints 3 800 tiles of floor by
+   * hand and costs about 120 ms; every later one is free, and the campaign map
+   * has always been built at boot. That made the first press of TEST RANGE
+   * the one slow frame in the game. The map costs nothing to keep: it is a
+   * map, not a run, and `_loadMap` takes it and lets go of it.
+   */
+  _prewarmRange() {
+    if (this._rangeCache || this.rangeMode) return false;
+    const phase = this._phase;
+    this._phase = 'preparing the test range';
+    try { this._rangeCache = new GameMap('range'); } catch { this._rangeCache = null; }
+    finally { this._phase = phase; }
+    return !!this._rangeCache;
+  }
+
   _loadMap(range) {
+    const phase = this._phase;
+    this._phase = range ? 'painting the test range' : 'repainting the building';
+    try { this._loadMapInner(range); } finally { this._phase = phase; }
+  }
+
+  /** Note a frame that took so long that the player saw it. */
+  noteSlowFrame(ms) {
+    this.perfLog ??= [];
+    this.perfLog.push({ ms: Math.round(ms), phase: this._phase ?? '?', at: Math.round(this.time) });
+    if (this.perfLog.length > 12) this.perfLog.shift();
+    const now = Date.now();
+    if (now - (this._slowShownAt ?? 0) < 6000) return;
+    this._slowShownAt = now;
+    this.bannerShow(`SLOW FRAME ${Math.round(ms)} ms`, `while ${this._phase ?? 'working'}`, {
+      dur: 2.6, colour: '#e0a040', local: true,
+    });
+  }
+
+  _loadMapInner(range) {
     this.rangeMode = range;
-    this.map = new GameMap(range ? 'range' : 'campaign');
+    // a prewarmed range is a fresh, never-played map: hand it over and drop it
+    this.map = range
+      ? (this._rangeCache ?? new GameMap('range'))
+      : new GameMap('campaign');
+    this._rangeCache = null;
 
     // map-bound systems are rebuilt exactly the way the constructor builds
     // them, so switching worlds never drags state across with it
@@ -3957,6 +4895,11 @@ export class Game {
     this.graves = [];
     this.zThrows = [];
     this.bolts = [];
+    this.hives = [];
+    this.threads = [];
+    this.arrows = [];
+    this.arrowSticks = [];
+    this.boss = null;
     this.hordeThin = false;
     this.setWeatherKind(null);
     this.wx.wet = 0;
@@ -3987,10 +4930,15 @@ export class Game {
       this.powerOnAt = -99;
     }
 
-    this.cam.x = clamp(fresh.pos.x - VW / 2, 0, this.map.w * T - VW);
-    this.cam.y = clamp(fresh.pos.y - VH / 2, 0, this.map.h * T - VH);
+    this.cam.x = clamp(fresh.pos.x - this.vw / 2, 0, this.map.w * T - this.vw);
+    this.cam.y = clamp(fresh.pos.y - this.vh / 2, 0, this.map.h * T - this.vh);
     this.rebuildFlow();
     if (this.hud) this.hud._miniDirty = true;
+    // the world just changed shape (the range is not the campaign), and every
+    // system that was built around the old one -- the camera clamp, the lights,
+    // the view -- has to be told
+    this.onMapChange?.(range);
+    this._clampCam();
   }
 
   /** The polygon is a sandbox: power on, pockets full, no dying, no scores. */
@@ -4005,27 +4953,144 @@ export class Game {
       { dur: 3.2, colour: '#9fd0f0' });
   }
 
+  /** Start a quiet existing score on the title screen and a separate one for each run. */
+  _ensureBackgroundMusic() {
+    if (!audio.ready || this._musicStoppedByUser || audio.soundtrack?.current
+      || audio.t < (audio._victoryUntil ?? 0)) return;
+    if (this.started) {
+      if (this.gameOver || this.evacuated) return;
+      const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+      const index = Math.max(0, this.lifetime?.runs ?? 0) % runTracks.length;
+      audio.playSoundtrack(runTracks[index]?.id ?? 'ash');
+    } else {
+      const menuTracks = ['home', 'lantern', 'roof', 'rain', 'dawn'];
+      const index = Math.max(0, this.lifetime?.runs ?? 0) % menuTracks.length;
+      audio.playSoundtrack(menuTracks[index]);
+    }
+  }
+
   begin() {
+    this._musicStoppedByUser = false;
     this.started = true;
     this.scene = null;
+    // whichever door led here -- the front page, the test range, a hosted
+    // room -- a run starts with an empty ledger and an unbanked entry
+    this.runMetrics = newRoundMetrics();
+    this._banked = false;
     this.applySettings();
     audio.init();
     audio.resume();
+    const runTracks = SOUNDTRACKS.filter((t) => !['home', 'dawn'].includes(t.id));
+    const score = runTracks[Math.max(0, this.lifetime?.runs ?? 0) % runTracks.length];
+    if (score) audio.playSoundtrack(score.id);
     this.startRound(1);
+    // After the round banner, not before it: startRound announces ROUND 1 and
+    // would overwrite a warning shown a line earlier. If the browser still has
+    // not let the audio clock run, the player is told why the game is mute
+    // instead of believing it lost its voice for good.
+    if (!audio.running) {
+      this.bannerShow('SOUND IS BLOCKED', 'tap or click anywhere to let the game speak',
+        { dur: 4.5, colour: '#e0a040', local: true });
+    }
+  }
+
+  /**
+   * RESTORE DEFAULTS is the one row in this panel that throws work away, and
+   * on a phone a thumb can land on it while scrolling the list. Ask twice:
+   * the first press arms the row for a few seconds and the second one, on
+   * the same row, is the one that resets. Anything else -- moving away,
+   * closing the panel -- disarms it.
+   */
+  _settingsReset() {
+    if ((this._resetArmT ?? 0) > 0) {
+      this._resetArmT = 0;
+      settings.reset();
+      return true;
+    }
+    this._resetArmT = 4;
+    audio.deny();
+    return false;
+  }
+
+  /**
+   * The player looked away from a solo run. The window keeps drawing while
+   * another app has the focus, so without this a coffee break is a death
+   * sentence; a co-op world belongs to the host, though, and freezing it
+   * would stop everyone else, so a shared game is deliberately left alone.
+   * Menus, the bench and the death screen are already not live rounds.
+   */
+  pauseForFocusLoss() {
+    if (!this.started || this.gameOver || this.paused) return false;
+    if (this.net?.playing) return false;
+    if (this.player?.skillDraft) return false;
+    this.paused = true;
+    return true;
   }
 
   // ------------------------------------------------------------------ menus
+  /**
+   * The front-door row with this id. Closing a page should put the cursor
+   * back on the row that opened it -- and a new row must not silently move
+   * it, which is what a hard-coded number does.
+   */
+  _menuRowIndex(id) {
+    const i = menuRows('menu', this).findIndex((r) => r.id === id);
+    return i >= 0 ? i : 0;
+  }
+
+  /**
+   * Wear an outfit -- or `null` to put the standard kit back on.
+   *
+   * Refused for a coat whose badge is not earned: the wardrobe is drawn from
+   * the achievements, and this is the one function that has to agree with the
+   * drawing, whoever calls it (the menu, the debug panel, a test).
+   */
+  equipSkin(id) {
+    if (id && !skinOwned(id, this.achievements)) return false;
+    const saved = saveSkin(id);
+    const changed = this.player?.setSkin(saved) ?? false;
+    // the coat has to reach the host as well, or a guest changes in their own
+    // mirror and nobody else ever sees it
+    this.net?.sendSkin?.(saved);
+    return changed || (this.player?.skin ?? null) === (saved ?? null);
+  }
+
   /**
    * The front door. Solo behaves exactly as it always did; multiplayer opens
    * a room on the relay and then simply starts playing, because somebody
    * walking in halfway through round nine is the whole point.
    */
+  /**
+   * Has the pointer actually moved since the last frame?
+   *
+   * Hover-to-select is a mouse idea -- it means "the thing I am aiming at". A
+   * mouse that is merely *resting* is not aiming at anything, and letting it
+   * re-assert its row every frame makes the keyboard look broken: the arrow
+   * moves the selection, and the pointer puts it back before the frame ends.
+   * That is exactly what "the arrows do not work in some menus" was, and it
+   * is the same defect the debug panel had. Every list asks this before it
+   * lets a resting hover pick a row; a press always lands where it points.
+   */
+  _pointerMoved() { return !!this._ptrMoved; }
+
   _menuUpdate(dt) {
     const inp = this.input;
     if (!inp) return;
+    // the sound chip is a button before it is anything else
+    if (inp.mouse.pressed
+      && this.hud?.soundChipAt?.(this, this.vw, this.vh, inp.mouse.x, inp.mouse.y)) {
+      inp.mouse.pressed = false;
+      inp.mouse.down = false;
+      audio.manualUnlock();
+      return;
+    }
     if (this.scene === 'waiting') { this._waitUpdate(dt); return; }
     // the achievements list is its own little screen: it scrolls, and ESC leaves
     if (this.scene === 'achievements') { this._achUpdate(dt); return; }
+    // the all-time page fits without scrolling; a tap or ESC leaves it
+    if (this.scene === 'stats') { this._lifeUpdate(dt); return; }
+    // the wardrobe: a list, like the achievements, but every row is a choice
+    if (this.scene === 'outfits') { this._outfitUpdate(dt); return; }
     // keep the room list alive while it is on screen, and re-ask whenever the
     // link comes up -- the first request is usually sent before the socket is
     this._roomT = (this._roomT ?? 0) - dt;
@@ -4041,9 +5106,13 @@ export class Game {
     const enter = inp.wasPressed('Enter', 'Space') || click;
     const esc = inp.wasPressed('Escape', 'Backspace');
 
-    // the mouse picks an entry outright; the keyboard walks the list
+    // the mouse picks an entry outright; the keyboard walks the list. A hover
+    // only picks while the pointer is moving, or a mouse parked over the menu
+    // would undo every arrow press in the same frame it was made.
     const hit = menuHitTest(this.scene, inp.mouse.x, inp.mouse.y, this);
-    if (hit >= 0 && hit !== this.menuIndex) { this.menuIndex = hit; audio.dryFire(); }
+    if (hit >= 0 && hit !== this.menuIndex && (this._pointerMoved() || inp.mouse.pressed)) {
+      this.menuIndex = hit; audio.dryFire();
+    }
     if (up || down) {
       this.menuIndex = (this.menuIndex + (down ? 1 : n - 1)) % Math.max(1, n);
       audio.dryFire();
@@ -4052,11 +5121,20 @@ export class Game {
     if (!enter && !esc) return;
     if (esc && this.scene === 'menu') return;
 
+    // leaving is never the row's business: ESC has to work even when the
+    // selection happens to sit on REFRESH or on the empty-list notice
+    if (esc) {
+      this.scene = 'menu';
+      // ...and it lands back on MULTIPLAYER, not on whatever row a submenu
+      // happened to have selected
+      this.menuIndex = this._menuRowIndex('mp');
+      audio.dryFire();
+      return;
+    }
     const row = rows[this.menuIndex];
-    if (row?.id === 'refresh') { this.net.askForRooms(); return; }
-    if (row?.id === 'none') return;
-    if (esc) { this.scene = this.scene === 'mp' || this.scene === 'rooms' ? 'menu' : 'menu'; audio.dryFire(); return; }
     if (!row) return;
+    if (row.id === 'refresh') { this.net.askForRooms(); return; }
+    if (row.id === 'none') return;
     audio.reload(2);
     switch (row.id) {
       case 'solo':
@@ -4077,6 +5155,12 @@ export class Game {
       case 'controls': this.controlsOpen = true; this._wasPaused = false; break;
       case 'settings': this.settingsOpen = true; this._wasPaused = false; break;
       case 'achievements': this.scene = 'achievements'; this.achScroll = 0; break;
+      case 'outfits':
+        this.scene = 'outfits';
+        // start with the coat you are wearing under the cursor
+        this.outfitIndex = Math.max(0, SKIN_ORDER.indexOf(this.player?.skin) + 1);
+        break;
+      case 'stats': this.scene = 'stats'; break;
       case 'host': this._startHost(); break;
       case 'join':
         this.scene = 'rooms'; this.menuIndex = 0; this._roomT = 0;
@@ -4084,11 +5168,73 @@ export class Game {
         break;
       case 'name': this._askName(); break;
       case 'addr': this._askAddress(); break;
-      case 'back': this.scene = 'menu'; this.menuIndex = 1; break;
+      case 'back': this.scene = 'menu'; this.menuIndex = this._menuRowIndex('mp'); break;
       case 'waiting': break;
       default:
         if (row.room) this._joinRoom(row.room);
         break;
+    }
+  }
+
+  /**
+   * The wardrobe. Row 0 takes everything off; rows 1..10 are SKIN_ORDER.
+   *
+   * A locked row is still a row -- it tells you which badge opens it, and
+   * pressing it does nothing but say so. The pointer picks and wears in one
+   * press (a phone has no Enter), the keyboard picks with W/S and wears with
+   * Enter, and ESC or a tap on the empty margin goes back to the front door.
+   */
+  _outfitUpdate(dt) {
+    const inp = this.input;
+    if (!inp) return;
+    const L = outfitsLayout(this, this.vw, this.vh);
+    const n = L.rows;
+    const m = inp.mouse;
+    const hover = m ? outfitRowAt(this, this.vw, this.vh, m.x, m.y) : -1;
+
+    if (hover >= 0 && hover !== this.outfitIndex && (this._pointerMoved() || m.pressed)) {
+      this.outfitIndex = hover;
+      audio.dryFire();
+    }
+    // all four arrows: this is a column of coats, but a player who tries the
+    // horizontal pair should not find a dead key in a menu about clothes
+    if (inp.wasPressed('ArrowUp', 'KeyW', 'ArrowLeft', 'KeyA')) {
+      this.outfitIndex = (this.outfitIndex - 1 + n) % n; audio.dryFire();
+    }
+    if (inp.wasPressed('ArrowDown', 'KeyS', 'ArrowRight', 'KeyD')) {
+      this.outfitIndex = (this.outfitIndex + 1) % n; audio.dryFire();
+    }
+    if (inp.wasPressed('Home')) { this.outfitIndex = 0; audio.dryFire(); }
+    if (inp.wasPressed('End')) { this.outfitIndex = n - 1; audio.dryFire(); }
+    const wheel = inp.wheel ?? 0;
+    if (wheel) {
+      this.outfitIndex = clamp(this.outfitIndex + Math.sign(wheel), 0, n - 1);
+      audio.dryFire();
+    }
+
+    const wear = () => {
+      const id = outfitIdAt(this, this.outfitIndex);
+      if (id && !skinOwned(id, this.achievements)) {
+        // nothing to wear yet: say so, and leave the cursor where it is
+        audio.deny?.();
+        const badge = SKINS[id] ? ACHIEVEMENTS.find((a) => a.id === SKINS[id].ach) : null;
+        this.bannerShow('NOT EARNED YET', badge ? badge.name : null,
+          { dur: 2.2, colour: '#c4463a', local: true });
+        return;
+      }
+      if (this.equipSkin(id) && id) audio.perk?.();
+      else audio.reload?.(2);
+    };
+
+    if (inp.wasPressed('Enter', 'Space')) wear();
+    else if (m?.pressed) {
+      if (hover >= 0) { this.outfitIndex = hover; wear(); }
+      else { this.scene = 'menu'; this.menuIndex = this._menuRowIndex('outfits'); audio.dryFire(); }
+    }
+    if (inp.wasPressed('Escape', 'Backspace')) {
+      this.scene = 'menu';
+      this.menuIndex = this._menuRowIndex('outfits');
+      audio.dryFire();
     }
   }
 
@@ -4098,20 +5244,69 @@ export class Game {
    */
   _achUpdate(dt) {
     const inp = this.input;
-    this.time += dt;
-    const rowsH = Math.min((this.vh ?? 500) - 20, 460) - 46 - 26;
-    const visible = Math.floor(rowsH / 40);
+    // `update()` advanced the clock already; adding it again made the page
+    // blink at double speed
+
+    // the count comes from the panel painter (hud.js), so the scroll can never
+    // stop short of the last badge or run past the end of the list
+    const visible = achVisible(this.vw, this.vh);
     const total = this.achievements?.total ?? 0;
     const maxScroll = Math.max(0, total - visible);
     this.achScroll = Math.max(0, Math.min(this.achScroll ?? 0, maxScroll));
     const step = (d) => { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + d)); audio.dryFire(); };
-    if (inp.wasPressed('ArrowUp', 'KeyW')) step(-1);
-    if (inp.wasPressed('ArrowDown', 'KeyS')) step(1);
+    // all four arrows scroll it: the list is a column, so left and right mean
+    // the same as up and down rather than nothing at all
+    if (inp.wasPressed('ArrowUp', 'KeyW', 'ArrowLeft', 'KeyA')) step(-1);
+    if (inp.wasPressed('ArrowDown', 'KeyS', 'ArrowRight', 'KeyD')) step(1);
     if (inp.wasPressed('PageUp')) step(-visible);
     if (inp.wasPressed('PageDown')) step(visible);
     const wheel = inp.wheel ?? 0;
-    if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + Math.sign(wheel) * 2)); }
-    if (inp.wasPressed('Escape', 'Backspace', 'Enter')) { this.scene = 'menu'; this.menuIndex = 2; audio.dryFire(); }
+    // one row a notch: `input.wheel` is a count of rows now, not the raw
+    // deltaY, so multiplying it again scrolled the list twice as fast as the
+    // hand moved -- which is what "the menus fly past" always meant
+    if (wheel) { this.achScroll = Math.max(0, Math.min(maxScroll, this.achScroll + wheel)); audio.dryFire(); }
+
+    // A phone has no wheel and no ESC: a drag scrolls the list, and a tap that
+    // did not drag closes it. Without this the page was a trap on the one
+    // device that cannot press Escape.
+    const m = inp.mouse;
+    if (m?.down) {
+      if (this._achDragY === undefined) { this._achDragY = m.y; this._achDragged = false; }
+      const dy = m.y - this._achDragY;
+      if (Math.abs(dy) >= 14) {
+        this.achScroll = Math.max(0, Math.min(maxScroll,
+          this.achScroll + Math.sign(-dy) * Math.max(1, Math.round(Math.abs(dy) / 24))));
+        this._achDragY = m.y;
+        this._achDragged = true;
+      }
+    } else {
+      this._achDragY = undefined;
+    }
+    if (m?.pressed) {
+      if (this._achDragged) this._achDragged = false;
+      else { this.scene = 'menu'; this.menuIndex = this._menuRowIndex('achievements'); audio.dryFire(); return; }
+    }
+    if (inp.wasPressed('Escape', 'Backspace', 'Enter')) {
+      this._achDragY = undefined; this._achDragged = false;
+      this.scene = 'menu'; this.menuIndex = this._menuRowIndex('achievements'); audio.dryFire();
+    }
+  }
+
+  /**
+   * The all-time screen. It fits on one page -- two columns, no scrolling --
+   * so leaving is the only thing it has to listen for: ESC on a keyboard, a
+   * tap on a phone.
+   */
+  _lifeUpdate(dt) {
+    const inp = this.input;
+    // `update()` already advanced the clock, so no `this.time += dt` here: the
+    // page would blink at double speed for no reason
+    if (inp.wasPressed('Escape', 'Backspace', 'Enter', 'Space')
+      || inp.mouse.pressed) {
+      this.scene = 'menu';
+      this.menuIndex = this._menuRowIndex('stats');   // where the player left
+      audio.dryFire();
+    }
   }
 
   /**
@@ -4317,6 +5512,7 @@ export class Game {
 
   // ------------------------------------------------------------------ draw
   draw(ctx) {
+    this._phase = 'draw';
     const { vw, vh } = this;
     // `smooth` is DLSS5's doing (see src/main.js): when the frame is being
     // supersampled the sprites want filtering, and when it is not they want
@@ -4423,6 +5619,30 @@ export class Game {
       ctx.restore();
     }
     // 2c. the planted haunts, what flies through the air, and the lightning
+    // the silk goes down first: it is on the floor, and everything else is
+    // standing on it
+    for (const th of this.threads) {
+      if (!th.dead && (th.f ?? 0) === this.map.floor) th.draw(ctx, this.art, this.time);
+    }
+    for (const hv of this.hives) {
+      if (!hv.dead && (hv.f ?? 0) === this.map.floor) hv.draw(ctx, this.art, this.time);
+    }
+    for (const ar of this.arrowSticks) {
+      if ((ar.f ?? 0) !== this.map.floor) continue;
+      const k = Math.min(1, ar.life / 3);
+      ctx.save();
+      ctx.globalAlpha = 0.45 * k;
+      ctx.strokeStyle = '#cfc9b4';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(ar.x, ar.y);
+      ctx.lineTo(ar.x - Math.cos(ar.ang) * 8, ar.y - Math.sin(ar.ang) * 8);
+      ctx.stroke();
+      ctx.restore();
+    }
+    for (const ar of this.arrows) {
+      if (!ar.dead && (ar.f ?? 0) === this.map.floor) ar.draw(ctx);
+    }
     for (const gv of this.graves) {
       if (!gv.dead && (gv.f ?? 0) === this.map.floor) gv.draw(ctx, this.art, this.time);
     }
@@ -4682,9 +5902,15 @@ export class Game {
       // used to drift over your walls, plain as day, while they walked about
       // upstairs. The bodies themselves were culled -- the glow was not.
       if (z.dead || (z.floor ?? 0) !== this.map.floor) continue;
-      const gx = z.pos.x - camX, gy = z.pos.y - camY - HEAD_OFF_Y;
+      // A glow is the mark of a head that is up and facing you. The hounds
+      // carry their heads level with the floor and the crawlers have theirs
+      // on the tiles -- and a pool of light sat over both of them like a
+      // torch, which read as "something is burning" rather than "a dog".
+      const off = z.def?.headOff ?? 1;
+      if (off < 0.6) continue;
+      const gx = z.pos.x - camX, gy = z.pos.y - camY - HEAD_OFF_Y * off;
       if (gx < -20 || gy < -20 || gx > vw + 20 || gy > vh + 20) continue;
-      ctx.drawImage(glowImg, Math.round(z.pos.x - gr), Math.round(z.pos.y - HEAD_OFF_Y - gr));
+      ctx.drawImage(glowImg, Math.round(z.pos.x - gr), Math.round(z.pos.y - HEAD_OFF_Y * off - gr));
     }
     ctx.restore();
 
@@ -4788,9 +6014,27 @@ export class Game {
     else if (this.debugOpen) drawDebug(ctx, this, vw, vh);
     else if (this.settingsOpen) drawSettings(ctx, this, vw, vh);
     else if (!this.started && this.scene === 'achievements') drawAchievements(ctx, this, vw, vh);
-    else if (!this.started) drawMenu(ctx, this, vw, vh);
+    else if (!this.started && this.scene === 'stats') drawStats(ctx, this, vw, vh);
+    else if (!this.started && this.scene === 'outfits') drawOutfits(ctx, this, vw, vh);
+    else if (!this.started) {
+      drawMenu(ctx, this, vw, vh);
+      // ...and, over the title screen, the one warning that has a button
+      // behind it: a frame that will not let the game make a sound
+      this.hud?._soundOnMenu?.(ctx, this, vw, vh);
+    }
     else if (this.gameOver) drawGameOver(ctx, this, vw, vh);
     else if (this.paused) drawPause(ctx, this, vw, vh);
+    // The way out of every one of those, drawn over it: a phone has no ESC,
+    // and "O / ESC — back" was a sentence it could not act on. The death
+    // screen gets one too -- "tap anywhere to try again" left a phone no way
+    // to say it had had enough.
+    if (this.settingsOpen || this.debugOpen || (this.gameOver && this.started)
+      || (!this.started && (this.scene === 'achievements' || this.scene === 'stats' || this.scene === 'outfits'))) {
+      if (this.gameOver && this.overT <= 1.1) { /* wait for the ledger to land */ } else {
+        drawBackChip(ctx, this, vw, vh,
+          this.debugOpen ? 'CLOSE' : this.gameOver ? 'MENU' : 'BACK');
+      }
+    }
 
     // A menu you cannot see your own pointer in is a menu you cannot use, and
     // a phone has never had one: draw it over everything, wherever the mouse
@@ -4890,7 +6134,7 @@ export class Game {
     // open sky over the storey, if it has any
     const sky = SKY_LIGHT[this.map.floor];
     if (sky) {
-      L.point(VW / 2, VH / 2, Math.max(VW, VH) * 1.15, sky.power, sky.colour, sky.glow);
+      L.point(this.vw / 2, this.vh / 2, Math.max(this.vw, this.vh) * 1.15, sky.power, sky.colour, sky.glow);
     }
 
     // ceiling lamps -- the mains ones only burn once the generator is on.
@@ -4902,7 +6146,7 @@ export class Game {
       let warm = 1;
       if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const x = sx(l.x), y = sy(l.y);
-      if (x < -220 || y < -220 || x > VW + 220 || y > VH + 220) continue;
+      if (x < -220 || y < -220 || x > this.vw + 220 || y > this.vh + 220) continue;
       let f = l.flick * warm;
       if (l.mains && this.powerSurge > 0) f *= 0.4 + Math.random() * 1.4;
       L.point(x, y, 152 * f, 1.0 * f, `rgba(255,182,96,${0.40 * f})`, 0.62 * f);
@@ -5002,12 +6246,12 @@ export class Game {
     // is also the only warning you get that something is climbing in
     for (const b of this.map.barricades) {
       const bx = sx(b.cx), by = sy(b.cy);
-      if (bx < -110 || by < -110 || bx > VW + 110 || by > VH + 110) continue;
+      if (bx < -110 || by < -110 || bx > this.vw + 110 || by > this.vh + 110) continue;
       const broken = b.planks <= 0;
       L.point(bx, by, broken ? 96 : 62, broken ? 0.6 : 0.34,
         broken ? 'rgba(126,156,198,0.18)' : 'rgba(110,140,180,0.10)', broken ? 0.34 : 0.18);
     }
-    L.composite(ctx, VW, VH, this._dlss ? 1 : 0);
+    L.composite(ctx, this.vw, this.vh, this._dlss ? 1 : 0);
 
     // lamp fixtures (drawn after the darkness so they stay visible)
     ctx.save();
@@ -5016,7 +6260,7 @@ export class Game {
       let warm = 1;
       if (l.mains) { warm = this._lampWarm(l); if (warm <= 0.01) continue; }
       const lx = l.x - camX, ly = l.y - camY;
-      if (lx < -20 || ly < -20 || lx > VW + 20 || ly > VH + 20) continue;
+      if (lx < -20 || ly < -20 || lx > this.vw + 20 || ly > this.vh + 20) continue;
       ctx.globalAlpha = 0.55 * l.flick * warm;
       ctx.fillStyle = '#20211f';
       ctx.fillRect(lx - 5, ly - 2, 10, 3);
@@ -5941,7 +7185,7 @@ export class Game {
   /** Cull helper: is this world point anywhere near the visible viewport? */
   _vis(x, y, pad = 60) {
     return x > this.cam.x - pad && y > this.cam.y - pad
-      && x < this.cam.x + VW + pad && y < this.cam.y + VH + pad;
+      && x < this.cam.x + this.vw + pad && y < this.cam.y + this.vh + pad;
   }
 
   /**
@@ -5954,8 +7198,8 @@ export class Game {
     const m = this.map, T2 = T;
     const tx0 = Math.max(0, Math.floor(camX / T2) - 1);
     const ty0 = Math.max(0, Math.floor(camY / T2) - 1);
-    const tx1 = Math.min(m.w - 1, Math.ceil((camX + VW) / T2));
-    const ty1 = Math.min(m.h - 1, Math.ceil((camY + VH) / T2));
+    const tx1 = Math.min(m.w - 1, Math.ceil((camX + this.vw) / T2));
+    const ty1 = Math.min(m.h - 1, Math.ceil((camY + this.vh) / T2));
     ctx.save();
     ctx.lineWidth = 1;
     for (let ty = ty0; ty <= ty1; ty++) {
@@ -6085,8 +7329,8 @@ export class Game {
     ctx.save();
     for (const l of this.weather.leaves) {
       const sx = l.x - camX, sy = l.y - camY;
-      if (sx < -10 || sy < -10 || sx > VW + 10 || sy > VH + 10) continue;
-      if (sx < -10 || sy < -10 || sx > VW + 10 || sy > VH + 10) continue;
+      if (sx < -10 || sy < -10 || sx > this.vw + 10 || sy > this.vh + 10) continue;
+      if (sx < -10 || sy < -10 || sx > this.vw + 10 || sy > this.vh + 10) continue;
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(l.r);

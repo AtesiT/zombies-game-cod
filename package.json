@@ -1,7 +1,7 @@
 {
   "name": "zombies-game-cod",
   "version": "1.0.0",
-  "description": "Top-down 2D wave shooter in the style of Call of Duty: World at War Zombies (Nacht der Untoten). Vanilla JS + HTML5 Canvas, no dependencies.",
+  "description": "Top-Down Zombie Shooter: a 2D survival wave game built with vanilla JavaScript and HTML5 Canvas.",
   "type": "module",
   "private": true,
   "scripts": {

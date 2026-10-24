@@ -97,10 +97,22 @@ function boot() {
   const p = debugPanel(g, M.VW, M.VH);
   ok(p.ch <= M.VH, `the zoo panel is ${p.ch}px tall on a ${M.VH}px screen`);
   ok(p.y >= 0, `the zoo panel starts off the top of the screen at ${p.y}`);
-  // the last row must still be inside the panel
-  const lastRow = p.y + p.head + (p.rows.length - 1) * p.rowH;
-  ok(lastRow < p.y + p.ch, 'the last row hangs out of the bottom of the panel');
-  console.log(`  the panel is ${p.ch}px tall with ${p.rows.length} rows (rowH ${p.rowH})`);
+  // The list scrolls now that there are more creatures than there is screen:
+  // what has to be true is that the rows that ARE on show end above the
+  // footer, and that the window can be walked from the first row to the last.
+  const visible = Math.min(p.rows.length, p.shown);
+  const lastRow = p.y + p.head + visible * p.rowH;
+  ok(lastRow < p.y + p.ch - 24, `the last visible row (${lastRow}) is in the footer (${p.y + p.ch})`);
+  ok(p.shown > 6, `only ${p.shown} rows fit the panel`);
+  ok(p.over === Math.max(0, p.rows.length - p.shown), 'the scroll range does not match the rows hidden');
+  // the last row can be reached: park the window at the bottom and click it
+  g.debugTop = p.over;
+  const q = debugPanel(g, M.VW, M.VH);
+  const lastY = q.y + q.head + (Math.min(q.rows.length, q.shown) - 1) * q.rowH + 4;
+  ok(debugHitTest(g, M.VW, M.VH, q.x + 100, lastY) === q.rows.length - 1,
+    'the last row cannot be clicked once the list is scrolled to it');
+  g.debugTop = 0;
+  console.log(`  the panel is ${p.ch}px tall with ${p.rows.length} rows (rowH ${p.rowH}, ${p.shown} on screen)`);
 
   const b = debugTabBar(g, M.VW, M.VH);
   const tabW = b.w / b.tabs.length;

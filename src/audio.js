@@ -12,53 +12,149 @@ export class AudioEngine {
     this.muted = false;
     this.ready = false;
     this.musicMode = 'repeat';
+    // Why the engine is not making noise, for the HUD and for the console.
+    // null means "fine"; a string is the reason the player sees on screen.
+    this.lastError = null;
     this._lastGrowl = 0;
     this._lastShriek = -9;
     this._lastWhimper = -9;
   }
 
+  /** Is the audio graph built AND the browser clock actually running? */
+  get running() { return !!(this.ready && this.ctx && this.ctx.state === 'running'); }
+
+  /**
+   * Build the engine ahead of time, without asking it to play.
+   *
+   * Chrome lets a page *create* an AudioContext at any moment -- it simply
+   * starts suspended and may only be resumed inside a gesture. Doing it at
+   * load is worth it twice over: the audio service starts while the loading
+   * screen is up instead of inside the player's first click (that first
+   * click is where "the game froze for a second" came from), and the graph
+   * has somewhere to put its nodes before anything is heard.
+   */
+  prepare() {
+    if (this.ctx && this.ctx.state !== 'closed') return true;
+    this.init();
+    return !!this.ctx;
+  }
+
+  /**
+   * Count a real user gesture, and ask the clock to start.
+   *
+   * Called from every pointer/key handler in main.js. `blocked` is worked out
+   * from what happened *after* a gesture: a context that is still parked more
+   * than a second later was refused by the browser, and saying so -- with a
+   * way out -- is the difference between "the sound is broken" and "the frame
+   * we are embedded in does not allow sound".
+   */
+  gesture() {
+    this.gestures = (this.gestures ?? 0) + 1;
+    this._lastGestureAt = Date.now();
+    if (!this.ctx) this.init();
+    this._kick();
+    if (this.ctx && this.ctx.state !== 'running') this._kickUntilRunning();
+    return this.ctx?.state === 'running';
+  }
+
+  /** True when the browser has refused to start the clock despite a gesture. */
+  get blocked() {
+    if (!this.ready || !this.ctx) return false;
+    if (this.ctx.state === 'running') return false;
+    if (!this.gestures) return false;               // nobody has asked yet
+    return Date.now() - (this._lastGestureAt ?? 0) > 900;
+  }
+
+  /** Are we inside somebody else's frame? (A preview is; a tab is not.) */
+  static get framed() {
+    try { return typeof window !== 'undefined' && !!window.top && window.top !== window.self; }
+    catch { return true; }                            // cross-origin frame: yes
+  }
+
+  /**
+   * The player pressed the sound chip. One more resume from inside a real
+   * gesture, and -- if the frame we live in refuses every one of them -- a
+   * door out to a tab, where the browser policy does not apply.
+   */
+  manualUnlock() {
+    this.gesture();
+    if (this.ctx?.state === 'running') return 'running';
+    if (AudioEngine.framed) {
+      try { window.open(window.location?.href ?? location.href, '_blank', 'noopener'); } catch { /* popup blocked */ }
+      return 'opened';
+    }
+    return 'blocked';
+  }
+
+  /**
+   * Build the graph. This is called from a user gesture (browser policy), but
+   * it has to survive being called twice, being called after a failure, and
+   * being called when the context was closed by the browser.
+   *
+   * If any part of the build throws, we tear the whole half-built engine down
+   * instead of leaving `ctx` set: `init()` used to return early on a non-null
+   * ctx, so one exception halfway through meant every later gesture did
+   * nothing, `ready` stayed false, and the game was silent for good.
+   */
   init() {
-    if (this.ctx) return;
+    if (this.ctx && this.ctx.state !== 'closed') return;
+    if (this.ctx) this._teardown();
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    this.ctx = new AC();
-    this.master = this.ctx.createGain();
+    if (!AC) { this.lastError = 'This browser has no WebAudio'; return; }
+    try {
+      this._build(new AC());
+    } catch (err) {
+      this.lastError = err?.message || String(err);
+      console.warn('[audio] the audio engine could not start; the next tap will retry', err);
+      this._teardown();
+    }
+  }
+
+  _build(ctx) {
+    this.ctx = ctx;
+    this.master = ctx.createGain();
     this.master.gain.value = 0.85;
-    this.master.connect(this.ctx.destination);
+    this.master.connect(ctx.destination);
     // every one-shot effect runs through the sfx bus; ambience has its own
     // routing: every effect -> sfx/ambient bus -> shared bus -> master -> out.
     // The shared bus has to exist *before* anything connects to it, otherwise
     // connect(undefined) throws and the whole engine dies silently.
-    const bus = this.ctx.createGain();
+    const bus = ctx.createGain();
     bus.gain.value = 1;
     bus.connect(this.master);
     this.bus = bus;
 
-    this.sfxBus = this.ctx.createGain();
+    this.sfxBus = ctx.createGain();
     this.sfxBus.gain.value = 1;
     this.sfxBus.connect(bus);
 
-    this.ambientBus = this.ctx.createGain();
+    this.ambientBus = ctx.createGain();
     this.ambientBus.gain.value = 1;
     this.ambientBus.connect(bus);
 
     // music has its own fader: it is the one thing you might want gone
     // while keeping the wind and the shots
-    this.musicBus = this.ctx.createGain();
+    this.musicBus = ctx.createGain();
     this.musicBus.gain.value = 1;
     this.musicBus.connect(bus);
 
     // shared white-noise buffer
-    const len = this.ctx.sampleRate * 2;
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     this.noise = buf;
 
-    this.ready = true;
     this._startAmbient();
     this._startReverb();
     this._startMusic();
+
+    // ...and only now is the engine usable: a throw above leaves `ready`
+    // false, and `_teardown` gives us a clean slate for the next gesture.
+    this.ready = true;
+    this.lastError = null;
+    this._retries = 0;
+
     // volumes may have been set from storage before the context existed
     if (this._masterVol !== undefined || this._sfxVol !== undefined || this._ambVol !== undefined) {
       this.setVolumes({
@@ -69,11 +165,96 @@ export class AudioEngine {
       });
       this.setMuted(this.muted);
     }
+    // A context created outside a gesture starts suspended. Try to start it
+    // now -- if this is a gesture it works; if not, the next tap will.
+    this._kick();
+    // ...and keep asking, quietly, until it runs. A page that was opened in a
+    // background tab, or a browser that only honours gestures for *some*
+    // events, leaves the clock parked at time zero: the graph is built, every
+    // gain is set, and not one sample ever leaves. The old code waited for
+    // the player to click again, which is indistinguishable from a game with
+    // no sound at all.
+    this._kickUntilRunning();
+  }
+
+  /**
+   * Nudge a suspended clock a few times over the first couple of seconds.
+   *
+   * Every attempt is cheap (a resume() on a context that is already running
+   * does nothing) and every attempt is swallowed: the permanent gesture
+   * listeners in main.js are still the main door. This is the safety net for
+   * the case where the gesture arrived but the browser was slow to honour it.
+   */
+  _kickUntilRunning() {
+    if (this._kickTimer) { clearInterval(this._kickTimer); this._kickTimer = null; }
+    if (!this.ctx || this.ctx.state === 'running') return;
+    let tries = 0;
+    const tick = () => {
+      tries++;
+      if (!this.ctx || this.ctx.state === 'running' || tries > 12) {
+        clearInterval(this._kickTimer);
+        this._kickTimer = null;
+        return;
+      }
+      this._kick();
+    };
+    this._kickTimer = setInterval(tick, 250);
+    // a timer must never be what keeps a page alive
+    this._kickTimer?.unref?.();
+  }
+
+  /** Everything a failed or closed context leaves behind. */
+  _teardown() {
+    if (this._pianoTimer) { clearTimeout(this._pianoTimer); this._pianoTimer = null; }
+    try {
+      const closing = this.ctx?.close?.();
+      if (closing && typeof closing.catch === 'function') closing.catch(() => {});
+    } catch { /* the browser may already have closed it */ }
+    this.ctx = null;
+    this.master = null;
+    this.bus = null;
+    this.sfxBus = null;
+    this.ambientBus = null;
+    this.musicBus = null;
+    this.noise = null;
+    this.soundtrack = null;
+    this._victoryGroup = null;
+    this._music = null;
+    this._musicMix = null;
+    this._elegyGain = null;
+    this._conv = null;
+    this._revRet = null;
+    this._revIR = {};
+    this._windGain = null;
+    this._droneOsc = null;
+    this._droneGain = null;
+    this._pulseGain = null;
+    this.ambientGain = null;
+    this._victoryUntil = 0;
+    if (this._kickTimer) { clearInterval(this._kickTimer); this._kickTimer = null; }
+    this._lastGestureAt = 0;
+    this.ready = false;
+  }
+
+  /** Ask the browser clock to run; safe to call from anywhere, any number of times. */
+  _kick() {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'running') return;
+    try {
+      const r = ctx.resume();
+      // A promise rejection here is normal: Chrome refuses a resume without a
+      // user gesture. Swallow it -- the permanent gesture listeners retry.
+      if (r && typeof r.catch === 'function') r.catch(() => {});
+    } catch { /* some engines throw synchronously when suspended by policy */ }
   }
 
   resume() {
+    if (this.ctx && this.ctx.state === 'closed') this._teardown();
     if (!this.ctx) this.init();
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    this._lastGestureAt = this._lastGestureAt || Date.now();
+    this._kick();
+    if (this.ctx && this.ctx.state !== 'running') this._kickUntilRunning();
+    return !!this.ctx;
   }
 
   setMuted(m) {
@@ -458,7 +639,12 @@ export class AudioEngine {
     this._conv = conv;
     this._revRet = ret;
     this._revIR = {};
-    this.setReverb('room', true);
+    // Install the first room directly. `setReverb` refuses to run until
+    // `ready` is true, and `_build` sets that *after* this call -- so the old
+    // code left the convolver with a null buffer for the whole of the menu,
+    // where the reverb send was already open and returning pure silence.
+    this._conv.buffer = this._ir('room');
+    this._reverbZone = 'room';
   }
 
   /** A cheap synthetic impulse: dulled noise, decaying. Four rooms is plenty. */
@@ -673,6 +859,26 @@ export class AudioEngine {
     const g = this._env(f, t, 0.24, 0.006, 0.15);
     g.connect(this.bus);
     n.start(t); n.stop(t + 0.2);
+  }
+
+  /**
+   * A dash: a short rush of air that arrives and leaves. It is built like the
+   * knife (one filtered noise burst), swept the other way -- low to a hiss --
+   * so it cannot be mistaken for a blade or a shot when both are happening.
+   */
+  dash() {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(320, t);
+    f.frequency.exponentialRampToValueAtTime(2400, t + 0.16);
+    f.Q.value = 1.1;
+    n.connect(f);
+    const g = this._env(f, t, 0.16, 0.01, 0.2);
+    g.connect(this.bus);
+    n.start(t); n.stop(t + 0.26);
   }
 
   dryFire() {
@@ -1045,6 +1251,60 @@ export class AudioEngine {
 
   /** Dog round: a howl and a pack of barks. */
   // ------------------------------------------------------- haunt round sfx --
+  /**
+   * The drummer's beat: a tom with the heel of the hand on it, a little
+   * behind the beat on purpose, because it is a dead man playing.
+   */
+  drum(vol = 0.8) {
+    if (!this.ready || this.muted) return;
+    const t = this.t + 0.012;
+    this._tone('sine', 118, 62, t, 0.22, 0.34 * vol, this.sfxBus);
+    this._tone('triangle', 74, 48, t + 0.004, 0.16, 0.2 * vol, this.sfxBus);
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 700;
+    n.connect(f);
+    const g = this._env(f, t, 0.16 * vol, 0.002, 0.1);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.13);
+  }
+
+  /** A bow: the string let go, and the hiss of the arrow away. */
+  bow(vol = 0.7) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this._tone('triangle', 340, 96, t, 0.14, 0.22 * vol, this.sfxBus);
+    this._tone('sine', 720, 180, t, 0.06, 0.1 * vol, this.sfxBus);
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 2600; f.Q.value = 1.2;
+    n.connect(f);
+    const g = this._env(f, t, 0.12 * vol, 0.004, 0.18);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.24);
+  }
+
+  /** Silk: a dry whisper, and nothing else. */
+  silk(vol = 0.6) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    const n = this._noiseSrc();
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'highpass'; f.frequency.value = 3400;
+    n.connect(f);
+    const g = this._env(f, t, 0.09 * vol, 0.03, 0.3);
+    g.connect(this.sfxBus);
+    n.start(t); n.stop(t + 0.36);
+  }
+
+  /** Venom arriving: a wet, rising gurgle under the hurt sound. */
+  venom(vol = 0.7) {
+    if (!this.ready || this.muted) return;
+    const t = this.t;
+    this._tone('sawtooth', 64, 132, t, 0.5, 0.14 * vol, this.sfxBus);
+    this._tone('sine', 130, 74, t + 0.06, 0.4, 0.1 * vol, this.sfxBus);
+  }
+
   /** The grave's bell: struck metal that will not hurry. */
   bell(vol = 0.9) {
     if (!this.ready || this.muted) return;

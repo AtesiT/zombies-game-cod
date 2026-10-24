@@ -1,6 +1,7 @@
 // Boot + fixed-ish main loop.
 import { Input } from './input.js';
 import { Game, VW, VH } from './game.js';
+import { T, allCanvases } from './art.js';
 import { audio } from './audio.js';
 import { TouchControls, isTouchDevice } from './touch.js';
 import { settings } from './settings.js';
@@ -26,6 +27,13 @@ const frameEl = document.getElementById('frame');
 const touch = new TouchControls(input, { mount: wrap });
 
 const SIZE_MULTS = [0.82, 1, 1.18];
+// PICTURE SIZE (SETTINGS): how much world the screen is asked to hold. 1 is
+// the neutral zoom; the low step pulls back, the high ones push in.
+const VIEW_MULTS = [0.85, 1, 1.15, 1.32];
+
+// The view: how many world units the screen is showing right now, and the CSS
+// box those units are painted into. `zoom` is CSS pixels per world unit.
+const view = { w: VW, h: VH, zoom: 1, cssW: VW, cssH: VH };
 // how wide the game is on screen, in CSS pixels -- DLSS5 sizes its backing
 // store from it, so it has to be kept up to date by resize()
 let displayW = VW;
@@ -49,16 +57,19 @@ let displayW = VW;
 // have, never more than 2x. A phone showing the game 320 px wide does not need
 // a 1600 px backing store, and it certainly cannot afford one.
 function dlssTarget() {
+  // device pixels per world unit: the ratio the browser is going to shrink
+  // the backing store down by
   const px = (displayW || VW) * (window.devicePixelRatio || 1);
+  const perUnit = px / Math.max(1, view.w);
   // the old ceiling was 2x, which is FOUR times the pixels -- and four times
   // every full-screen pass with it. 1.75 keeps the anti-aliasing win (you
   // cannot see the difference against 2 once the browser downscales) for
   // about three quarters of the fill cost. This is where DLSS5 "lagged".
-  return Math.max(1.25, Math.min(1.75, (px / VW) * 1.6));
+  return Math.max(1.25, Math.min(1.75, perUnit * 1.6));
 }
 
 // and how far the perf watch is allowed to walk that back: 1 = all of it,
-// 0 = none, i.e. the frame is drawn at 800x500 again
+// 0 = none, i.e. the frame is drawn at one pixel per world unit again
 const SS_STEPS = [1, 0.75, 0.5, 0];
 let ssLevel = 0;
 let ssSlow = 0;
@@ -72,8 +83,11 @@ function dlssScale() {
 
 function applyBacking() {
   const ss = dlssScale();
-  const w = Math.round(VW * ss);
-  const h = Math.round(VH * ss);
+  // the backing store is the *view*, supersampled: the picture the player
+  // sees is the CSS box, and this is what is drawn into before the browser
+  // scales it down to fit
+  const w = Math.max(1, Math.round(view.w * ss));
+  const h = Math.max(1, Math.round(view.h * ss));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   // let the browser filter it back down -- that is the whole trick. Empty
   // string hands it back to the stylesheet, which asks for hard pixels.
@@ -81,45 +95,136 @@ function applyBacking() {
   return ss;
 }
 
-function resize() {
-  // measured off the padded frame, so the safe areas are already excluded
-  const availW = frameEl?.clientWidth || window.innerWidth;
-  const availH = frameEl?.clientHeight || window.innerHeight;
-  // The stage used to refuse to go below 800x500, which on a four-inch phone
-  // is larger than the screen: it got centred, clipped, and the bottom of it
-  // -- the walking stick -- simply was not there. It shrinks to fit instead.
-  const byW = availW / VW, byH = availH / VH;
-  // FIT leaves the whole game visible with bars to the sides; FILL crops the
-  // long axis and gives you the biggest picture the screen can hold
-  const fit = settings.get('screen') === 1 ? Math.max(byW, byH) : Math.min(byW, byH);
-  const scale = Math.max(0.2, fit);
-  const snap = scale >= 2 ? Math.floor(scale * 2) / 2 : scale;   // half steps above 2x
-  const w = Math.round(VW * snap);
-  const h = Math.round(VH * snap);
-  displayW = w;
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
-  wrap.style.width = `${w}px`;
-  wrap.style.height = `${h}px`;
-  // the buttons live in the same 800x500 space the game draws in
-  touch.layout(w, h);
+/**
+ * Work out the viewport from the space the game has and the PICTURE SIZE
+ * setting.
+ *
+ * The old code painted a fixed 800x500 picture and scaled it to fit, which is
+ * why a phone got a small landscape strip in the middle of a tall screen and
+ * a square-ish window got bars on two sides. Instead, the *world* view is now
+ * derived from the screen: the same number of world units the screen has room
+ * for, at a zoom that keeps the amount of world roughly constant whatever the
+ * device. A phone in portrait gets a tall view, a widescreen gets a wide one,
+ * and there is never a letterbox to look at.
+ *
+ * `zoom` is area-matched to 800x500: a 1920x1080 window shows about the same
+ * amount of map a 800x500 one used to, at the same apparent size.
+ */
+function computeView() {
+  const availW = Math.max(240, frameEl?.clientWidth || window.innerWidth || VW);
+  const availH = Math.max(200, frameEl?.clientHeight || window.innerHeight || VH);
+  const mult = VIEW_MULTS[settings.get('view') ?? 1] ?? 1;
+  const base = Math.sqrt((availW * availH) / (VW * VH));
+  // a floor and a ceiling on the zoom: below this the sprites stop reading,
+  // above it a big monitor would show four tiles of map
+  const zoom = Math.max(0.42, Math.min(3.2, base * mult));
+  const worldW = game.map ? game.map.w * T : 1728;
+  const worldH = game.map ? game.map.h * T : 1200;
+  let vw = Math.round(availW / zoom);
+  let vh = Math.round(availH / zoom);
+  vw = Math.max(360, Math.min(worldW, vw));
+  vh = Math.max(300, Math.min(worldH, vh));
+  view.w = vw;
+  view.h = vh;
+  view.zoom = zoom;
+  view.cssW = Math.round(vw * zoom);
+  view.cssH = Math.round(vh * zoom);
+  displayW = view.cssW;
 }
+
+function resize() {
+  computeView();
+  canvas.style.width = `${view.cssW}px`;
+  canvas.style.height = `${view.cssH}px`;
+  wrap.style.width = `${view.cssW}px`;
+  wrap.style.height = `${view.cssH}px`;
+  // the game lays its HUD, its menus and its camera out in view units
+  game.setViewport(view.w, view.h, true);
+  // the buttons live in the same space the game draws in
+  touch.layout(view.cssW, view.cssH);
+}
+
 window.addEventListener('resize', () => { resize(); applyBacking(); });
+// A resize is not the only thing that changes the view: swapping the campaign
+// for the test range (or back) swaps the map under the camera. Until this was
+// wired up, the first range of a session was drawn and hit-tested in an
+// 800x500 box stretched over a 1280-pixel window -- the picture slid off-centre
+// and the pointer landed somewhere else entirely.
+game.onMapChange = () => { resize(); applyBacking(); };
 resize();
 applyBacking();
+
+// ---- one-time warm-up ------------------------------------------------------
+// Nine tenths of what a player calls "slow" is a first call: the range map is
+// painted tile by tile the first time it is built, and that one frame is worth
+// more than a hundred of the ones around it. Do it while the menu is on the
+// screen and nobody is timing anything, and only ever once.
+// ---- sprite warm-up --------------------------------------------------------
+// The game builds ~1 500 small canvases at boot (`buildArt`), but a browser
+// only turns a canvas into a texture the first time it is *drawn*. That first
+// draw is the first gameplay frame -- the one right after the player presses
+// SOLO -- which is why the press felt like a hang while the menu was instant.
+// Drawing every sprite once into a 2x2 scratch canvas here costs nothing and
+// moves the whole cost into idle slices while the menu is up.
+(function warmSprites() {
+  let list = null, i = 0;
+  const scratch = document.createElement('canvas');
+  scratch.width = 2; scratch.height = 2;
+  const sctx = scratch.getContext('2d');
+  const idle = window.requestIdleCallback
+    ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
+    : (fn) => setTimeout(fn, 60);
+  const slice = () => {
+    if (!list) {
+      // the sprites, the painted floors, and the lighting layers: every canvas
+      // the first gameplay frame is going to sample
+      try {
+        list = [...allCanvases(game.art), ...allCanvases(game.map), ...allCanvases(game.lighting)];
+        list = [...new Set(list)];
+      } catch { list = []; }
+    }
+    let n = 0;
+    while (i < list.length && n < 48) {
+      try { sctx.drawImage(list[i], 0, 0, 2, 2); } catch { /* one bad sprite is not a crash */ }
+      i++; n++;
+    }
+    if (i < list.length) idle(slice);
+  };
+  idle(slice);
+})();
+
+(function warmUp(tries = 0) {
+  const idle = window.requestIdleCallback
+    ? (fn) => window.requestIdleCallback(fn, { timeout: 2500 })
+    : (fn) => setTimeout(fn, 700);
+  idle(() => {
+    // Never during a run: a warm-up that drops a frame mid-wave is worse than
+    // a warm-up that happens later. But "later" means later -- giving up for
+    // good because the player happened to be shooting at the time put the
+    // hitch back the next time they opened the range.
+    if (game.started || game.settingsOpen || game.debugOpen) {
+      if (tries < 40) setTimeout(() => warmUp(tries + 1), 4000);
+      return;
+    }
+    game._prewarmRange?.();
+  });
+})();
 
 // ---------------------------------------------------------------------------
 //  On-screen controls: shown when the setting says so (AUTO = any touch
 //  screen). Mounted on the stage wrapper above, so they scale with the game.
 // ---------------------------------------------------------------------------
 function syncTouch() {
+  // the HUD asks the game which controls page to print, and the game had no
+  // handle on this panel at all -- so a phone was shown the keyboard page
+  game.touch = touch;
   const mode = settings.get('touch');
   touch.setSize(SIZE_MULTS[settings.get('touchSize') ?? 1]);
   touch.show(mode === 2 || (mode === 0 && isTouchDevice()));
 }
 settings.onChange((id) => {
   if (id === 'touch' || id === 'touchAssist' || id === 'touchSize') syncTouch();
-  if (id === 'screen') resize();
+  if (id === 'view') { resize(); applyBacking(); }
   if (id === 'dlss') { ssLevel = 0; ssSlow = 0; ssFast = 0; applyBacking(); }
   // AUTO PERFORMANCE off means *nothing* is allowed to ease the picture back:
   // the supersample goes to full and stays there, whatever the frame time says
@@ -127,10 +232,34 @@ settings.onChange((id) => {
 });
 syncTouch();
 
-// first gesture unlocks WebAudio
-const unlock = () => { audio.init(); audio.resume(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
-window.addEventListener('pointerdown', unlock);
-window.addEventListener('keydown', unlock);
+// WebAudio starts inside a user gesture, and whether that first gesture was
+// enough is entirely up to the browser: an autoplay policy, a preview frame
+// without the autoplay permission or a tab that was in the background can all
+// leave the context suspended. So the unlock is permanent and runs on every
+// gesture -- and a failed build is retried instead of swallowing the context.
+const unlock = () => { audio.gesture(); };
+for (const ev of ['pointerdown', 'touchstart', 'mousedown', 'pointerup', 'touchend', 'keydown', 'click']) {
+  window.addEventListener(ev, unlock, { capture: true, passive: true });
+}
+// Build the engine now, not on the first press. Creating a context costs the
+// browser a real chunk of work (it starts the audio service); doing it inside
+// the handler of the player's first click is where a "frozen for a moment"
+// menu press came from. It starts suspended whatever we do; the listeners
+// above are what start it.
+audio.prepare?.();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) unlock(); });
+window.addEventListener('focus', () => { audio.resume(); });
+window.addEventListener('pageshow', () => { audio.resume(); });
+
+// Looking away. The window keeps drawing while another app has the focus, so
+// a solo round used to carry on -- and keep biting -- during a coffee break.
+// A shared game is left running (the world belongs to the host), and a menu
+// or a death screen has nothing live to pause; `pauseForFocusLoss` decides.
+// `visibilitychange` covers phones, where switching apps does not always blur
+// the window; both paths are idempotent.
+const lookAway = () => { game.pauseForFocusLoss(); };
+window.addEventListener('blur', lookAway);
+document.addEventListener('visibilitychange', () => { if (document.hidden) lookAway(); });
 
 // ---------------------------------------------------------------------------
 //  Loop
@@ -162,8 +291,8 @@ function frame(now) {
   }
   if (steps === MAX_STEPS) acc = 0;      // too far behind to catch up: drop time
 
-  // everything the game draws is in 800x500; this is what makes it land on a
-  // bigger canvas than that when DLSS5 is on
+  // the game draws in view units; `ss` is how many backing-store pixels make
+  // one of them (1 unless DLSS5 is on and the frame has not been eased back)
   const ss = dlssScale();
   ctx.setTransform(ss, 0, 0, ss, 0, 0);
   ctx.imageSmoothingQuality = 'high';
@@ -175,6 +304,13 @@ function frame(now) {
 
   const workMs = performance.now() - t0;
   game.tickPerf(workMs);
+  // A frame this long is a freeze the player felt. Say which phase it was in
+  // -- on the console and, once per few seconds, on the screen -- because a
+  // hitch nobody can name is a hitch nobody can fix.
+  if (workMs > 450) {
+    console.warn(`[slow frame] ${Math.round(workMs)} ms during ${game._phase ?? '?'}`);
+    game.noteSlowFrame?.(workMs);
+  }
 
   // the supersample watch: too slow for long enough and it steps down, fast
   // for long enough and it climbs back up. Only when AUTO PERFORMANCE is on --

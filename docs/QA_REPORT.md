@@ -321,16 +321,25 @@ stale fillStyle getter; tests verify tolerance and actual restored paint instead
 - Look-ahead AudioContext scheduling avoids long buffers, skips stale backlog,
   disconnects ended voices and cancels old timers/sources on switches. Short
   output fades avoid hard track cuts. Music/master/mute controls are respected.
-- Independent team telemetry: 20 wave metrics and cumulative run totals. Frozen
-  completed-wave report, 12-second intermission, Tab/click dismissal, no paused
-  combat time, no range farming. Accuracy counts rays that hit at least one target,
+- Independent team telemetry: 20 wave metrics and cumulative run totals. The
+  per-wave report panel has been removed on request — a cleared wave says
+  `ROUND N CLEARED` and nothing else. The whole ledger is on the end-of-run
+  screen, with a 12-second intermission and no paused combat time; nothing is
+  farmable in the range. Accuracy counts rays that hit at least one target,
   not contacts per piercing bullet. Health loss excludes armour and overkill.
-  Both reports and run totals are transmitted by the host; guests use team labels.
+  Run totals are transmitted by the host; guests use team labels.
+- Run skills: 16 cards, one draft every fifth cleared wave (three cards, one
+  pick, `1`/`2`/`3`, arrows + Enter, click, or a 20-second auto-pick). Stats are
+  folded into the same block perks use (`perkFx`), multiplicatively; guests get
+  the skill mask and the open draft in the snapshot and send their pick back to
+  the host, which validates it against the cards it dealt. Tested for damage,
+  medkits, points, plank speed, throw refills, blast radius, panel geometry, the
+  next-wave freeze and the wire round trip (`tools/harness/skills.test.mjs`).
 - Major-key ~18-second evacuation melody, bells and warm final chord replace the
   sad score. Guest and late-snapshot playback is guarded once per run; repeated
   snapshots do not replay the cue. Auditioning it does not alter evacuation state.
 
-Validation: `npm test` **42/42**, including nine new soundtracks/report tests;
+Validation: `npm test` **63/63**, including the new skills suite;
 full historical regression **48/48** before the final small cleanup (counting monkey
 throws, report-hide reset and removing redundant per-frame once-mode restoration).
 After those edits, reran the main suite. New coverage: all 20 complete arrangements,
@@ -347,3 +356,377 @@ background-tab timer behavior across browsers, or a live two-browser audio sessi
 The WebAudio stand-in validates scheduling/routing/state, not musical taste or
 real-world loudness. The listening room is deliberately provided for user audition.
 Guide/catalogue: `docs/MUSIC.md`.
+
+## Follow-up: skills off, bigger hounds, all-time diary, phone pass — 2026-10-17
+
+- **Run skills are switched off, not removed.** `SKILLS_ENABLED = false` in
+  `src/skills.js` is read once per reset into `game.skillsEnabled`; `endRound`
+  skips the draft and `_offerSkillDrafts` refuses early. Nothing is dealt, no
+  chips are drawn, no run carries skills; the pool, effects, co-op mask/draft
+  wire, HUD panel and 12 tests stay in the tree. Turning it back on is one line.
+  A new test pins the default-off contract; the existing machinery tests enable
+  it explicitly on the game they build.
+- **Hellhounds are big animals now.** `scale` 1 → 1.7 and the collision radius
+  6.0 → 8.6; `hitScale: 1.6` scales both the aim-assist head/body circles and
+  the hitscan boxes, so a bigger body is a bigger target. The dog is the only
+  sprite drawn in its own 18×12 frame (`framed: false`, never read before); it
+  was hanging from the human 20×22 shoulder line and floating ~9 px above its
+  own shadow. Unframed bodies are now centred on the entity, which puts the
+  paws on the ground line. Verified against a 4× native render beside the
+  walker (20×22 @1) and brute (20×22 @1.32).
+- **All-time statistics.** New `src/lifetime.js` (`ndu.lifetime.v1`, 24
+  counters, sums for totals and maxima for bests, tolerant of a corrupt or
+  older file). One bank per run, guarded by `_banked`, on death (solo and the
+  last co-op body), evacuation and *quit to menu*; range runs are never banked.
+  The front page shows runs / best round / total kills plus evacs, rounds
+  cleared and time played under the title. The new `STATISTICS` row (index 4)
+  opens a two-column page that fits without scrolling: 8 run-level figures,
+  16 cumulative ones, best three runs, `ESC` or tap to close. Backed by a new
+  `tools/harness/lifetime.test.mjs` (5 tests) and reachable from the menu in
+  the touch tests.
+- **Phone pass.** `touch._menuOpen()` knew only about the front door, settings,
+  pause and the bench: the death screen, controls page, debug panel, card
+  draft, achievements and statistics were all "playing". Consequences fixed:
+  - the whole panel (sticks, 8 buttons, pause) is hidden whenever a menu, pause,
+    death screen, controls/debug/craft page or draft is up, and every held key
+    is released on the way in; it returns on the first frame of a round;
+  - the aim stick and aim assist no longer move the cursor while a menu is
+    open -- it used to be dragged onto the nearest zombie, so a tap on a row
+    clicked wherever that zombie was on screen;
+  - a tap is a click in any menu now, not a trigger pull (the death screen no
+    longer fires the gun);
+  - `ACHIEVEMENTS` scrolls by drag and closes on a tap that did not drag
+    (`ESC` still works); `STATISTICS` closes on any tap. Previously the
+    achievements page was a trap on a phone: no wheel, no keyboard, no way out.
+
+Validation: `npm test` **73/73** (63 before; +5 lifetime, +4 touch, +1
+skills-off default) and full historical regression **48/48**, including the
+touch harness with its new hide/show, menu-cursor and drag-scroll assertions.
+Native renders inspected: front page with the diary headline and seven rows,
+the statistics page with best nights, and a 4× crop of walker/hound/brute.
+Not claimed: a real phone or browser run (none in this sandbox); iOS safe-area
+and momentum scrolling remain covered only by geometry and stubs.
+
+## Review pass: no lost inputs, no lost progress — 2026-10-17
+
+A full read of the tree with one rule for the fixes: an input the game asked for
+must land exactly once, and a night that ended must be written down exactly
+once.
+
+- **A new run after QUIT TO MENU inherited the old one.** `_quitToMenu` banked
+  the night but left the world on the table (`started = false`, `_banked =
+  true`). Choosing SOLO then walked back into the half-played map: doors, guns,
+  points and tallies from the previous run, and because `_banked` was still
+  set, the *next* night was never written to the all-time diary at all. The
+  probe read `{banked: true, round: 1, kills: 42, points: 3000}` on a fresh
+  SOLO. A quit is now a full stop: it banks, closes the wire and calls
+  `reset()`. `begin()` also clears `runMetrics`/`_banked`, so any door into a
+  run starts with an empty ledger.
+- **RESTART erased the night that QUIT would have banked.** One row apart in
+  the same pause menu, two different outcomes for the same decision. `_restartRun`
+  now banks first and is the single path used by the pause row, the `R` key and
+  the death screen.
+- **The death screen had no way back to the front door.** `Esc`/`Backspace`
+  now leaves the run (banked, same as QUIT) and the prompt says so; a tap still
+  starts a new night, which is what a thumb expects.
+- **ESC in the room list could be swallowed.** Leaving was handled *after* the
+  row under the cursor, so ESC on REFRESH re-asked for rooms and ESC on the
+  "no rooms" notice did nothing. ESC is now handled first and always returns
+  to the front page, with the cursor on MULTIPLAYER; BACK does the same (it
+  used to land on TEST RANGE because the index was written down as `1`).
+  Closing ACHIEVEMENTS or STATISTICS finds its row by id (`_menuRowIndex`).
+- **RESTORE DEFAULTS wiped every setting on one press.** It is the only
+  destructive row in the panel and a thumb can land on it while scrolling. It
+  now asks twice: the first press arms the row for four seconds (`SURE?`, an
+  amber hint line), the second on the same row resets; closing the panel or
+  waiting disarms it.
+- **One mouse click on the touch panel was two presses.** The panel sits above
+  the canvas and Input listens on the window: pressing FIRE fired the button
+  *and* a second shot at the pointer. `_onMouseDown` now prevents the event
+  from reaching the window, and the window drag/release handlers are stored so
+  `dispose()` removes them.
+- **Losing focus left a solo round running.** The window keeps drawing while
+  another app has the focus. `pauseForFocusLoss()` pauses a solo round, declines
+  in co-op (the world belongs to the host), and does nothing on menus, drafts or
+  the death screen; `src/main.js` wires it to `blur` and `visibilitychange`.
+- **One badge could never be earned.** `daily_dogged` ("finish a daily
+  challenge") shipped before daily challenges existed, so the wall showed a
+  badge no code awarded. It is retired, following the precedent already in
+  `docs/IDEAS.md`; `Achievements.reset()` now also clears queued toasts. A new
+  test scrapes `src/` for literal `unlock('id')` calls and fails if a badge has
+  no award site (or an award names a badge that is not on the list).
+- **Smaller corrections.** The achievements page advanced `game.time` a second
+  time per frame (all menu blinking ran double speed after a visit); the
+  multiplayer hint said "up to four" while `MAX_PLAYERS` is 12; the skills
+  catalogue still described sixteen ✅ cards as live when `SKILLS_ENABLED` is
+  false; the one-line "pause menu's last row" comment sat above the wrong
+  function.
+
+Validation: `npm test` **90/90** (73 before; +4 menu navigation, +3 focus,
++3 settings reset, +3 run lifecycle, +3 achievements, +1 touch mouse press)
+and the full historical regression **48/48**. Native renders inspected: the
+front page with its diary headline, SETTINGS scrolled to the armed row
+(`SURE?` + hint), the pause menu, and the death screen with the new
+`ESC — FRONT DOOR` line. `git diff --check` clean, `node --check` on every
+changed module.
+
+Not claimed: a real browser or phone run (none in this sandbox); window blur
+and `visibilitychange` firing order across browsers is covered by the method's
+own rule, not by a live window.
+
+## Pass: the roster, the wardens and a phone UI that can be left — 2026-10-22
+
+Found by playing the build on a 430 × 930 layout, by reading the tables, and by
+turning the panels into numbers.
+
+- **The widow's venom did nothing.** Regen healed 30 a second straight through a
+  4-a-second bleed, so nine seconds of poison left the bar exactly where it
+  started: the one thing the bite was meant to cost — the next few seconds —
+  cost nothing. Regen now holds while `venomT > 0`, and the bleed stops at a
+  fifth of the bar (`hp > floor` rather than a clamp: the clamp version healed a
+  body already under the floor back up to it, which is the worst possible bug in
+  a poison). The HUD shows the clock as a green strip under the health bar and
+  `VENOM Ns` where `RECOVERING` would be, because a held regen with no
+  explanation reads as a bug.
+- **The First had no `boss` flag** while `bossForRound(25)` handed it a warden
+  round. That is deliberate — it also walks in the ordinary horde from round 18
+  — so `_spawnBoss` sets `z.boss` on the body it spawns, and the bar, the revive
+  pips and the banner read the flag on the zombie rather than the type. The
+  roster test asserts the eight warden-only types carry `boss: true`.
+- **Every warden round hid the warden's name.** `_spawnBoss` puts the name up for
+  four seconds; `startRound` then showed `ROUND N — something is out there` in
+  the same frame (every warden round is also a fifth round, so every one of them
+  is a dog round), and on most of them the radio's `THE RADIO` banner followed a
+  few lines later. The one thing a warden round is about was the one thing never
+  said. `bannerShow` now takes `queue: true` for quiet banners, which wait
+  behind whatever is being read (three at most), the round banner stands down on
+  a warden round, and a `reset()` empties the queue so a waiting banner cannot
+  walk into the front door.
+- **The pause menu did not fit a phone.** Its rows were a fixed 268 × 38 and
+  inherited the menu scale, so on a 360-pixel screen they came out 402 pixels
+  wide and hung off both edges; the list also ran down into the health bar. The
+  width is clamped to the panel and the pitch to the room above the HUD.
+- **The controls list cut its answers.** On a narrow panel the *key* column was
+  the one that got clipped ("WHEEL O…", "ARROWS + ENT…"), which is worse than a
+  clipped label: a key you cannot read is a wrong answer. Rows now carry a short
+  form for narrow panels, the key column is never cut, and the title no longer
+  runs into "ESC OR CLICK TO CLOSE" (that line moves to the footer when the head
+  has no room for it).
+- **The music tab's second line ran under its own scroll counter** ("1-12 / 26")
+  on a phone; the header is taller and the line is cut to the room.
+- **A landscape phone had no readable front page, pause menu or statistics
+  page.** At 640 x 360 the menu scale is 1.39, so the page is 460 x 259 units:
+  the wordmark alone took 100 of them, the eight rows and the diary and the
+  footer needed more than were left, and the rows were printed over the
+  wordmark at one end and over the footer at the other. The front page now
+  measures itself (a compact wordmark, the diary tucked under it, no
+  best-round line) and lays its rows out from the room that is actually left.
+  The pause menu turns into two columns of three when six rows would only fit
+  at 15 pixels each, and the statistics page turns its long column into two
+  when the panel is wide and short. The title screen's key list falls back to
+  short lines rather than running 500 pixels wide on a 360-pixel screen.
+- **The Knight was a helm on a black shape.** The helm was redrawn a pass ago,
+  but its body was drawn mostly as outline: at the scale the game draws it
+  (three to five pixels per sprite pixel) the chest and legs came out dark and
+  the "knight" read as a helmet floating over a shadow. The plate is now a
+  filled V with a lit near edge, a belt in shadow under it and greaves on the
+  legs -- drawn *on* the three-pixel leg, not around it, or the knight stands
+  like a tripod.
+- **The achievement card was printed over the warden's health bar.** Both sit in
+  the top band of the screen, and the card is drawn last, so a warden round that
+  also unlocked an achievement had a 72-unit card over the name and half the
+  health of the thing you were fighting. The card now steps below the bar (and
+  below the round banner behind it).
+- **The way-out chip was printed over the corner of the panel under it.** It
+  lives in the top-right of the *screen*, in screen units; the panels are drawn
+  in menu units and centered, so on any screen where a panel is nearly as wide
+  as the glass its header lands underneath. That was every phone: the
+  achievements counter ("0 / 36"), the outfits counter ("0 / 10 EARNED"), the
+  debug title and "THIS MACHINE" all had the chip across their last letters.
+  Those panels now stack the counter under the title when their corner is under
+  the chip, and the debug title is measured down to a shorter one
+  ("DEBUG PANEL" on a phone). A test walks each panel and fails on any label
+  inside the chip.
+- **The menus told a phone to press keys it does not have.** "ARROWS + ENTER
+  WORK HERE" on the pause menu, "` / ESC: CLOSE" and "W/S: PICK  ENTER: DO" in
+  the debug panel, "W S PICK · A D CHANGE" in settings -- and the one key that
+  mattered, the backtick that opens DEBUG, was invisible on glass. A touch
+  device now reads "TAP A ROW TO PICK", "TAP A ROW · TAP A TAB",
+  "× IN THE CORNER CLOSES" and "TAP A ROW · DRAG A SLIDER", and the per-row key
+  letters are not drawn at all.
+- **The Colonel was the Warden's helm with a cap drawn on top.** Two wardens,
+  a hundred rounds apart, in the same silhouette and the same green -- and
+  because the helm covers the zombie's own head, the cap had nothing to sit on.
+  (This is the "something on its head" complaint about the Knight line, in its
+  last form.) He has a head of his own now: a bare jaw under a peaked cap, a
+  cuirass with its buttons, braid on the shoulder, a sabre. The Warden keeps
+  the helm and the lantern. The README's "35 % heavier per cycle" was checked
+  against the code and pinned by a test: it is 35 % more *health* on round 55
+  and 70 % on round 100, and the wording said "heavier", which reads like
+  damage too.
+- **The achievement card was printed over the corner of the screen.** It was
+  a fixed 360 x 72 rectangle whose left edge was `w - 374`: on a phone with 360
+  units of drawing space the card *started* outside the glass, and on a laptop
+  it covered the bottom of the minimap, the SOUND IS OFF chip and the floor
+  tag. The card now measures itself, sits under the map and the chip, steps
+  under a live round banner rather than printing through it, and the floor tag
+  steps under *it*. A round banner's title is measured down to the glass too:
+  THE BELLRINGER at 46 px is 386 units on a 360-unit phone.
+- **The death screen ran off the bottom of a small phone.** At MAX PICTURE SIZE
+  on a 360 x 560 canvas the one-column ledger (22 rows at a fixed 15) went
+  through the prompt and the last six rows were painted off the glass, and the
+  40 px "YOU DIED" was wider than the screen. The pitch is now measured against
+  the room above the prompt, the ledger is cut rather than spilled (and says how
+  many rows it left for the all-time page), the headline shrinks to fit, and the
+  prompt picks the longest form of itself that fits. The all-time page had the
+  same trouble the other way up -- a short panel squeezed the long column into
+  the footer and "LONGEST RUN" was cut to "LONG..." -- so its rows are measured
+  too, and every label has a ladder of true short names before an ellipsis.
+- **The archer carried a walking stick and the drummer a box.** The bow was a
+  straight stick with a gap beside it and the drum hung off the right hip. The
+  bow is now a curve with a string across it and a nocked shaft; the drum is
+  slung across the belly with its rope over the shoulder. Both were checked at
+  12× and in a live render.
+- **A beekeeper's hive was reachable only if the keeper was close enough to kneel
+  in the 60–520 px band**; the test that spawned it 200 px away across a wall
+  never saw a box in 20 s. The rule is right (it has to arrive to place it); the
+  test was wrong, and now spawns one keeper at 70 px for 45 s.
+- Phone, from the previous pass and still covered: every panel has a visible way
+  out, DEBUG sits in the pause menu, the pause chip is top left, flick-scroll
+  never counts as a press, and one wheel notch is one row
+  (`tools/harness/phoneexit.test.mjs`, 9 tests).
+
+### The four things a player found in one evening
+
+Reported in the same breath as the roster work, all four with a root cause that
+was nobody's guess:
+
+- **The skeletons did not look like skeletons.** Four white bodies under a black
+  outline read, at three pixels per sprite pixel, as men in dark caps. They are
+  drawn from bone now: a skull with two deep sockets and a tooth row in shadow,
+  a spine, four ribs with gaps between them, a pelvis, and one-pixel limbs. The
+  old versions are gone; there is no white walker with a skull printed on it.
+- **The debug list could not be scrolled or used with the mouse.** It was not
+  the layout: hover re-picked the row under the pointer on *every* frame, so an
+  arrow key moved the selection and the pointer put it back before the frame
+  ended. Hover now picks only while the pointer moves, and a press always lands
+  on the row under it.
+- **SETTINGS and TEST RANGE were slow the first time and off centre.** Two
+  separate defects. The panel was inset 44 px to dodge the BACK chip and so sat
+  18 px low on every screen there is -- it is centred now, and the panel's
+  height already lives inside the chip's band. The slowness was the first
+  `new GameMap('range')` of a page: 3 800 tiles painted by hand, 124 ms, once.
+  The map is built during menu idle now: the first press costs 7 ms instead of
+  124, and nothing else in the panel was ever slow (opening SETTINGS costs a
+  11 ms worst frame).
+- **The sound went missing.** Two real ways to silence an engine that looks
+  healthy: a context that is built but never starts (the old code waited for a
+  *second* gesture, which is indistinguishable from no sound at all -- the clock
+  is now asked to start again for two seconds), and a reverb send that was open
+  with a null impulse for the whole menu, because the convolver was filled
+  before the engine claimed to be ready.
+- Along the way: the range HUD printed `SCRAP undefined` (a fresh body now
+  starts with scrap and medkits), and the arrow keys lost to a resting mouse in
+  the front door, the wardrobe and the skill cards, exactly as they had in the
+  debug list.
+
+### The second report: three things that were still wrong
+
+- **The pause highlight flew to the first plate and came back.** The pause
+  screen is painted in design units and the pointer arrives in screen units;
+  the painter handed the raw pointer to the hit test with the raw design size,
+  so on any screen whose scale is not exactly 1 the test landed *between* the
+  rows and the highlight fell back to whatever the keyboard had selected. The
+  hit test happens in screen space now and the result is handed to the painter;
+  a pointer in a gutter lights nothing, and a pointer outside the menu lights
+  nothing either. The wardrobe had the same defect and the same fix.
+- **The first press of anything stalled.** Three separate one-time costs were
+  being paid inside the player's click: the audio context was created there
+  (which starts the browser's audio service -- seconds of it on a machine with
+  a Bluetooth output), 1 500 sprites became textures on the first gameplay
+  frame (a browser only uploads a canvas the first time it is drawn), and the
+  first range of a session painted 3 800 tiles. The context is built at load,
+  the sprites are drawn once into a scratch canvas in idle slices while the
+  menu is up, and the range map is built in the same idle window. A frame over
+  450 ms is now named on screen and in the console, so the next freeze can be
+  identified instead of guessed at.
+- **The sound.** Rendered through a real Web Audio implementation the engine
+  is not silent: every effect has a non-zero path to the output (measured
+  peaks 0.19-0.89), and the ambient bed and elegy sit under them. What is left
+  is the environment, so the game now diagnoses it instead of shrugging:
+  the settings footer carries one line -- NOT STARTED / MUTED / BLOCKED BY THIS
+  FRAME / PAUSED / MASTER 0 / EFFECTS 0 / RUNNING, with both faders -- and the
+  line is a button that puts the faders back, unmutes, starts the clock and
+  plays a shot, a reload and a purchase so the answer is heard rather than
+  read. The corner chip says the same thing, is a button too, and a title
+  screen inside a preview frame carries a line across the menu explaining that
+  the frame blocks audio and the game has to be opened in its own tab. One
+  fader at zero used to have a clean bill of health; it no longer does.
+
+Validation: `npm test` **167/167** and the historical regression **48/48**.
+Thirty-two of the tests are new, including
+`tools/harness/regressions.test.mjs` (4 -- the settings panel centred within a
+pixel at eight screen sizes, the arrows moving the front door, the wardrobe and
+the debug list with a mouse parked on them, the range HUD printing numbers and
+never `undefined`, and the prewarmed range being handed over rather than built
+on the press), and `tools/harness/roster.test.mjs` (14 — the warden
+line from 10 to 55 and its wrap, the second-cycle health bonus, no two wardens
+sharing a sprite set, escort sizing, every arrival round, four
+sprites per body, the verb table, the hive and its bees, shootable silk, the
+venom's clock and its place on the HUD, the warden's banner, the banner queue)
+and `tools/harness/menutext.test.mjs` (8 — every label on every panel turned
+into a box, 1:1 sprite or scaled `fillText`, failing on any overlap or any label
+off screen at eight screen sizes -- the two a phone gets at MAX PICTURE SIZE
+and a phone held sideways -- plus a state-by-state sweep of the HUD's two edge
+bands, a check that the all-time page never has to cut a label, and a
+landscape-phone pass that walks every menu and pause row through its own hit
+test: the row that is drawn is the row that is pressed, no label under the
+way-out chip, and a faked touch device checking that the menus stop naming
+keys), and
+`tools/harness/toast.test.mjs` (3 -- the achievement card and the round banner
+stay on the glass and off the map, the sound chip, the floor tag and a warden's
+health bar). A label is
+off screen when any of its letters is: a wordmark clipped at the top of the
+glass is the same bug as a row printed through the footer. The menutext sweep was written
+against the bugs above and was checked against the old behaviour twice:
+restoring the fixed 268-wide pause rows fails it with "row 0 is 402 wide on a
+360 screen", and moving the all-time footer up into its own table fails it with
+"TIME over NO NIGHTS YET".
+
+Native renders inspected at 800 × 500, 430 × 930, 390 × 844, 360 × 640,
+360 × 560 (the last two at MAX PICTURE SIZE), 640 × 360 and 568 × 320 (a phone
+on its side): the venom strip and label under the health bar, the
+controls list with its short-form key column and its footer, the pause menu
+fitting inside a phone, the DEBUG zoo list with its scroll rail and counter, the
+boss bar clear of the sound chip and the map, the pause chip and the map in
+their corners, the death screen's cut-down ledger, the all-time page with no cut
+labels, the achievement card clear of the minimap, the sound chip and the
+round banner on a phone, a laptop and a phone on its side, and the new archer
+and drummer sprites at gameplay scale.
+
+Not claimed: a real phone or browser run or drag physics on real glass. The
+player has since confirmed that sound is audible on their laptop; this sandbox
+still cannot verify a physical speaker output.
+
+## Follow-up: wardrobe, upper-floor drops, flare smoke and background music
+
+- Compact outfit rows now keep the selected coat's effect visible in the footer;
+  full rows show both the effect and, while locked, the badge to earn. The narrow
+  wardrobe rendering test checks the actual painted text.
+- Radio supply crates are now routed to the ground-floor supply area, including
+  crates called in after repairing the roof radio. Flare smoke particles carry
+  the helipad's floor explicitly, so they cannot be painted on the first or
+  second floor because another entity last set the particle-system floor.
+- The in-game title and browser title are **Top-Down Zombie Shooter**. The menu
+  sits lower under its title block; the single SOLO hit row and its visual row
+  are tested together on desktop, portrait and landscape sizes.
+- The existing procedural score library now supplies a rotating title-screen
+  score and a different run score; the music fader and the debug STOP control
+  remain in charge. A run's full score and the adaptive layers do not compete.
+- `node server.mjs` still starts one listener on `0.0.0.0`; its startup list now
+  labels each usable interface address instead of making two addresses look
+  like two servers.
+
+Validation for this follow-up: `npm test` **171/171**; focused outfit, menu,
+heli/radio, soundtrack and boot harnesses pass. The complete historical
+regression runner was also rerun after updating its radio/music expectations.
