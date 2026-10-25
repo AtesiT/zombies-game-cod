@@ -3,8 +3,8 @@
 //   node server.mjs [port]
 //
 // It does two jobs:
-//   1. serves the game over HTTP, on the whole network (0.0.0.0) so a phone
-//      or a laptop on the same wi-fi can open it;
+//   1. serves the game and the self-contained project deck over HTTP, on the
+//      whole network (0.0.0.0) so a phone or laptop on the same wi-fi can open it;
 //   2. relays multiplayer traffic over WebSocket at /net. The relay knows
 //      nothing about zombies -- it only knows rooms and who is in them. The
 //      first player into a room is the host and runs the simulation; everyone
@@ -48,7 +48,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   const parts = url.split('/');
-  const publicFile = url === '/index.html' || url === '/styles.css'
+  const publicFile = url === '/index.html' || url === '/presentation.html' || url === '/styles.css'
     || (/^\/src\/[a-zA-Z0-9_-]+\.js$/.test(url));
   if (!publicFile || parts.some((p) => p === '..' || p.startsWith('.')) || url.includes('\\') || url.includes('\0')) {
     res.writeHead(403).end('forbidden'); return;

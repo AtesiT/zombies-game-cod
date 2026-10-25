@@ -8,3 +8,7 @@ preview.png
 
 # harness scratch renders
 tools/harness/*.png
+
+.venv/
+
+__pycache__/

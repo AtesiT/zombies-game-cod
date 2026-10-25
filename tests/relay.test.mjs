@@ -77,6 +77,10 @@ test('HTTP blocks private files and malformed URLs without taking server down', 
   for (const p of ['/%', '/%E0%A4%A']) assert.equal((await request(p)).status, 400);
   assert.equal((await request('/')).status, 200);
   assert.equal((await request('/src/main.js')).status, 200);
+  const deck = await request('/presentation.html');
+  assert.equal(deck.status, 200);
+  assert.match(deck.body, /50 слайдов/);
+  assert.match(deck.body, /data:image\/png;base64,/);
   assert.equal((await request('/', 'POST')).status, 405);
   assert.equal((await request('/', 'HEAD')).body, '');
 });
