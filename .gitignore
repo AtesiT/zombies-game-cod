@@ -8,3 +8,10 @@ preview.png
 
 # harness scratch renders
 tools/harness/*.png
+
+.venv/
+
+__pycache__/
+
+# Generated static site and mobile web assets
+/dist/

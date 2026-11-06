@@ -5322,7 +5322,7 @@ export class Game {
     const addr = net.addr ?? defaultRelay();
     const url = net.url || relayURL(addr);
     if (!url) {
-      this.netMsg = 'NO RELAY — RUN THE GAME WITH:  node server.mjs';
+      this.netMsg = 'NO RELAY — SET game-config.js OR RUN:  node server.mjs';
       return false;
     }
     net.url = url;
@@ -5337,7 +5337,7 @@ export class Game {
     }
     if (net.state === 'error') {
       this.netMsg = net.error === 'CANNOT REACH'
-        ? 'CANNOT REACH THE RELAY — RUN IT WITH:  node server.mjs'
+        ? 'CANNOT REACH THE RELAY — CHECK ITS ADDRESS'
         : (net.error ?? null);
     } else if (net.state === 'open') {
       this.netMsg = null;
@@ -5364,7 +5364,7 @@ export class Game {
   _askAddress() {
     const host = document.getElementById?.('stage') ?? document.body;
     textEntry(host, {
-      value: this.net.addr ?? defaultRelay(), placeholder: 'HOST:PORT  e.g.  192.168.1.5:8080',
+      value: this.net.addr ?? defaultRelay(), placeholder: 'HOST:PORT OR WSS://RELAY/NET',
       onDone: (v) => {
         if (!v) return;
         this.net.addr = v;
@@ -5382,7 +5382,7 @@ export class Game {
     net.hostGame(net.makeRoomCode(), net.name || 'PLAYER');
     // hosting without a relay is not fatal: you just play by yourself, and
     // the HUD says so rather than pretending a room is open
-    if (!linked) this.bannerShow('NO RELAY', 'run with node server.mjs to let people join',
+    if (!linked) this.bannerShow('NO RELAY', 'set game-config.js to enable co-op',
       { dur: 4, colour: '#c4463a' });
     this.begin();
   }

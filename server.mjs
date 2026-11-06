@@ -3,8 +3,7 @@
 //   node server.mjs [port]
 //
 // It does two jobs:
-//   1. serves the game over HTTP, on the whole network (0.0.0.0) so a phone
-//      or a laptop on the same wi-fi can open it;
+//   1. serves the game and its static web-app files;
 //   2. relays multiplayer traffic over WebSocket at /net. The relay knows
 //      nothing about zombies -- it only knows rooms and who is in them. The
 //      first player into a room is the host and runs the simulation; everyone
@@ -19,6 +18,16 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.argv[2] ?? process.env.PORT ?? 8080);
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Port must be an integer from 0 to 65535');
+const ALLOWED_WS_ORIGINS = new Set();
+for (const candidate of String(process.env.ZOMBIES_ALLOWED_ORIGINS ?? '').split(',')) {
+  try {
+    const origin = new URL(candidate.trim());
+    if (['http:', 'https:', 'capacitor:'].includes(origin.protocol)
+      && origin.host && (origin.pathname === '/' || origin.pathname === '') && !origin.search && !origin.hash) {
+      ALLOWED_WS_ORIGINS.add(`${origin.protocol}//${origin.host}`);
+    }
+  } catch { /* ignore malformed origin entries */ }
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -30,6 +39,7 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
 // Only ship runtime assets, never repository metadata, tooling or dependencies.
@@ -48,8 +58,10 @@ const server = http.createServer((req, res) => {
     return;
   }
   const parts = url.split('/');
+  const isAppIcon = /^\/icons\/app-icon\.svg$/.test(url);
   const publicFile = url === '/index.html' || url === '/styles.css'
-    || (/^\/src\/[a-zA-Z0-9_-]+\.js$/.test(url));
+    || url === '/game-config.js' || url === '/manifest.webmanifest'
+    || isAppIcon || (/^\/src\/[a-zA-Z0-9_-]+\.js$/.test(url));
   if (!publicFile || parts.some((p) => p === '..' || p.startsWith('.')) || url.includes('\\') || url.includes('\0')) {
     res.writeHead(403).end('forbidden'); return;
   }
@@ -60,10 +72,13 @@ const server = http.createServer((req, res) => {
     if (real !== file) { res.writeHead(403).end('forbidden'); return; }
     fs.readFile(real, (err, data) => {
       if (err) { res.writeHead(404).end('not found'); return; }
-      res.writeHead(200, {
-        'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+      const extension = path.extname(file).toLowerCase();
+      const headers = {
+        'content-type': MIME[extension] || 'application/octet-stream',
         'cache-control': 'no-cache',
-      });
+      };
+      if (extension === '.pptx') headers['content-disposition'] = `attachment; filename="${path.basename(file)}"`;
+      res.writeHead(200, headers);
       res.end(req.method === 'HEAD' ? undefined : data);
     });
   });
@@ -243,11 +258,14 @@ server.on('upgrade', (req, socket, head) => {
     || req.headers['sec-websocket-version'] !== '13'
     || typeof key !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(key)
     || sockets >= MAX_SOCKETS) { socket.destroy(); return; }
-  // Do not let an unrelated website drive a player's LAN relay.
+  // Same-origin is the LAN default. A public static client or native wrapper
+  // may be added explicitly with ZOMBIES_ALLOWED_ORIGINS (comma-separated).
   if (req.headers.origin) {
     let origin;
     try { origin = new URL(req.headers.origin); } catch { socket.destroy(); return; }
-    if (!['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host) { socket.destroy(); return; }
+    const originKey = `${origin.protocol}//${origin.host}`;
+    const isSameOrigin = ['http:', 'https:'].includes(origin.protocol) && origin.host === req.headers.host;
+    if (!isSameOrigin && !ALLOWED_WS_ORIGINS.has(originKey)) { socket.destroy(); return; }
   }
   sockets++;
   const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');

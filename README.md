@@ -1,8 +1,7 @@
 # Top-Down Zombie Shooter
 
 A 2D top-down survival wave shooter in the spirit of the very first *Call of Duty: World at War*
-zombies map, **Nacht der Untoten**. Hand-written vanilla JavaScript + HTML5 Canvas — no build
-step, no dependencies, no asset files (all pixel art and all sound are generated in code).
+zombies map, **Nacht der Untoten**. Hand-written vanilla JavaScript + HTML5 Canvas — no runtime build step or external dependencies; all in-game pixel art and sound are generated in code. `npm run build:web` prepares a static site for publishing.
 
 > **Кратко по-русски.** 2D-игра с видом сверху в стиле режима «Zombies» из Call of Duty
 > (первая карта Nacht der Untoten). 15 видов оружия, 8 перков, Mystery Box с wonder-оружием,
@@ -13,8 +12,9 @@ step, no dependencies, no asset files (all pixel art and all sound are generated
 > в кооперативе — голосование большинства, экран EVACUATED с особой отметкой в рекордах),
 > навыки забега (после каждого пятого раунда — одна из трёх карт), достижения и таблица
 > рекордов. Вся графика — процедурный пиксель-арт, весь звук — синтез
-> через WebAudio, сборка не нужна.
+> через WebAudio, игровой код не требует сборки.
 > Запуск: `python3 -m http.server 8080` или `node server.mjs`, затем открыть `http://localhost:8080/`.
+> Публикация на Pages и будущая упаковка APK/IPA: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 

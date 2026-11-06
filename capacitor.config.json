@@ -1,0 +1,8 @@
+{
+  "appId": "com.atesit.zombiesgamecod",
+  "appName": "Top-Down Zombie Shooter",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

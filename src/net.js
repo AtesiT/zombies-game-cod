@@ -1305,13 +1305,32 @@ export function textEntry(mount, opts = {}) {
 /** Where the relay lives, when the page itself was served by it. */
 export function defaultRelay() {
   if (typeof location === 'undefined') return '';
-  if (location.protocol === 'file:') return '';
+  const configured = globalThis.ZOMBIES_GAME_CONFIG?.relay;
+  if (configured === false || configured === '') return '';
+  if (typeof configured === 'string') return configured;
+  if (typeof globalThis.Capacitor?.isNativePlatform === 'function' && globalThis.Capacitor.isNativePlatform()) return '';
+  if (location.protocol === 'file:' || location.protocol === 'capacitor:') return '';
+  // GitHub Pages is static hosting: it cannot accept this game's WebSocket relay.
+  if (location.hostname === 'github.io' || location.hostname.endsWith('.github.io')) return '';
   return `${location.host}`;
 }
 
-export function relayURL(host) {
-  if (!host) return '';
-  const h = host.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  const secure = typeof location !== 'undefined' && location.protocol === 'https:';
-  return `${secure ? 'wss' : 'ws'}://${h}/net`;
+export function relayURL(endpoint) {
+  const value = String(endpoint ?? '').trim();
+  if (!value) return '';
+
+  const securePage = typeof location !== 'undefined' && location.protocol === 'https:';
+  const candidate = /^wss?:\/\//i.test(value)
+    ? value.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:')
+    : /^https?:\/\//i.test(value)
+      ? value
+      : `${securePage ? 'https' : 'http'}://${value}`;
+  try {
+    const url = new URL(candidate);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (!url.pathname || url.pathname === '/') url.pathname = '/net';
+    return url.toString();
+  } catch {
+    return '';
+  }
 }

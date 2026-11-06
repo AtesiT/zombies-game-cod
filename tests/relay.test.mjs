@@ -8,7 +8,11 @@ import { once } from 'node:events';
 
 let child, port;
 before(async () => {
-  child = spawn(process.execPath, ['server.mjs', '0'], { cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(process.execPath, ['server.mjs', '0'], {
+    cwd: new URL('..', import.meta.url),
+    env: { ...process.env, ZOMBIES_ALLOWED_ORIGINS: 'https://pages.example,capacitor://localhost' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   port = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('server startup timeout')), 4000);
     child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`server exited ${code}`)); });
@@ -18,7 +22,7 @@ before(async () => {
 after(() => child?.kill());
 const request = (path, method = 'GET') => new Promise((resolve, reject) => {
   const req = http.request({ host: '127.0.0.1', port, path, method }, (res) => {
-    let body = ''; res.on('data', (d) => body += d); res.on('end', () => resolve({ status: res.statusCode, body }));
+    let body = ''; res.on('data', (d) => body += d); res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
   });
   req.setTimeout(3000, () => req.destroy(new Error('HTTP timeout'))); req.on('error', reject); req.end();
 });
@@ -77,6 +81,14 @@ test('HTTP blocks private files and malformed URLs without taking server down', 
   for (const p of ['/%', '/%E0%A4%A']) assert.equal((await request(p)).status, 400);
   assert.equal((await request('/')).status, 200);
   assert.equal((await request('/src/main.js')).status, 200);
+  const manifest = await request('/manifest.webmanifest');
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers['content-type'], /application\/manifest\+json/);
+  assert.equal((await request('/game-config.js')).status, 200);
+  assert.equal((await request('/icons/app-icon.svg')).status, 200);
+  assert.equal((await request('/presentation.html')).status, 403);
+  assert.equal((await request('/presentation_variants/index.html')).status, 403);
+  assert.equal((await request('/docs/assets/presentation/01_menu.png')).status, 403);
   assert.equal((await request('/', 'POST')).status, 405);
   assert.equal((await request('/', 'HEAD')).body, '');
 });
@@ -140,6 +152,14 @@ test('cross-site origin and unsupported handshake version are rejected', async (
   c.send({ t: 'rooms' }); assert.equal((await c.next()).t, 'rooms');
 });
 
+
+test('explicitly allowlisted Pages and native-app origins can connect to the relay', async (t) => {
+  for (const [origin, room] of [['https://pages.example', 'PAGES'], ['capacitor://localhost', 'NATIVE']]) {
+    const c = await raw(t, { origin });
+    c.send({ t: 'hello', room, name: 'APP', want: 'host' });
+    assert.equal((await c.next()).t, 'joined', origin);
+  }
+});
 
 test('rapid coalesced messages and byte-split frames preserve ordering', async (t) => {
   const c = await raw(t);
